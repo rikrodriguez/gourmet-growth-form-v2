@@ -345,14 +345,19 @@ function BBQFunnel() {
     setStepIndex((current) => Math.max(current - 1, 0));
   }
 
-  function continueWith(event: FormEvent, valid: boolean, message?: string) {
-    event.preventDefault();
+  function advanceIfValid(valid: boolean, message?: string) {
     if (!valid) {
       if (message) setAnnouncement(message);
-      return;
+      return false;
     }
     setAnnouncement('');
     next();
+    return true;
+  }
+
+  function continueWith(event: FormEvent, valid: boolean, message?: string) {
+    event.preventDefault();
+    advanceIfValid(valid, message);
   }
 
   async function resolveZip(zip: string) {
@@ -479,7 +484,12 @@ function BBQFunnel() {
                 <span className="proof-chevron">›</span>
               </div>
 
-              <button className="continue-button" type="submit" disabled={!answers.guests}>
+              <button
+                className="continue-button"
+                type="button"
+                disabled={!answers.guests}
+                onClick={() => advanceIfValid(Boolean(answers.guests), 'Choose a guest range to continue.')}
+              >
                 <span>Continue</span><ArrowIcon />
               </button>
             </form>
@@ -504,7 +514,12 @@ function BBQFunnel() {
               </fieldset>
 
               <div className="step-spacer" />
-              <button className="continue-button" type="submit" disabled={!answers.service}>
+              <button
+                className="continue-button"
+                type="button"
+                disabled={!answers.service}
+                onClick={() => advanceIfValid(Boolean(answers.service), 'Choose a service style to continue.')}
+              >
                 <span>Continue</span><ArrowIcon />
               </button>
             </form>
@@ -537,7 +552,12 @@ function BBQFunnel() {
               </fieldset>
 
               <div className="step-spacer" />
-              <button className="continue-button" type="submit" disabled={!/^\d{5}$/.test(answers.zip || '')}>
+              <button
+                className="continue-button"
+                type="button"
+                disabled={!/^\d{5}$/.test(answers.zip || '')}
+                onClick={() => advanceIfValid(/^\d{5}$/.test(answers.zip || ''), 'Enter a 5-digit ZIP code.')}
+              >
                 <span>Continue</span><ArrowIcon />
               </button>
             </form>
@@ -572,8 +592,12 @@ function BBQFunnel() {
               <div className="step-spacer compact" />
               <button
                 className="continue-button"
-                type="submit"
+                type="button"
                 disabled={normalizedPhoneDigits(answers.phone || '').length !== 10}
+                onClick={() => advanceIfValid(
+                  normalizedPhoneDigits(answers.phone || '').length === 10,
+                  'Enter a valid 10-digit phone number.',
+                )}
               >
                 <span>Continue</span><ArrowIcon />
               </button>
@@ -631,8 +655,15 @@ function BBQFunnel() {
               <div className="step-spacer compact" />
               <button
                 className="continue-button"
-                type="submit"
+                type="button"
                 disabled={!currentEventType || (currentEventType === 'Other' && eventOther.trim().length < 2)}
+                onClick={() => {
+                  const valid = Boolean(currentEventType) && (currentEventType !== 'Other' || eventOther.trim().length >= 2);
+                  if (valid && currentEventType === 'Other') {
+                    updateAnswer('eventType', eventOther.trim());
+                  }
+                  advanceIfValid(valid, 'Choose or describe your event type.');
+                }}
               >
                 <span>Continue</span><ArrowIcon />
               </button>
@@ -680,7 +711,12 @@ function BBQFunnel() {
                 </div>
               </fieldset>
 
-              <button className="continue-button" type="submit" disabled={!dateValid}>
+              <button
+                className="continue-button"
+                type="button"
+                disabled={!dateValid}
+                onClick={() => advanceIfValid(dateValid, 'Choose a timing option to continue.')}
+              >
                 <span>Continue</span><ArrowIcon />
               </button>
             </form>
@@ -710,7 +746,12 @@ function BBQFunnel() {
               </fieldset>
 
               <div className="step-spacer" />
-              <button className="continue-button" type="submit" disabled={(answers.name || '').trim().length < 2}>
+              <button
+                className="continue-button"
+                type="button"
+                disabled={(answers.name || '').trim().length < 2}
+                onClick={() => advanceIfValid((answers.name || '').trim().length >= 2, 'Enter your first name.')}
+              >
                 <span>Finish</span><ArrowIcon />
               </button>
             </form>
