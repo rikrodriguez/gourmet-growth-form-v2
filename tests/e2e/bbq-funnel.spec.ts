@@ -1,6 +1,7 @@
 import { expect, Page, test } from '@playwright/test';
 
-const funnelPath = '/form2/bbq/';
+const deployedSha = process.env.E2E_BASE_URL ? process.env.GITHUB_SHA : undefined;
+const funnelPath = `/form2/bbq/${deployedSha ? `?sha=${deployedSha}` : ''}`;
 
 function option(page: Page, value: string) {
   return page.locator(`[data-option-value="${value}"]`);
