@@ -558,11 +558,245 @@ fieldset legend {
   .guest-option-copy small { font-size: 11px; }
 }
 
-@media (min-width: 431px) {
+@media (min-width: 431px) and (max-width: 767px) {
   .mobile-stage { padding: 24px 0; }
   .mobile-app {
+    width: min(100%, 430px);
     min-height: calc(100dvh - 48px);
     border-radius: 26px;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .mobile-stage {
+    align-items: flex-start;
+    padding: 32px;
+  }
+
+  .mobile-app {
+    width: min(100%, 820px);
+    min-height: auto;
+    border-radius: 30px;
+  }
+
+  .brand-header {
+    height: 84px;
+    padding: 18px 30px;
+  }
+
+  .brand-mark {
+    width: 34px;
+    height: 34px;
+  }
+
+  .brand-words strong { font-size: 18px; }
+  .brand-words small { font-size: 7.5px; }
+
+  .bbq-hero {
+    min-height: 390px;
+    padding: 50px 48px 42px;
+    background-position: 68% 48%;
+  }
+
+  .hero-content { max-width: 500px; }
+  .hero-eyebrow { font-size: 12px; margin-bottom: 16px; }
+  .hero-content h1 {
+    max-width: 440px;
+    font-size: 58px;
+  }
+
+  .hero-copy {
+    width: 410px;
+    margin: 20px 0 28px;
+    font-size: 20px;
+  }
+
+  .hero-features {
+    gap: 28px;
+    font-size: 14px;
+  }
+
+  .hero-features i {
+    width: 28px;
+    height: 28px;
+  }
+
+  .quote-panel {
+    margin-top: -28px;
+    padding: 32px 38px 34px;
+    border-radius: 34px 34px 0 0;
+  }
+
+  .progress-row { margin-bottom: 30px; }
+  fieldset legend { font-size: 38px; }
+  .question-help { font-size: 15px; }
+
+  .guest-grid { gap: 12px; }
+
+  .guest-option {
+    min-height: 80px;
+    border-radius: 18px;
+  }
+
+  .guest-option-copy strong { font-size: 16px; }
+  .guest-option-copy small { font-size: 13px; }
+
+  .local-proof {
+    min-height: 68px;
+    margin: 18px 0 16px;
+  }
+
+  .continue-button {
+    min-height: 60px;
+    font-size: 19px;
+  }
+
+  .privacy-note { font-size: 12px; }
+}
+
+@media (min-width: 1024px) {
+  .mobile-stage {
+    align-items: center;
+    padding: 40px;
+  }
+
+  .mobile-app {
+    width: min(1180px, calc(100vw - 80px));
+    min-height: 720px;
+    display: grid;
+    grid-template-columns: minmax(0, 1.08fr) minmax(440px, .92fr);
+    grid-template-rows: 88px minmax(632px, auto);
+    border-radius: 30px;
+    overflow: hidden;
+  }
+
+  .brand-header {
+    grid-column: 1 / -1;
+    height: 88px;
+    padding: 18px 38px;
+    border-bottom: 1px solid rgba(21,22,20,.06);
+  }
+
+  .brand-mark {
+    width: 36px;
+    height: 36px;
+  }
+
+  .brand-words strong { font-size: 19px; }
+  .brand-words small { font-size: 8px; }
+
+  .bbq-hero {
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 632px;
+    height: 100%;
+    padding: 78px 64px 64px;
+    display: flex;
+    align-items: center;
+    background:
+      linear-gradient(90deg, rgba(10,12,10,.93) 0%, rgba(10,12,10,.76) 42%, rgba(10,12,10,.14) 78%, rgba(10,12,10,.02) 100%),
+      linear-gradient(0deg, rgba(9,11,9,.42), rgba(9,11,9,.06)),
+      url('/form2/assets/bbq-hero-mobile-v1.webp') 70% 48% / cover no-repeat;
+  }
+
+  .hero-content { max-width: 520px; }
+
+  .hero-eyebrow {
+    margin-bottom: 18px;
+    font-size: 13px;
+  }
+
+  .hero-content h1 {
+    max-width: 510px;
+    font-size: clamp(62px, 5vw, 76px);
+    line-height: .95;
+  }
+
+  .hero-copy {
+    width: min(100%, 460px);
+    margin: 25px 0 34px;
+    font-size: 21px;
+    line-height: 1.45;
+  }
+
+  .hero-features {
+    gap: 30px;
+    font-size: 14px;
+  }
+
+  .hero-features i {
+    width: 30px;
+    height: 30px;
+  }
+
+  .quote-panel {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: stretch;
+    margin-top: 0;
+    padding: 50px 48px 42px;
+    border-radius: 0 0 30px 0;
+    box-shadow: -1px 0 0 rgba(20,20,18,.06);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .progress-row {
+    margin-bottom: 36px;
+  }
+
+  .progress-left > strong { font-size: 14px; }
+
+  .event-time {
+    min-width: 102px;
+  }
+
+  .event-time strong,
+  .event-time small {
+    font-size: 13px;
+  }
+
+  fieldset legend {
+    max-width: 520px;
+    font-size: 42px;
+    line-height: 1.02;
+  }
+
+  .question-help {
+    margin: 12px 0 22px;
+    font-size: 16px;
+  }
+
+  .guest-grid {
+    gap: 12px;
+  }
+
+  .guest-option {
+    min-height: 84px;
+    border-radius: 18px;
+  }
+
+  .guest-option-copy strong { font-size: 16px; }
+  .guest-option-copy small { font-size: 13px; }
+
+  .local-proof {
+    min-height: 72px;
+    margin: 20px 0 18px;
+    padding: 12px 14px;
+  }
+
+  .proof-copy strong { font-size: 14px; }
+  .proof-copy small { font-size: 12px; }
+
+  .continue-button {
+    min-height: 62px;
+    font-size: 20px;
+  }
+
+  .privacy-note {
+    margin-top: 15px;
+    font-size: 12px;
   }
 }
 
