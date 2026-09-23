@@ -1,10 +1,12 @@
-Options -Indexes
+Options -Indexes -MultiViews
+DirectoryIndex index.html
+
 RewriteEngine On
 RewriteBase /form2/
 
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule . /form2/index.html [L]
+RewriteRule ^ index.html [L]
 
 <IfModule mod_headers.c>
   Header set X-Content-Type-Options "nosniff"
