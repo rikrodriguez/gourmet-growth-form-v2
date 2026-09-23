@@ -101,12 +101,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          curl --fail --silent --show-error \
-            "${STAGING_URL}?sha=${GITHUB_SHA}" \
-            --dump-header "${RUNNER_TEMP}/live-headers.txt" \
-            --output "${RUNNER_TEMP}/live-index.html"
-
-          node --input-type=module <<'NODE'
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error \
+              "${STAGING_URL}" \
+              --dump-header "${RUNNER_TEMP}/live-headers.txt" \
+              --output "${RUNNER_TEMP}/live-index.html"; then
+              if node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
 
           const root = process.env.RUNNER_TEMP;
@@ -124,6 +124,15 @@ jobs:
             throw new Error('Live HTML is missing the required no-store cache policy.');
           }
           NODE
+              then
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+
+          echo "Canonical staging URL did not expose the exact artifact and cache policy within 10 minutes." >&2
+          exit 1
 
       - name: Run required E2E matrix against exact live deployment
         run: npm run test:e2e:staging
