@@ -66,6 +66,14 @@ const dateOptions: Option[] = [
 
 function loadSavedState(previewGolden: boolean): SavedState {
   try {
+    const sessionRaw = window.sessionStorage.getItem(STORAGE_KEY);
+    if (sessionRaw) {
+      const parsed = JSON.parse(sessionRaw) as SavedState;
+      const fresh = parsed.version === 1 && Date.now() - parsed.updatedAt < STORAGE_TTL_MS;
+      if (fresh) return parsed;
+      window.sessionStorage.removeItem(STORAGE_KEY);
+    }
+
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as SavedState;
@@ -256,7 +264,12 @@ function BBQFunnel() {
 
   const [stepIndex, setStepIndex] = useState(initial.stepIndex);
   const [answers, setAnswers] = useState<Answers>(initial.answers);
-  const [eventOther, setEventOther] = useState('');
+  const knownEventValues = useMemo(() => new Set(eventOptions.map((option) => option.value)), []);
+  const [eventOther, setEventOther] = useState(
+    initial.answers.eventType && !knownEventValues.has(initial.answers.eventType)
+      ? initial.answers.eventType
+      : '',
+  );
   const [zipLookup, setZipLookup] = useState<'idle' | 'loading' | 'found' | 'unknown'>(
     initial.answers.city ? 'found' : 'idle',
   );
@@ -267,14 +280,34 @@ function BBQFunnel() {
   }, []);
 
   useEffect(() => {
-    const saved: SavedState = {
+    const fullSaved: SavedState = {
       version: 1,
       updatedAt: Date.now(),
       stepIndex,
       answers,
     };
+
+    const durableAnswers: Answers = {
+      guests: answers.guests,
+      service: answers.service,
+      zip: answers.zip,
+      city: answers.city,
+      state: answers.state,
+      eventType: answers.eventType,
+      dateWindow: answers.dateWindow,
+      exactDate: answers.exactDate,
+    };
+
+    const durableSaved: SavedState = {
+      version: 1,
+      updatedAt: Date.now(),
+      stepIndex: Math.min(stepIndex, 3),
+      answers: durableAnswers,
+    };
+
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+      window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(fullSaved));
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(durableSaved));
     } catch {
       // Ignore storage failures; do not block the funnel.
     }
@@ -368,6 +401,7 @@ function BBQFunnel() {
   function resetFunnel() {
     try {
       window.localStorage.removeItem(STORAGE_KEY);
+      window.sessionStorage.removeItem(STORAGE_KEY);
     } catch {
       // Ignore storage failures.
     }
@@ -378,9 +412,9 @@ function BBQFunnel() {
     setStepIndex(0);
   }
 
-  const currentEventType = answers.eventType === 'Other' || eventOther
-    ? 'Other'
-    : answers.eventType || '';
+  const currentEventType = answers.eventType
+    ? (knownEventValues.has(answers.eventType) ? answers.eventType : 'Other')
+    : (eventOther ? 'Other' : '');
 
   const dateValid = answers.dateWindow
     ? answers.dateWindow !== 'exact' || Boolean(answers.exactDate)
