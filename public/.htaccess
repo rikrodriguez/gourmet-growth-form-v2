@@ -1,0 +1,13 @@
+Options -Indexes
+RewriteEngine On
+RewriteBase /form2/
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /form2/index.html [L]
+
+<IfModule mod_headers.c>
+  Header set X-Content-Type-Options "nosniff"
+  Header set Referrer-Policy "strict-origin-when-cross-origin"
+  Header set X-Robots-Tag "noindex, nofollow"
+</IfModule>
