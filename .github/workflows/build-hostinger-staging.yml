@@ -32,6 +32,12 @@ jobs:
       - name: Build static frontend
         run: npm run build
 
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run responsive E2E tests
+        run: npm run test:e2e
+
       - name: Publish dist to hostinger-staging branch
         run: |
           set -euo pipefail
