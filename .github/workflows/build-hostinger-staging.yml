@@ -6,6 +6,10 @@ on:
       - develop
   workflow_dispatch:
 
+concurrency:
+  group: hostinger-staging-deploy
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -14,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout develop
+      - name: Checkout selected branch
         uses: actions/checkout@v5
 
       - name: Setup Node
