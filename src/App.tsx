@@ -388,7 +388,7 @@ function BBQFunnel() {
 
   return (
     <main className="mobile-stage">
-      <div className={`mobile-app${stepIndex > 0 && !isComplete ? ' has-progressed' : ''}`}>
+      <div className={`mobile-app${stepIndex > 0 ? ' has-progressed' : ''}`}>
         <header className="brand-header">
           <div className="brand-lockup" aria-label="Gourmet Corp">
             <span className="brand-mark"><FlameIcon /></span>
