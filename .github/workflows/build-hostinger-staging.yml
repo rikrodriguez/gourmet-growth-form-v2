@@ -1,0 +1,48 @@
+name: Build Hostinger Staging Artifact
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build static frontend
+        run: npm run build
+
+      - name: Publish dist to hostinger-staging branch
+        run: |
+          set -euo pipefail
+
+          mkdir -p /tmp/hostinger-dist
+          cp -a dist/. /tmp/hostinger-dist/
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout --orphan hostinger-staging
+          git rm -rf . || true
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a /tmp/hostinger-dist/. .
+
+          git add -A
+          git commit -m "deploy: staging ${GITHUB_SHA}"
+          git push --force origin hostinger-staging
