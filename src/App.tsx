@@ -14,7 +14,7 @@ type Answers = {
 };
 
 type SavedState = {
-  version: 1;
+  version: 2;
   updatedAt: number;
   stepIndex: number;
   answers: Answers;
@@ -27,7 +27,9 @@ type Option = {
   icon?: 'people';
 };
 
-const STORAGE_KEY = 'gourmet_growth_v2_bbq_v1';
+const LEGACY_STORAGE_KEY = 'gourmet_growth_v2_bbq_v1';
+const SESSION_STORAGE_KEY = 'gourmet_growth_v2_bbq_session_v2';
+const NON_PII_STORAGE_KEY = 'gourmet_growth_v2_bbq_non_pii_v2';
 const STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
 const TOTAL_STEPS = 7;
 
@@ -66,27 +68,30 @@ const dateOptions: Option[] = [
 
 function loadSavedState(previewGolden: boolean): SavedState {
   try {
-    const sessionRaw = window.sessionStorage.getItem(STORAGE_KEY);
+    window.sessionStorage.removeItem(LEGACY_STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+
+    const sessionRaw = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
     if (sessionRaw) {
       const parsed = JSON.parse(sessionRaw) as SavedState;
-      const fresh = parsed.version === 1 && Date.now() - parsed.updatedAt < STORAGE_TTL_MS;
+      const fresh = parsed.version === 2 && Date.now() - parsed.updatedAt < STORAGE_TTL_MS;
       if (fresh) return parsed;
-      window.sessionStorage.removeItem(STORAGE_KEY);
+      window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
     }
 
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(NON_PII_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as SavedState;
-      const fresh = parsed.version === 1 && Date.now() - parsed.updatedAt < STORAGE_TTL_MS;
+      const fresh = parsed.version === 2 && Date.now() - parsed.updatedAt < STORAGE_TTL_MS;
       if (fresh) return parsed;
-      window.localStorage.removeItem(STORAGE_KEY);
+      window.localStorage.removeItem(NON_PII_STORAGE_KEY);
     }
   } catch {
     // Storage can be unavailable in private browsing modes. The funnel still works.
   }
 
   return {
-    version: 1,
+    version: 2,
     updatedAt: Date.now(),
     stepIndex: 0,
     answers: previewGolden ? { guests: '10-25' } : {},
@@ -200,7 +205,10 @@ function OptionCard({
   onSelect: () => void;
 }) {
   return (
-    <label className={`guest-option${selected ? ' is-selected' : ''}`}>
+    <label
+      className={`guest-option${selected ? ' is-selected' : ''}`}
+      data-option-value={option.value}
+    >
       <input
         type="radio"
         name={name}
@@ -281,7 +289,7 @@ function BBQFunnel() {
 
   useEffect(() => {
     const fullSaved: SavedState = {
-      version: 1,
+      version: 2,
       updatedAt: Date.now(),
       stepIndex,
       answers,
@@ -299,15 +307,15 @@ function BBQFunnel() {
     };
 
     const durableSaved: SavedState = {
-      version: 1,
+      version: 2,
       updatedAt: Date.now(),
       stepIndex: Math.min(stepIndex, 3),
       answers: durableAnswers,
     };
 
     try {
-      window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(fullSaved));
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(durableSaved));
+      window.sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(fullSaved));
+      window.localStorage.setItem(NON_PII_STORAGE_KEY, JSON.stringify(durableSaved));
     } catch {
       // Ignore storage failures; do not block the funnel.
     }
@@ -405,8 +413,10 @@ function BBQFunnel() {
 
   function resetFunnel() {
     try {
-      window.localStorage.removeItem(STORAGE_KEY);
-      window.sessionStorage.removeItem(STORAGE_KEY);
+      window.localStorage.removeItem(NON_PII_STORAGE_KEY);
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+      window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      window.sessionStorage.removeItem(LEGACY_STORAGE_KEY);
     } catch {
       // Ignore storage failures.
     }
@@ -579,6 +589,7 @@ function BBQFunnel() {
                 <input
                   id="phone"
                   className="text-input"
+                  type="tel"
                   inputMode="tel"
                   autoComplete="tel"
                   value={answers.phone || ''}

@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const externalBaseURL = process.env.E2E_BASE_URL;
+
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
@@ -8,18 +10,36 @@ export default defineConfig({
   retries: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: externalBaseURL || 'http://127.0.0.1:4173',
     trace: 'retain-on-failure',
   },
-  webServer: {
-    command: 'npm run dev:test',
-    url: 'http://127.0.0.1:4173/form2/bbq/',
-    reuseExistingServer: false,
-    timeout: 60_000,
-  },
+  webServer: externalBaseURL
+    ? undefined
+    : {
+        command: 'npm run preview:test',
+        url: 'http://127.0.0.1:4173/form2/bbq/',
+        reuseExistingServer: false,
+        timeout: 60_000,
+      },
   projects: [
     {
-      name: 'mobile-390',
+      name: 'mobile-chromium-360x800',
+      use: {
+        ...devices['iPhone 13'],
+        browserName: 'chromium',
+        viewport: { width: 360, height: 800 },
+      },
+    },
+    {
+      name: 'mobile-chromium-375x812',
+      use: {
+        ...devices['iPhone 13'],
+        browserName: 'chromium',
+        viewport: { width: 375, height: 812 },
+      },
+    },
+    {
+      name: 'mobile-chromium-390x844',
       use: {
         ...devices['iPhone 13'],
         browserName: 'chromium',
@@ -27,7 +47,55 @@ export default defineConfig({
       },
     },
     {
-      name: 'desktop-1440',
+      name: 'mobile-chromium-393x852',
+      use: {
+        ...devices['iPhone 13'],
+        browserName: 'chromium',
+        viewport: { width: 393, height: 852 },
+      },
+    },
+    {
+      name: 'mobile-chromium-412x915',
+      use: {
+        ...devices['iPhone 13'],
+        browserName: 'chromium',
+        viewport: { width: 412, height: 915 },
+      },
+    },
+    {
+      name: 'mobile-chromium-430x932',
+      use: {
+        ...devices['iPhone 13'],
+        browserName: 'chromium',
+        viewport: { width: 430, height: 932 },
+      },
+    },
+    {
+      name: 'webkit-safari-390x844',
+      use: {
+        ...devices['iPhone 13'],
+        browserName: 'webkit',
+        viewport: { width: 390, height: 844 },
+      },
+    },
+    {
+      name: 'android-like-chromium-412x915',
+      use: {
+        ...devices['Pixel 7'],
+        browserName: 'chromium',
+        viewport: { width: 412, height: 915 },
+      },
+    },
+    {
+      name: 'tablet-chromium-768x1024',
+      use: {
+        ...devices['iPad (gen 7)'],
+        browserName: 'chromium',
+        viewport: { width: 768, height: 1024 },
+      },
+    },
+    {
+      name: 'desktop-chromium-1440x900',
       use: {
         browserName: 'chromium',
         viewport: { width: 1440, height: 900 },

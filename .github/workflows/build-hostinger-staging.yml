@@ -27,32 +27,103 @@ jobs:
           node-version: '22'
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Build static frontend
-        run: npm run build
+        run: |
+          npm run build
+          node --input-type=module <<'NODE'
+          import { readdirSync, writeFileSync } from 'node:fs';
 
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+          const assets = readdirSync('dist/assets')
+            .filter((name) => /^index-.*\.(js|css)$/.test(name))
+            .map((name) => `assets/${name}`)
+            .sort();
 
-      - name: Run responsive E2E tests
+          writeFileSync('dist/build-info.json', `${JSON.stringify({
+            sourceSha: process.env.GITHUB_SHA,
+            assets,
+          }, null, 2)}\n`);
+          NODE
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Run required E2E matrix against built artifact
         run: npm run test:e2e
 
       - name: Publish dist to hostinger-staging branch
         run: |
           set -euo pipefail
 
-          mkdir -p /tmp/hostinger-dist
-          cp -a dist/. /tmp/hostinger-dist/
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git checkout --orphan hostinger-staging
+          publish_dir="${RUNNER_TEMP}/hostinger-publish"
+          git worktree add --detach "${publish_dir}" "${GITHUB_SHA}"
+          cd "${publish_dir}"
+          git switch --orphan hostinger-staging-publish
           git rm -rf . || true
-          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -a /tmp/hostinger-dist/. .
+          cp -a "${GITHUB_WORKSPACE}/dist/." .
 
           git add -A
           git commit -m "deploy: staging ${GITHUB_SHA}"
           git push --force origin hostinger-staging
+
+      - name: Wait for exact SHA on Hostinger
+        env:
+          STAGING_BUILD_INFO: https://gourmet-corporation.com/form2/build-info.json
+        run: |
+          set -euo pipefail
+
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error \
+              "${STAGING_BUILD_INFO}?sha=${GITHUB_SHA}&attempt=${attempt}" \
+              --output "${RUNNER_TEMP}/live-build-info.json"; then
+              if node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const info = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/live-build-info.json`, 'utf8'));
+          process.exit(info.sourceSha === process.env.GITHUB_SHA ? 0 : 1);
+          NODE
+              then
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+
+          echo "Hostinger did not expose source SHA ${GITHUB_SHA} within 10 minutes." >&2
+          exit 1
+
+      - name: Verify live artifact references and cache policy
+        env:
+          STAGING_URL: https://gourmet-corporation.com/form2/bbq/
+        run: |
+          set -euo pipefail
+
+          curl --fail --silent --show-error \
+            "${STAGING_URL}?sha=${GITHUB_SHA}" \
+            --dump-header "${RUNNER_TEMP}/live-headers.txt" \
+            --output "${RUNNER_TEMP}/live-index.html"
+
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+
+          const root = process.env.RUNNER_TEMP;
+          const info = JSON.parse(readFileSync(`${root}/live-build-info.json`, 'utf8'));
+          const html = readFileSync(`${root}/live-index.html`, 'utf8');
+          const headers = readFileSync(`${root}/live-headers.txt`, 'utf8').toLowerCase();
+
+          for (const asset of info.assets) {
+            if (!html.includes(`/form2/${asset}`)) {
+              throw new Error(`Live HTML does not reference expected asset: ${asset}`);
+            }
+          }
+
+          if (!headers.includes('cache-control:') || !headers.includes('no-store')) {
+            throw new Error('Live HTML is missing the required no-store cache policy.');
+          }
+          NODE
+
+      - name: Run required E2E matrix against exact live deployment
+        run: npm run test:e2e:staging
