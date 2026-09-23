@@ -68,7 +68,7 @@ jobs:
 
           git add -A
           git commit -m "deploy: staging ${GITHUB_SHA}"
-          git push --force origin hostinger-staging
+          git push --force origin HEAD:hostinger-staging
 
       - name: Wait for exact SHA on Hostinger
         env:
