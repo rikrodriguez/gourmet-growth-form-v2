@@ -1,4 +1,14 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { telemetry } from './telemetry/telemetry';
+import {
+  AnswerValue,
+  DateAnswerValue,
+  EventTypeAnswerValue,
+  GuestAnswerValue,
+  ServiceAnswerValue,
+  StepId,
+  ValidationCode,
+} from './telemetry/types';
 
 type Answers = {
   guests?: string;
@@ -20,8 +30,8 @@ type SavedState = {
   answers: Answers;
 };
 
-type Option = {
-  value: string;
+type Option<Value extends AnswerValue = AnswerValue> = {
+  value: Value;
   title: string;
   subtitle?: string;
   icon?: 'people';
@@ -32,8 +42,28 @@ const SESSION_STORAGE_KEY = 'gourmet_growth_v2_bbq_session_v2';
 const NON_PII_STORAGE_KEY = 'gourmet_growth_v2_bbq_non_pii_v2';
 const STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
 const TOTAL_STEPS = 7;
+const TELEMETRY_STEPS: readonly StepId[] = [
+  'guests',
+  'service',
+  'zip',
+  'phone',
+  'event_type',
+  'date',
+  'name',
+  'complete',
+];
 
-const guestOptions: Option[] = [
+const VALIDATION_CODES: Record<Exclude<StepId, 'complete'>, ValidationCode> = {
+  guests: 'guests_required',
+  service: 'service_required',
+  zip: 'zip_invalid',
+  phone: 'phone_invalid',
+  event_type: 'event_type_required',
+  date: 'date_required',
+  name: 'name_required',
+};
+
+const guestOptions: Option<GuestAnswerValue>[] = [
   { value: '10-25', title: '10–25', subtitle: 'Guests' },
   { value: '26-50', title: '26–50', subtitle: 'Guests' },
   { value: '51-100', title: '51–100', subtitle: 'Guests' },
@@ -42,14 +72,14 @@ const guestOptions: Option[] = [
   { value: 'not-sure', title: 'Not sure yet', icon: 'people' },
 ];
 
-const serviceOptions: Option[] = [
+const serviceOptions: Option<ServiceAnswerValue>[] = [
   { value: 'full-service', title: 'Full Service', subtitle: 'Setup, serving & cleanup' },
   { value: 'buffet', title: 'Buffet Setup', subtitle: 'Set up and ready to enjoy' },
   { value: 'drop-off', title: 'Drop-off & Go', subtitle: 'Delivered and ready' },
   { value: 'not-sure', title: 'Not sure yet', subtitle: 'We’ll help you choose' },
 ];
 
-const eventOptions: Option[] = [
+const eventOptions: Option<EventTypeAnswerValue>[] = [
   { value: 'Wedding', title: 'Wedding' },
   { value: 'Birthday', title: 'Birthday' },
   { value: 'Corporate', title: 'Corporate' },
@@ -58,7 +88,7 @@ const eventOptions: Option[] = [
   { value: 'Other', title: 'Other' },
 ];
 
-const dateOptions: Option[] = [
+const dateOptions: Option<DateAnswerValue>[] = [
   { value: 'exact', title: 'Exact date', subtitle: 'I know the date' },
   { value: 'next-2-weeks', title: 'Next 2 weeks', subtitle: 'Soon' },
   { value: 'this-month', title: 'This month', subtitle: 'Within 30 days' },
@@ -193,13 +223,13 @@ function ArrowIcon() {
   );
 }
 
-function OptionCard({
+function OptionCard<Value extends AnswerValue>({
   option,
   selected,
   name,
   onSelect,
 }: {
-  option: Option;
+  option: Option<Value>;
   selected: boolean;
   name: string;
   onSelect: () => void;
@@ -272,7 +302,7 @@ function BBQFunnel() {
 
   const [stepIndex, setStepIndex] = useState(initial.stepIndex);
   const [answers, setAnswers] = useState<Answers>(initial.answers);
-  const knownEventValues = useMemo(() => new Set(eventOptions.map((option) => option.value)), []);
+  const knownEventValues = useMemo(() => new Set<string>(eventOptions.map((option) => option.value)), []);
   const [eventOther, setEventOther] = useState(
     initial.answers.eventType && !knownEventValues.has(initial.answers.eventType)
       ? initial.answers.eventType
@@ -282,10 +312,22 @@ function BBQFunnel() {
     initial.answers.city ? 'found' : 'idle',
   );
   const [announcement, setAnnouncement] = useState('');
+  const step = TELEMETRY_STEPS[stepIndex] ?? 'complete';
+  const initialStep = TELEMETRY_STEPS[initial.stepIndex] ?? 'guests';
+  const isComplete = step === 'complete';
 
   useEffect(() => {
     document.title = 'BBQ Catering in Portland | Gourmet Corp';
   }, []);
+
+  useEffect(() => {
+    telemetry.initialize(initialStep);
+  }, [initialStep]);
+
+  useEffect(() => {
+    telemetry.stepViewed(step);
+    if (step === 'complete') telemetry.formCompleted();
+  }, [step]);
 
   useEffect(() => {
     const fullSaved: SavedState = {
@@ -328,19 +370,6 @@ function BBQFunnel() {
     });
   }, [stepIndex]);
 
-  const step = [
-    'guests',
-    'service',
-    'zip',
-    'phone',
-    'event',
-    'date',
-    'name',
-    'complete',
-  ][stepIndex];
-
-  const isComplete = step === 'complete';
-
   function updateAnswer(key: keyof Answers, value: string) {
     setAnswers((current) => ({ ...current, [key]: value }));
   }
@@ -350,14 +379,31 @@ function BBQFunnel() {
   }
 
   function back() {
+    const targetStep = TELEMETRY_STEPS[Math.max(stepIndex - 1, 0)] ?? 'guests';
+    telemetry.backClicked(step, targetStep);
     setStepIndex((current) => Math.max(current - 1, 0));
   }
 
   function advanceIfValid(valid: boolean, message?: string) {
     if (!valid) {
       if (message) setAnnouncement(message);
+      if (step !== 'complete') telemetry.validationError(step, VALIDATION_CODES[step]);
       return false;
     }
+
+    const completed = telemetry.stepCompleted(
+      step,
+      step === 'zip'
+        ? {
+            zip_valid: /^\d{5}$/.test(answers.zip || ''),
+            geo_resolved: zipLookup === 'found',
+            state: answers.state,
+          }
+        : {},
+    );
+    if (!completed) return false;
+    if (step === 'phone') telemetry.phoneCaptured();
+
     setAnnouncement('');
     next();
     return true;
@@ -424,6 +470,7 @@ function BBQFunnel() {
     setEventOther('');
     setZipLookup('idle');
     setAnnouncement('');
+    telemetry.startNewFunnel();
     setStepIndex(0);
   }
 
@@ -479,7 +526,10 @@ function BBQFunnel() {
                       option={option}
                       selected={answers.guests === option.value}
                       name="guest-count"
-                      onSelect={() => updateAnswer('guests', option.value)}
+                      onSelect={() => {
+                        updateAnswer('guests', option.value);
+                        telemetry.answerSelected('guests', option.value);
+                      }}
                     />
                   ))}
                 </div>
@@ -517,7 +567,10 @@ function BBQFunnel() {
                       option={option}
                       selected={answers.service === option.value}
                       name="service-style"
-                      onSelect={() => updateAnswer('service', option.value)}
+                      onSelect={() => {
+                        updateAnswer('service', option.value);
+                        telemetry.answerSelected('service', option.value);
+                      }}
                     />
                   ))}
                 </div>
@@ -615,7 +668,7 @@ function BBQFunnel() {
             </form>
           )}
 
-          {step === 'event' && (
+          {step === 'event_type' && (
             <form
               onSubmit={(event) => {
                 const valid = currentEventType && (currentEventType !== 'Other' || eventOther.trim().length >= 2);
@@ -637,6 +690,7 @@ function BBQFunnel() {
                       selected={currentEventType === option.value}
                       name="event-type"
                       onSelect={() => {
+                        telemetry.answerSelected('event_type', option.value);
                         if (option.value === 'Other') {
                           updateAnswer('eventType', 'Other');
                         } else {
@@ -694,7 +748,10 @@ function BBQFunnel() {
                       option={option}
                       selected={answers.dateWindow === option.value}
                       name="date-window"
-                      onSelect={() => updateAnswer('dateWindow', option.value)}
+                      onSelect={() => {
+                        updateAnswer('dateWindow', option.value);
+                        telemetry.answerSelected('date', option.value);
+                      }}
                     />
                   ))}
                 </div>

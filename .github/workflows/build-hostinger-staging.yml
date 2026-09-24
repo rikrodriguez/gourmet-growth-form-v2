@@ -31,6 +31,7 @@ jobs:
 
       - name: Build static frontend
         run: |
+          npm run typecheck
           npm run build
           node --input-type=module <<'NODE'
           import { readdirSync, writeFileSync } from 'node:fs';
