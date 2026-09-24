@@ -108,5 +108,13 @@ export default defineConfig({
         viewport: { width: 1440, height: 900 },
       },
     },
-  ],
+  // Local CI keeps every responsive width. The live gate keeps one profile per
+  // required browser/device class so QA writes remain below the production API limit.
+  ].filter(({ name }) => !externalBaseURL || [
+    'mobile-chromium-390x844',
+    'webkit-safari-390x844',
+    'android-like-chromium-412x915',
+    'tablet-chromium-768x1024',
+    'desktop-chromium-1440x900',
+  ].includes(name)),
 });
