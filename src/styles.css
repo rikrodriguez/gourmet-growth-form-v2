@@ -519,6 +519,19 @@ fieldset legend {
   outline-offset: 3px;
 }
 
+.delivery-error {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #b84b42;
+  border-radius: 10px;
+  background: #fff4f2;
+  color: #842c25;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.4;
+  text-align: center;
+}
+
 .privacy-note {
   display: flex;
   align-items: center;

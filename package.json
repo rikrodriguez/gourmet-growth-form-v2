@@ -11,20 +11,35 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "start": "node server.mjs",
+    "api:start": "tsx src/backend/server.ts",
+    "api:dev": "tsx watch src/backend/server.ts",
+    "db:migrate": "tsx src/backend/migrate.ts",
+    "db:migrate:down": "tsx src/backend/migrate.ts --down --confirm-down",
+    "db:cleanup:qa": "tsx src/backend/cleanup-qa.ts --confirm",
+    "test:unit": "tsx --test tests/unit/**/*.test.ts",
+    "test:db": "tsx --test tests/integration/**/*.test.ts",
+    "test": "npm run test:unit && npm run test:db",
     "test:e2e": "playwright test",
     "test:e2e:staging": "E2E_BASE_URL=https://gourmet-corporation.com playwright test",
     "preview:test": "vite preview --host 127.0.0.1 --port 4173"
   },
   "dependencies": {
+    "@fastify/cors": "11.3.0",
+    "@fastify/helmet": "13.1.1",
+    "@fastify/rate-limit": "10.3.0",
     "@fastify/static": "10.1.4",
     "fastify": "5.12.5",
+    "pg": "8.23.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "tsx": "4.23.15"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "22.20.4",
+    "@types/pg": "8.23.1",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
-    "@playwright/test": "1.63.0",
     "@vitejs/plugin-react": "6.1.1",
     "typescript": "7.0.2",
     "vite": "8.3.0"

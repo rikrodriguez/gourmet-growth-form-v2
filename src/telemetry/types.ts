@@ -122,9 +122,16 @@ export type TelemetryDebugSnapshot = {
   events: GourmetTelemetryEvent[];
 };
 
+export type TelemetryLeadContext = {
+  visitor_id: string;
+  session_id: string;
+  attribution: AttributionContext;
+};
+
 export type GourmetTelemetryDebug = {
   getSnapshot: () => TelemetryDebugSnapshot;
   getEvents: () => GourmetTelemetryEvent[];
+  getPendingEvents: () => GourmetTelemetryEvent[];
 };
 
 declare global {

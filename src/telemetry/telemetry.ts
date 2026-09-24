@@ -1,5 +1,7 @@
 import { resolveAttribution } from './attribution';
+import { gourmetApiBaseUrl } from '../api/config';
 import { resolveTelemetryIdentity, TelemetryIdentity } from './identity';
+import { createTelemetryTransport, deliverTelemetryBatch } from './transport';
 import {
   AnswerSelectedProperties,
   AttributionContext,
@@ -12,13 +14,19 @@ import {
   StepId,
   TELEMETRY_SCHEMA_VERSION,
   TelemetryDebugSnapshot,
+  TelemetryLeadContext,
   TelemetryEventName,
   TelemetryEventProperties,
   ValidationCode,
 } from './types';
 
 const QUEUE_STORAGE_KEY = 'gourmet_growth_telemetry_queue_v1';
+const DEBUG_HISTORY_STORAGE_KEY = 'gourmet_growth_telemetry_debug_history_v1';
+const COMPLETION_STORAGE_KEY = 'gourmet_growth_telemetry_completed_v1';
 const QUEUE_LIMIT = 100;
+const DELIVERY_BATCH_SIZE = 20;
+const MAX_DELIVERY_RETRIES = 5;
+const transport = createTelemetryTransport(gourmetApiBaseUrl);
 const EVENT_NAMES = new Set<TelemetryEventName>([
   'session_started',
   'funnel_resumed',
@@ -55,12 +63,17 @@ class GourmetTelemetry {
   private identity: TelemetryIdentity | null = null;
   private attribution: AttributionContext | null = null;
   private events: GourmetTelemetryEvent[] = [];
+  private debugEvents: GourmetTelemetryEvent[] = [];
   private currentStep: StepId = 'guests';
   private stepStartedAt = new Map<StepId, number>();
   private completedCurrentView = false;
   private completionTracked = false;
+  private phoneCapturedCurrentView = false;
   private lastVisibility: 'hidden' | 'visible' | null = null;
   private pagehideTracked = false;
+  private deliveryTimer: number | null = null;
+  private deliveryInFlight = false;
+  private deliveryRetry = 0;
 
   initialize(currentStep: StepId) {
     if (this.initialized) return;
@@ -69,7 +82,8 @@ class GourmetTelemetry {
       this.identity = resolveTelemetryIdentity();
       this.attribution = resolveAttribution();
       this.events = this.loadQueue(this.identity.sessionId);
-      this.completionTracked = this.events.some((event) => event.event_name === 'form_completed');
+      this.debugEvents = this.loadDebugHistory(this.identity.sessionId);
+      this.completionTracked = window.sessionStorage.getItem(COMPLETION_STORAGE_KEY) === 'true';
       this.currentStep = currentStep;
       this.initialized = true;
       this.exposeDebug();
@@ -80,6 +94,7 @@ class GourmetTelemetry {
       } else {
         this.emit('funnel_resumed', currentStep, { resumed_step: currentStep });
       }
+      this.scheduleDelivery(0);
     } catch {
       // Telemetry is non-blocking. The funnel remains usable if storage is unavailable.
     }
@@ -89,6 +104,7 @@ class GourmetTelemetry {
     if (!this.initialized || this.currentStep === step && this.stepStartedAt.has(step)) return;
     this.currentStep = step;
     this.completedCurrentView = false;
+    this.phoneCapturedCurrentView = false;
     this.stepStartedAt.set(step, performance.now());
     this.emit('step_viewed', step, {});
   }
@@ -130,19 +146,41 @@ class GourmetTelemetry {
   }
 
   phoneCaptured() {
+    if (this.currentStep !== 'phone' || this.phoneCapturedCurrentView) return;
+    this.phoneCapturedCurrentView = true;
     this.emit('phone_captured', 'phone', { valid: true, digit_count: 10 });
   }
 
   formCompleted() {
     if (this.completionTracked) return;
     this.completionTracked = true;
+    try {
+      window.sessionStorage.setItem(COMPLETION_STORAGE_KEY, 'true');
+    } catch {
+      // The in-memory guard still prevents duplicate completion events.
+    }
     this.emit('form_completed', 'complete', { completed_step_count: 7 });
+  }
+
+  getLeadContext(): TelemetryLeadContext | null {
+    if (!this.identity || !this.attribution) return null;
+    return clone({
+      visitor_id: this.identity.visitorId,
+      session_id: this.identity.sessionId,
+      attribution: this.attribution,
+    });
   }
 
   startNewFunnel() {
     this.completionTracked = false;
     this.completedCurrentView = false;
+    this.phoneCapturedCurrentView = false;
     this.stepStartedAt.clear();
+    try {
+      window.sessionStorage.removeItem(COMPLETION_STORAGE_KEY);
+    } catch {
+      // Ignore unavailable browser storage.
+    }
   }
 
   private emit<Name extends TelemetryEventName>(
@@ -173,7 +211,10 @@ class GourmetTelemetry {
     } as GourmetTelemetryEvent;
 
     this.events = [...this.events, event].slice(-QUEUE_LIMIT);
+    this.debugEvents = [...this.debugEvents, event].slice(-QUEUE_LIMIT);
     this.persistQueue();
+    this.persistDebugHistory();
+    this.scheduleDelivery();
   }
 
   private loadQueue(sessionId: string): GourmetTelemetryEvent[] {
@@ -201,6 +242,31 @@ class GourmetTelemetry {
     }
   }
 
+  private loadDebugHistory(sessionId: string): GourmetTelemetryEvent[] {
+    try {
+      const parsed = JSON.parse(window.sessionStorage.getItem(DEBUG_HISTORY_STORAGE_KEY) ?? '[]') as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((item): item is GourmetTelemetryEvent => {
+        if (!item || typeof item !== 'object') return false;
+        const candidate = item as Partial<GourmetTelemetryEvent>;
+        return candidate.schema_version === TELEMETRY_SCHEMA_VERSION
+          && candidate.session_id === sessionId
+          && typeof candidate.event_id === 'string'
+          && EVENT_NAMES.has(candidate.event_name as TelemetryEventName);
+      }).slice(-QUEUE_LIMIT);
+    } catch {
+      return [];
+    }
+  }
+
+  private persistDebugHistory() {
+    try {
+      window.sessionStorage.setItem(DEBUG_HISTORY_STORAGE_KEY, JSON.stringify(this.debugEvents));
+    } catch {
+      // Debug history is optional and never blocks the funnel or delivery queue.
+    }
+  }
+
   private attachLifecycleSignals() {
     document.addEventListener('visibilitychange', () => {
       const state = document.visibilityState === 'hidden' ? 'hidden' : 'visible';
@@ -216,11 +282,42 @@ class GourmetTelemetry {
         reason: 'pagehide',
         last_step: this.currentStep,
       });
+      transport.beacon(this.events.slice(0, DELIVERY_BATCH_SIZE));
     });
 
     window.addEventListener('pageshow', () => {
       this.pagehideTracked = false;
     });
+  }
+
+  private scheduleDelivery(delay = 500) {
+    if (!transport.configured || this.events.length === 0 || this.deliveryInFlight || this.deliveryTimer !== null) return;
+    if (this.deliveryRetry >= MAX_DELIVERY_RETRIES) this.deliveryRetry = 0;
+    this.deliveryTimer = window.setTimeout(() => {
+      this.deliveryTimer = null;
+      void this.flushDelivery();
+    }, delay);
+  }
+
+  private async flushDelivery() {
+    if (!transport.configured || this.deliveryInFlight || this.events.length === 0) return;
+    this.deliveryInFlight = true;
+    try {
+      const result = await deliverTelemetryBatch(this.events, transport, DELIVERY_BATCH_SIZE);
+      this.events = result.remainingEvents;
+      this.persistQueue();
+      this.deliveryRetry = 0;
+    } catch {
+      this.deliveryRetry += 1;
+    } finally {
+      this.deliveryInFlight = false;
+    }
+
+    if (this.events.length === 0) return;
+    if (this.deliveryRetry < MAX_DELIVERY_RETRIES) {
+      const delay = Math.min(15_000, 750 * 2 ** this.deliveryRetry);
+      this.scheduleDelivery(delay);
+    }
   }
 
   private snapshot(): TelemetryDebugSnapshot {
@@ -231,7 +328,7 @@ class GourmetTelemetry {
       visitor_id: this.identity.visitorId,
       session_id: this.identity.sessionId,
       attribution: this.attribution,
-      events: this.events,
+      events: this.debugEvents,
     });
   }
 
@@ -240,6 +337,7 @@ class GourmetTelemetry {
     window.__GOURMET_TELEMETRY_DEBUG__ = {
       getSnapshot: () => this.snapshot(),
       getEvents: () => this.snapshot().events,
+      getPendingEvents: () => clone(this.events),
     };
   }
 }

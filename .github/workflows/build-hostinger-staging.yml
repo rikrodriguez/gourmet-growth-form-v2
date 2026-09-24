@@ -17,6 +17,21 @@ jobs:
   build-and-publish:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: gourmet_growth_v2_test
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gourmet_growth_v2_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout selected branch
         uses: actions/checkout@v5
@@ -29,7 +44,53 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Run backend unit tests
+        run: npm run test:unit
+
+      - name: Create isolated CI application role
+        env:
+          TEST_ADMIN_DATABASE_URL: postgres://postgres@127.0.0.1:5432/gourmet_growth_v2_test
+        run: |
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const client = new pg.Client({ connectionString: process.env.TEST_ADMIN_DATABASE_URL });
+          await client.connect();
+          await client.query('CREATE ROLE gourmet_growth_app_test LOGIN');
+          await client.end();
+          NODE
+
+      - name: Apply migrations to isolated CI PostgreSQL
+        env:
+          MIGRATION_DATABASE_URL: postgres://postgres@127.0.0.1:5432/gourmet_growth_v2_test
+          APP_DATABASE_ROLE: gourmet_growth_app_test
+        run: npm run db:migrate
+
+      - name: Run backend PostgreSQL integration tests
+        env:
+          TEST_DATABASE_URL: postgres://gourmet_growth_app_test@127.0.0.1:5432/gourmet_growth_v2_test
+          TEST_ADMIN_DATABASE_URL: postgres://postgres@127.0.0.1:5432/gourmet_growth_v2_test
+        run: npm run test:db
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Run configured client delivery contracts
+        env:
+          VITE_GOURMET_API_BASE_URL: http://127.0.0.1:4173
+          E2E_API_MODE: mock
+        run: |
+          npm run build
+          npx playwright test tests/e2e/backend-client.spec.ts --project=mobile-chromium-390x844
+
+      - name: Validate configured staging API QA isolation
+        if: ${{ vars.VITE_GOURMET_API_BASE_URL != '' }}
+        env:
+          E2E_QA_SECRET: ${{ secrets.E2E_QA_SECRET }}
+        run: test -n "${E2E_QA_SECRET}"
+
       - name: Build static frontend
+        env:
+          VITE_GOURMET_API_BASE_URL: ${{ vars.VITE_GOURMET_API_BASE_URL }}
         run: |
           npm run typecheck
           npm run build
@@ -47,10 +108,9 @@ jobs:
           }, null, 2)}\n`);
           NODE
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium webkit
-
       - name: Run required E2E matrix against built artifact
+        env:
+          E2E_QA_SECRET: ${{ secrets.E2E_QA_SECRET }}
         run: npm run test:e2e
 
       - name: Publish dist to hostinger-staging branch
@@ -136,4 +196,6 @@ jobs:
           exit 1
 
       - name: Run required E2E matrix against exact live deployment
+        env:
+          E2E_QA_SECRET: ${{ secrets.E2E_QA_SECRET }}
         run: npm run test:e2e:staging

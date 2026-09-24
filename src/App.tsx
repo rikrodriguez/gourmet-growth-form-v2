@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { leadClient } from './api/lead-client';
 import { telemetry } from './telemetry/telemetry';
 import {
   AnswerValue,
@@ -312,6 +313,8 @@ function BBQFunnel() {
     initial.answers.city ? 'found' : 'idle',
   );
   const [announcement, setAnnouncement] = useState('');
+  const [deliveryError, setDeliveryError] = useState('');
+  const [isSavingLead, setIsSavingLead] = useState(false);
   const step = TELEMETRY_STEPS[stepIndex] ?? 'complete';
   const initialStep = TELEMETRY_STEPS[initial.stepIndex] ?? 'guests';
   const isComplete = step === 'complete';
@@ -384,11 +387,56 @@ function BBQFunnel() {
     setStepIndex((current) => Math.max(current - 1, 0));
   }
 
-  function advanceIfValid(valid: boolean, message?: string) {
+  async function advanceIfValid(
+    valid: boolean,
+    message?: string,
+    leadUpdates?: {
+      event_type?: string;
+      date_window?: string;
+      exact_date?: string | null;
+      first_name?: string;
+    },
+  ) {
     if (!valid) {
       if (message) setAnnouncement(message);
       if (step !== 'complete') telemetry.validationError(step, VALIDATION_CODES[step]);
       return false;
+    }
+
+    if (isSavingLead) return false;
+    setDeliveryError('');
+
+    if (step === 'phone') telemetry.phoneCaptured();
+    if (leadClient.isConfigured && (step === 'phone' || leadUpdates)) {
+      const context = telemetry.getLeadContext();
+      if (!context) {
+        const errorMessage = 'We could not securely save your request. Please try again.';
+        setAnnouncement(errorMessage);
+        setDeliveryError(errorMessage);
+        return false;
+      }
+
+      setIsSavingLead(true);
+      try {
+        if (step === 'phone') {
+          await leadClient.capturePhone(context, normalizedPhoneDigits(answers.phone || ''), {
+            guest_range: answers.guests,
+            service_style: answers.service,
+            zip_code: answers.zip,
+          });
+        } else if (leadUpdates) {
+          const leadId = leadClient.getLeadId();
+          if (!leadId) throw new Error('missing_lead_id');
+          await leadClient.update(leadId, context.session_id, leadUpdates);
+        }
+      } catch {
+        const errorMessage = 'We could not securely save your request. Check your connection and try again.';
+        setAnnouncement(errorMessage);
+        setDeliveryError(errorMessage);
+        return false;
+      } finally {
+        setIsSavingLead(false);
+      }
     }
 
     const completed = telemetry.stepCompleted(
@@ -402,16 +450,21 @@ function BBQFunnel() {
         : {},
     );
     if (!completed) return false;
-    if (step === 'phone') telemetry.phoneCaptured();
 
     setAnnouncement('');
+    setDeliveryError('');
     next();
     return true;
   }
 
-  function continueWith(event: FormEvent, valid: boolean, message?: string) {
+  function continueWith(
+    event: FormEvent,
+    valid: boolean,
+    message?: string,
+    leadUpdates?: Parameters<typeof advanceIfValid>[2],
+  ) {
     event.preventDefault();
-    advanceIfValid(valid, message);
+    void advanceIfValid(valid, message, leadUpdates);
   }
 
   async function resolveZip(zip: string) {
@@ -470,6 +523,9 @@ function BBQFunnel() {
     setEventOther('');
     setZipLookup('idle');
     setAnnouncement('');
+    setDeliveryError('');
+    setIsSavingLead(false);
+    leadClient.reset();
     telemetry.startNewFunnel();
     setStepIndex(0);
   }
@@ -548,7 +604,7 @@ function BBQFunnel() {
                 className="continue-button"
                 type="button"
                 disabled={!answers.guests}
-                onClick={() => advanceIfValid(Boolean(answers.guests), 'Choose a guest range to continue.')}
+                onClick={() => void advanceIfValid(Boolean(answers.guests), 'Choose a guest range to continue.')}
               >
                 <span>Continue</span><ArrowIcon />
               </button>
@@ -581,7 +637,7 @@ function BBQFunnel() {
                 className="continue-button"
                 type="button"
                 disabled={!answers.service}
-                onClick={() => advanceIfValid(Boolean(answers.service), 'Choose a service style to continue.')}
+                onClick={() => void advanceIfValid(Boolean(answers.service), 'Choose a service style to continue.')}
               >
                 <span>Continue</span><ArrowIcon />
               </button>
@@ -619,7 +675,7 @@ function BBQFunnel() {
                 className="continue-button"
                 type="button"
                 disabled={!/^\d{5}$/.test(answers.zip || '')}
-                onClick={() => advanceIfValid(/^\d{5}$/.test(answers.zip || ''), 'Enter a 5-digit ZIP code.')}
+                onClick={() => void advanceIfValid(/^\d{5}$/.test(answers.zip || ''), 'Enter a 5-digit ZIP code.')}
               >
                 <span>Continue</span><ArrowIcon />
               </button>
@@ -657,13 +713,13 @@ function BBQFunnel() {
               <button
                 className="continue-button"
                 type="button"
-                disabled={normalizedPhoneDigits(answers.phone || '').length !== 10}
-                onClick={() => advanceIfValid(
+                disabled={normalizedPhoneDigits(answers.phone || '').length !== 10 || isSavingLead}
+                onClick={() => void advanceIfValid(
                   normalizedPhoneDigits(answers.phone || '').length === 10,
                   'Enter a valid 10-digit phone number.',
                 )}
               >
-                <span>Continue</span><ArrowIcon />
+                <span>{isSavingLead ? 'Saving securely…' : 'Continue'}</span><ArrowIcon />
               </button>
             </form>
           )}
@@ -675,7 +731,12 @@ function BBQFunnel() {
                 if (valid && currentEventType === 'Other') {
                   updateAnswer('eventType', eventOther.trim());
                 }
-                continueWith(event, Boolean(valid), 'Choose or describe your event type.');
+                continueWith(
+                  event,
+                  Boolean(valid),
+                  'Choose or describe your event type.',
+                  valid ? { event_type: currentEventType === 'Other' ? eventOther.trim() : currentEventType } : undefined,
+                );
               }}
             >
               <fieldset>
@@ -721,22 +782,34 @@ function BBQFunnel() {
               <button
                 className="continue-button"
                 type="button"
-                disabled={!currentEventType || (currentEventType === 'Other' && eventOther.trim().length < 2)}
+                disabled={!currentEventType || (currentEventType === 'Other' && eventOther.trim().length < 2) || isSavingLead}
                 onClick={() => {
                   const valid = Boolean(currentEventType) && (currentEventType !== 'Other' || eventOther.trim().length >= 2);
                   if (valid && currentEventType === 'Other') {
                     updateAnswer('eventType', eventOther.trim());
                   }
-                  advanceIfValid(valid, 'Choose or describe your event type.');
+                  void advanceIfValid(
+                    valid,
+                    'Choose or describe your event type.',
+                    valid ? { event_type: currentEventType === 'Other' ? eventOther.trim() : currentEventType } : undefined,
+                  );
                 }}
               >
-                <span>Continue</span><ArrowIcon />
+                <span>{isSavingLead ? 'Saving securely…' : 'Continue'}</span><ArrowIcon />
               </button>
             </form>
           )}
 
           {step === 'date' && (
-            <form onSubmit={(event) => continueWith(event, dateValid, 'Choose a timing option to continue.')}>
+            <form onSubmit={(event) => continueWith(
+              event,
+              dateValid,
+              'Choose a timing option to continue.',
+              dateValid ? {
+                date_window: answers.dateWindow,
+                exact_date: answers.dateWindow === 'exact' ? answers.exactDate : null,
+              } : undefined,
+            )}>
               <fieldset>
                 <legend>When is your event?</legend>
                 <p className="question-help">An exact date is optional. A rough window is enough.</p>
@@ -782,10 +855,17 @@ function BBQFunnel() {
               <button
                 className="continue-button"
                 type="button"
-                disabled={!dateValid}
-                onClick={() => advanceIfValid(dateValid, 'Choose a timing option to continue.')}
+                disabled={!dateValid || isSavingLead}
+                onClick={() => void advanceIfValid(
+                  dateValid,
+                  'Choose a timing option to continue.',
+                  dateValid ? {
+                    date_window: answers.dateWindow,
+                    exact_date: answers.dateWindow === 'exact' ? answers.exactDate : null,
+                  } : undefined,
+                )}
               >
-                <span>Continue</span><ArrowIcon />
+                <span>{isSavingLead ? 'Saving securely…' : 'Continue'}</span><ArrowIcon />
               </button>
             </form>
           )}
@@ -796,6 +876,9 @@ function BBQFunnel() {
                 event,
                 (answers.name || '').trim().length >= 2,
                 'Enter your first name.',
+                (answers.name || '').trim().length >= 2
+                  ? { first_name: (answers.name || '').trim() }
+                  : undefined,
               )}
             >
               <fieldset>
@@ -817,10 +900,16 @@ function BBQFunnel() {
               <button
                 className="continue-button"
                 type="button"
-                disabled={(answers.name || '').trim().length < 2}
-                onClick={() => advanceIfValid((answers.name || '').trim().length >= 2, 'Enter your first name.')}
+                disabled={(answers.name || '').trim().length < 2 || isSavingLead}
+                onClick={() => void advanceIfValid(
+                  (answers.name || '').trim().length >= 2,
+                  'Enter your first name.',
+                  (answers.name || '').trim().length >= 2
+                    ? { first_name: (answers.name || '').trim() }
+                    : undefined,
+                )}
               >
-                <span>Finish</span><ArrowIcon />
+                <span>{isSavingLead ? 'Saving securely…' : 'Finish'}</span><ArrowIcon />
               </button>
             </form>
           )}
@@ -849,6 +938,7 @@ function BBQFunnel() {
 
           {!isComplete && (
             <>
+              {deliveryError && <p className="delivery-error" role="alert">{deliveryError}</p>}
               <p className="privacy-note"><LockIcon />Your information is secure and never shared.</p>
               <p className="sr-only" aria-live="polite">{announcement}</p>
             </>

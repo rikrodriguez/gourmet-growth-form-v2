@@ -1,6 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const externalBaseURL = process.env.E2E_BASE_URL;
+const qaSecret = process.env.E2E_QA_SECRET;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -12,6 +13,9 @@ export default defineConfig({
   use: {
     baseURL: externalBaseURL || 'http://127.0.0.1:4173',
     trace: 'retain-on-failure',
+    extraHTTPHeaders: qaSecret
+      ? { 'x-gourmet-qa-test': 'true', 'x-gourmet-qa-secret': qaSecret }
+      : undefined,
   },
   webServer: externalBaseURL
     ? undefined
