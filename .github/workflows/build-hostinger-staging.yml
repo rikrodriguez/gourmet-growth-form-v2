@@ -82,6 +82,7 @@ jobs:
       - name: Build backend service images
         run: |
           docker build --file Dockerfile.api --tag gourmet-growth-api:${GITHUB_SHA} .
+          docker build --file Dockerfile.api --tag gourmet-growth-worker:${GITHUB_SHA} .
           docker build --file Dockerfile.dashboard --tag gourmet-growth-dashboard:${GITHUB_SHA} .
 
       - name: Run configured client delivery contracts

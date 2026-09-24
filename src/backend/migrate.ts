@@ -79,7 +79,9 @@ try {
       growth_v2.sessions,
       growth_v2.attribution_touches,
       growth_v2.leads,
-      growth_v2.lead_answers
+      growth_v2.lead_answers,
+      growth_v2.crm_outbox,
+      growth_v2.crm_worker_state
       TO ${appRole}`);
     await client.query(`GRANT SELECT, INSERT ON growth_v2.events TO ${appRole}`);
     await client.query(`GRANT SELECT ON growth_v2.staff_users TO ${appRole}`);

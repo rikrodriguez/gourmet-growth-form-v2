@@ -170,6 +170,12 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
     assert.equal(storedLead.rows[0].count, 1);
     assert.notEqual(storedLead.rows[0].ciphertext, rawPhone);
     assert.ok(!JSON.stringify(storedLead.rows[0]).includes(rawPhone));
+    const queued = await inspection.query(
+      `SELECT count(*)::int AS count,max(status) AS status,max(payload_version)::int AS version
+       FROM growth_v2.crm_outbox WHERE lead_id=$1`,
+      [leadId],
+    );
+    assert.deepEqual(queued.rows[0], { count: 1, status: 'pending', version: 1 });
 
     const updated = await app.inject({
       method: 'PATCH', url: `/v1/leads/${leadId}`,
@@ -185,6 +191,12 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
       date_window: 'still-deciding', event_type: 'Corporate', first_name: 'QA Test',
       guest_range: '26-50', service_style: 'full-service', zip_code: '97205',
     });
+    const coalesced = await inspection.query(
+      `SELECT count(*)::int AS count,max(payload_version)::int AS version,max(status) AS status
+       FROM growth_v2.crm_outbox WHERE lead_id=$1`,
+      [leadId],
+    );
+    assert.deepEqual(coalesced.rows[0], { count: 1, version: 2, status: 'pending' });
 
     const arbitrary = await app.inject({
       method: 'PATCH', url: `/v1/leads/${leadId}`,
@@ -192,6 +204,33 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
       payload: { status: 'won' },
     });
     assert.equal(arbitrary.statusCode, 422);
+  });
+
+  it('rolls back the lead when scheduling its outbox job fails', async () => {
+    if (!process.env.TEST_ADMIN_DATABASE_URL) return;
+    await inspection.query(`
+      CREATE OR REPLACE FUNCTION public.reject_test_crm_outbox() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'forced outbox failure'; END $$;
+      CREATE TRIGGER reject_test_crm_outbox BEFORE INSERT ON growth_v2.crm_outbox
+      FOR EACH ROW EXECUTE FUNCTION public.reject_test_crm_outbox();
+    `);
+    const sessionId = randomUUID();
+    try {
+      const response = await app.inject({
+        method: 'POST', url: '/v1/leads/capture-phone',
+        headers: { origin, 'content-type': 'application/json' },
+        payload: {
+          visitor_id: randomUUID(), session_id: sessionId, phone: '5035550199',
+          intent_cluster: 'bbq', idempotency_key: randomUUID(),
+        },
+      });
+      assert.equal(response.statusCode, 503);
+      const result = await inspection.query('SELECT count(*)::int AS count FROM growth_v2.leads WHERE session_id=$1', [sessionId]);
+      assert.equal(result.rows[0].count, 0);
+    } finally {
+      await inspection.query('DROP TRIGGER IF EXISTS reject_test_crm_outbox ON growth_v2.crm_outbox');
+      await inspection.query('DROP FUNCTION IF EXISTS public.reject_test_crm_outbox()');
+    }
   });
 
   it('rejects invalid phone input without creating a lead', async () => {

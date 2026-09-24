@@ -6,7 +6,43 @@ x-dashboard-image: &dashboard-image
     context: https://github.com/rikrodriguez/gourmet-growth-form-v2.git#${GIT_SHA}
     dockerfile: Dockerfile.dashboard
 
+x-worker-image: &worker-image
+  image: gourmet-growth-v2-worker:${GIT_SHA}
+  build:
+    context: https://github.com/rikrodriguez/gourmet-growth-form-v2.git#${GIT_SHA}
+    dockerfile: Dockerfile.api
+
 services:
+  crm-worker:
+    <<: *worker-image
+    restart: unless-stopped
+    depends_on:
+      permissions:
+        condition: service_completed_successfully
+    command: ["npm", "run", "crm:worker"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${APP_DATABASE_ROLE}:${APP_DATABASE_PASSWORD}@db:5432/${POSTGRES_DB}
+      LEAD_ENCRYPTION_KEY_BASE64: ${LEAD_ENCRYPTION_KEY_BASE64}
+      LEAD_ENCRYPTION_KEY_ID: v1
+      MONDAY_API_TOKEN: ${MONDAY_API_TOKEN}
+      MONDAY_BOARD_ID: "18403945258"
+      MONDAY_GROUP_ID: group_mm1etwgc
+      CRM_WORKER_BATCH_SIZE: 10
+      CRM_WORKER_CONCURRENCY: 2
+      CRM_WORKER_POLL_MS: 10000
+      CRM_WORKER_MAX_ATTEMPTS: 8
+      CRM_WORKER_LEASE_MS: 120000
+      CRM_AMBIGUOUS_CREATE_WINDOW_MS: 1500000
+      GIT_SHA: ${GIT_SHA}
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
   dashboard:
     <<: *dashboard-image
     restart: unless-stopped

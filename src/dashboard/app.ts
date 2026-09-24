@@ -173,6 +173,7 @@ export async function buildDashboardApp({ config, store, serveStatic = true }: D
   });
   app.get('/v1/admin/attribution', { preHandler: requireStaff }, async (request) =>
     store.attribution(parseReportingRange(request.query as Record<string, unknown>)));
+  app.get('/v1/admin/crm/health', { preHandler: requireStaff }, async () => store.crmHealth());
 
   if (serveStatic) {
     await app.register(fastifyStatic, { root: config.staticDirectory, prefix: '/', index: ['index.html'] });
@@ -187,4 +188,3 @@ export async function buildDashboardApp({ config, store, serveStatic = true }: D
   app.addHook('onClose', async () => store.close());
   return app;
 }
-

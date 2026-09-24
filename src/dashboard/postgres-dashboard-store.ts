@@ -390,6 +390,7 @@ export class PostgresDashboardStore implements DashboardStore {
     const result = await this.pool.query(
       `WITH base AS (
        SELECT l.lead_id,l.session_id,l.status,l.created_at,l.updated_at,l.is_qa,l.intent_cluster,
+        l.crm_status,l.monday_item_url,l.monday_synced_at,l.crm_last_error_code,
         max(a.field_value) FILTER (WHERE a.field_key='event_type') AS event_type,
         max(a.field_value) FILTER (WHERE a.field_key='guest_range') AS guest_range,
         max(a.field_value) FILTER (WHERE a.field_key='service_style') AS service_style,
@@ -429,7 +430,8 @@ export class PostgresDashboardStore implements DashboardStore {
 
   async leadDetail(leadId: string, includeQa: boolean): Promise<Record<string, unknown> | null> {
     const lead = await this.pool.query(
-      `SELECT lead_id,session_id,visitor_id,intent_cluster,status,is_qa,created_at,updated_at
+      `SELECT lead_id,session_id,visitor_id,intent_cluster,status,is_qa,created_at,updated_at,
+              crm_status,monday_item_url,monday_synced_at,crm_last_error_code,crm_last_error_at
        FROM growth_v2.leads WHERE lead_id=$1 AND ($2::boolean OR NOT is_qa) AND deleted_at IS NULL`,
       [leadId, includeQa],
     );
@@ -478,6 +480,21 @@ export class PostgresDashboardStore implements DashboardStore {
       (groups[row.dimension] ??= []).push(item);
     }
     return { range: rangeMeta(range), groups };
+  }
+
+  async crmHealth(): Promise<Record<string, unknown>> {
+    const counts = await this.pool.query(
+      `SELECT count(*) FILTER (WHERE status='pending')::int AS pending,
+              count(*) FILTER (WHERE status='retry')::int AS retry,
+              count(*) FILTER (WHERE status='processing')::int AS processing,
+              count(*) FILTER (WHERE status='dead')::int AS dead
+       FROM growth_v2.crm_outbox`,
+    );
+    const worker = await this.pool.query(
+      `SELECT worker_name,last_started_at,last_poll_at,last_success_at,git_sha
+       FROM growth_v2.crm_worker_state WHERE worker_name='monday'`,
+    );
+    return { counts: counts.rows[0], worker: worker.rows[0] ?? null };
   }
 
   async close() {

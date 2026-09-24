@@ -42,6 +42,7 @@ function fakeStore(options: { enabled?: boolean } = {}): DashboardStore & { revo
     async leads() { return { rows: [], next_cursor: null }; },
     async leadDetail() { return null; },
     async attribution() { return { groups: {} }; },
+    async crmHealth() { return { counts: { pending: 0, retry: 0, processing: 0, dead: 0 }, worker: null }; },
     async close() {},
   };
 }

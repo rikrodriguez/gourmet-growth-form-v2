@@ -230,6 +230,32 @@ class PostgresGrowthDataStore implements GrowthDataStore {
         await this.persistAttribution(client, input.session_id, 'first', input.attribution.first_touch);
         await this.persistAttribution(client, input.session_id, 'latest', input.attribution.latest_touch);
       }
+      await client.query(
+        `INSERT INTO growth_v2.crm_outbox (outbox_id, lead_id, dedupe_key)
+         VALUES ($1, $2, $1)
+         ON CONFLICT (lead_id) DO NOTHING`,
+        [randomUUID(), result.leadId],
+      );
+      if (result.status === 'updated') {
+        await client.query(
+          `UPDATE growth_v2.crm_outbox
+           SET payload_version=payload_version+1,
+               operation=CASE WHEN delivered_version=0 THEN 'create_lead' ELSE 'update_lead' END,
+               status=CASE WHEN status IN ('dead','processing') THEN status ELSE 'pending' END,
+               next_attempt_at=CASE WHEN status='processing' THEN next_attempt_at ELSE now() END,
+               completed_at=NULL,updated_at=now()
+           WHERE lead_id=$1`,
+          [result.leadId],
+        );
+      }
+      await client.query(
+        `UPDATE growth_v2.leads SET crm_status = CASE
+           WHEN crm_status='dead' THEN 'dead'
+           WHEN $2 OR crm_status='not_queued' THEN 'pending'
+           ELSE crm_status END
+         WHERE lead_id = $1`,
+        [result.leadId, result.status === 'updated'],
+      );
       return result;
     });
   }
@@ -245,6 +271,22 @@ class PostgresGrowthDataStore implements GrowthDataStore {
       );
       if (!found.rowCount) return false;
       await this.persistLeadAnswers(client, leadId, answers);
+      await client.query(
+        `UPDATE growth_v2.crm_outbox
+         SET payload_version = payload_version + 1,
+             operation = CASE WHEN delivered_version = 0 THEN 'create_lead' ELSE 'update_lead' END,
+             status = CASE WHEN status IN ('dead','processing') THEN status ELSE 'pending' END,
+             next_attempt_at = CASE WHEN status='processing' THEN next_attempt_at ELSE now() END,
+             completed_at = NULL, updated_at = now()
+         WHERE lead_id = $1`,
+        [leadId],
+      );
+      await client.query(
+        `UPDATE growth_v2.leads
+         SET crm_status = CASE WHEN crm_status = 'dead' THEN 'dead' ELSE 'pending' END
+         WHERE lead_id = $1`,
+        [leadId],
+      );
       return true;
     });
   }

@@ -23,6 +23,28 @@ The existing production funnel is legacy control and must not be modified by thi
 
 The dashboard never reads legacy flat files, Monday, or the legacy PHP dashboards. Business endpoints are read-only. Phone ciphertext, IVs, authentication tags, and key identifiers are not returned by dashboard APIs; lists show only whether a phone was captured.
 
+## Monday CRM delivery (M2A)
+
+PostgreSQL remains authoritative. Phone capture writes the lead and one coalescing `growth_v2.crm_outbox` row in the same transaction. The internal `crm-worker` container validates the live board schema before processing, decrypts phone data only in memory, and sends it to Monday with a persisted `Idempotency-Key`. Progressive committed answers update the same `monday_item_id`.
+
+Required worker-only environment:
+
+```text
+MONDAY_API_TOKEN=<server secret>
+MONDAY_BOARD_ID=18403945258
+MONDAY_GROUP_ID=group_mm1etwgc
+CRM_WORKER_BATCH_SIZE=10
+CRM_WORKER_CONCURRENCY=2
+CRM_WORKER_POLL_MS=10000
+CRM_WORKER_MAX_ATTEMPTS=8
+CRM_WORKER_LEASE_MS=120000
+CRM_AMBIGUOUS_CREATE_WINDOW_MS=1500000
+```
+
+The worker has no public route. Authenticated staff can inspect safe queue/heartbeat counts at `/v1/admin/crm/health`. Flexible date windows remain in PostgreSQL; only an exact date is mapped to Monday's `Event Date` column. Geo remains empty until a trusted source matching the board's legacy meaning is available.
+
+If a create response is ambiguous, the worker reuses the persisted idempotency key only inside a 25-minute safety window (shorter than Monday's documented 30-minute cache). After that it dead-letters the job instead of risking a duplicate.
+
 ### Required dashboard environment
 
 ```text
