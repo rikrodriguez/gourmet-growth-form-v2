@@ -44,6 +44,26 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  crm-qa-cleanup:
+    <<: *worker-image
+    profiles: ["qa-cleanup"]
+    restart: "no"
+    environment:
+      MIGRATION_DATABASE_URL: postgresql://${MIGRATION_DATABASE_ROLE}:${MIGRATION_DATABASE_PASSWORD}@db:5432/${POSTGRES_DB}
+      MONDAY_API_TOKEN: ${MONDAY_API_TOKEN}
+      MONDAY_BOARD_ID: "18403945258"
+      MONDAY_GROUP_ID: group_mm1etwgc
+    entrypoint: ["npm", "run", "crm:cleanup:qa", "--"]
+    command: []
+    networks:
+      - backend
+      - crm-egress
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
   dashboard:
     <<: *dashboard-image
     restart: unless-stopped
