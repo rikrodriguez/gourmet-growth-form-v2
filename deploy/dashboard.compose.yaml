@@ -1,0 +1,72 @@
+name: gourmet-growth-v2-staging
+
+x-dashboard-image: &dashboard-image
+  image: gourmet-growth-v2-dashboard:${GIT_SHA}
+  build:
+    context: https://github.com/rikrodriguez/gourmet-growth-form-v2.git#${GIT_SHA}
+    dockerfile: Dockerfile.dashboard
+
+services:
+  dashboard:
+    <<: *dashboard-image
+    restart: unless-stopped
+    depends_on:
+      permissions:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${APP_DATABASE_ROLE}:${APP_DATABASE_PASSWORD}@db:5432/${POSTGRES_DB}
+      DASHBOARD_ORIGIN: https://dashboard.gourmet-corporation.com
+      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PORT: 3002
+      ABANDONMENT_GRACE_MINUTES: 10
+      STAFF_SESSION_TTL_HOURS: 12
+      TRUST_PROXY: "true"
+      GIT_SHA: ${GIT_SHA}
+    networks:
+      - backend
+      - coolify
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: coolify
+      traefik.http.middlewares.gourmet-dashboard-redirect.redirectscheme.scheme: https
+      traefik.http.middlewares.gourmet-dashboard-gzip.compress: "true"
+      traefik.http.routers.gourmet-dashboard-http.entrypoints: http
+      traefik.http.routers.gourmet-dashboard-http.rule: Host(`dashboard.gourmet-corporation.com`) && PathPrefix(`/`)
+      traefik.http.routers.gourmet-dashboard-http.middlewares: gourmet-dashboard-redirect
+      traefik.http.routers.gourmet-dashboard-https.entrypoints: https
+      traefik.http.routers.gourmet-dashboard-https.rule: Host(`dashboard.gourmet-corporation.com`) && PathPrefix(`/`)
+      traefik.http.routers.gourmet-dashboard-https.middlewares: gourmet-dashboard-gzip
+      traefik.http.routers.gourmet-dashboard-https.tls: "true"
+      traefik.http.routers.gourmet-dashboard-https.tls.certresolver: letsencrypt
+      traefik.http.services.gourmet-dashboard.loadbalancer.server.port: "3002"
+      traefik.http.routers.gourmet-dashboard-http.service: gourmet-dashboard
+      traefik.http.routers.gourmet-dashboard-https.service: gourmet-dashboard
+
+  staff-admin:
+    <<: *dashboard-image
+    profiles: ["staff-admin"]
+    restart: "no"
+    environment:
+      STAFF_ADMIN_DATABASE_URL: postgresql://${MIGRATION_DATABASE_ROLE}:${MIGRATION_DATABASE_PASSWORD}@db:5432/${POSTGRES_DB}
+    entrypoint: ["npm", "run", "staff:create", "--"]
+    command: []
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  backend: {}
+  coolify: {}

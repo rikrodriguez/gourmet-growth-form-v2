@@ -16,6 +16,7 @@ The existing production funnel is legacy control and must not be modified by thi
 - Authenticated URL: `https://dashboard.gourmet-corporation.com`
 - Data source: PostgreSQL schema `growth_v2` only
 - Service: isolated Fastify + React container behind Traefik
+- Deployment overlay: `deploy/dashboard.compose.yaml`
 - Reporting timezone: `America/Los_Angeles`
 - QA rows: excluded by default and opt-in in the UI
 - Session status: dynamically derived from durable activity using `ABANDONMENT_GRACE_MINUTES`
@@ -59,3 +60,11 @@ docker build -f Dockerfile.dashboard .
 ```
 
 The first-party dashboard does not replace the known backup policy: weekly provider backup plus daily logical backup retained for 14 days on the same VPS. An off-VPS database backup remains required before production readiness.
+
+On the VPS, combine the existing PostgreSQL/API manifest with the tracked dashboard overlay:
+
+```bash
+docker compose -f compose.yaml -f dashboard.compose.yaml up -d dashboard
+docker compose -f compose.yaml -f dashboard.compose.yaml --profile staff-admin run --rm staff-admin \
+  --email staff@example.com --role admin
+```
