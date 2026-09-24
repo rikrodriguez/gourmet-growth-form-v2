@@ -37,6 +37,7 @@ services:
       GIT_SHA: ${GIT_SHA}
     networks:
       - backend
+      - crm-egress
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -105,4 +106,5 @@ services:
 
 networks:
   backend: {}
+  crm-egress: {}
   coolify: {}
