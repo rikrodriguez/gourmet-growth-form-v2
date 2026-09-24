@@ -82,6 +82,13 @@ try {
       growth_v2.lead_answers
       TO ${appRole}`);
     await client.query(`GRANT SELECT, INSERT ON growth_v2.events TO ${appRole}`);
+    await client.query(`GRANT SELECT ON growth_v2.staff_users TO ${appRole}`);
+    await client.query(`GRANT UPDATE (last_login_at, updated_at) ON growth_v2.staff_users TO ${appRole}`);
+    await client.query(`GRANT SELECT ON growth_v2.staff_sessions TO ${appRole}`);
+    await client.query(`GRANT INSERT
+      (staff_session_id, staff_user_id, token_hash, expires_at)
+      ON growth_v2.staff_sessions TO ${appRole}`);
+    await client.query(`GRANT UPDATE (revoked_at, last_seen_at) ON growth_v2.staff_sessions TO ${appRole}`);
   }
 } finally {
   await client.query('SELECT pg_advisory_unlock($1)', [714_202_601]).catch(() => undefined);

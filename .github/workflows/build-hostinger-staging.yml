@@ -74,6 +74,16 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium webkit
 
+      - name: Build and test secure dashboard UI
+        run: |
+          npm run dashboard:build
+          npm run test:dashboard:e2e
+
+      - name: Build backend service images
+        run: |
+          docker build --file Dockerfile.api --tag gourmet-growth-api:${GITHUB_SHA} .
+          docker build --file Dockerfile.dashboard --tag gourmet-growth-dashboard:${GITHUB_SHA} .
+
       - name: Run configured client delivery contracts
         env:
           VITE_GOURMET_API_BASE_URL: http://127.0.0.1:4173
