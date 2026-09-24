@@ -8,6 +8,9 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 5_000 },
   fullyParallel: false,
+  // The live matrix exercises real per-IP API limits. Keep staging serial so
+  // the test runner does not manufacture traffic bursts that real users cannot.
+  workers: externalBaseURL ? 1 : undefined,
   retries: 1,
   reporter: 'list',
   use: {
