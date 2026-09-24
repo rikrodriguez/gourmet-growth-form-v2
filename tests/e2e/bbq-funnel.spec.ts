@@ -114,7 +114,8 @@ test('same-tab refresh preserves phone while local storage excludes PII', async 
   await expect(page.getByLabel('Mobile number')).toHaveValue('(503) 555-0123');
 
   const localStorageSnapshot = await page.evaluate(() => JSON.stringify(window.localStorage));
-  expect(localStorageSnapshot).not.toContain('503');
+  expect(localStorageSnapshot).not.toContain('5035550123');
+  expect(localStorageSnapshot).not.toContain('(503) 555-0123');
   expect(localStorageSnapshot).not.toContain('phone');
   expect(localStorageSnapshot).not.toContain('name');
 

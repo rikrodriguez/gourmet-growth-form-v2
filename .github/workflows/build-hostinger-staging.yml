@@ -92,6 +92,11 @@ jobs:
           npm run build
           npx playwright test tests/e2e/backend-client.spec.ts --project=mobile-chromium-390x844
 
+      - name: Run required local E2E matrix without remote writes
+        run: |
+          npm run build
+          npm run test:e2e
+
       - name: Validate configured staging API QA isolation
         if: ${{ vars.VITE_GOURMET_API_BASE_URL != '' }}
         env:
@@ -117,11 +122,6 @@ jobs:
             assets,
           }, null, 2)}\n`);
           NODE
-
-      - name: Run required E2E matrix against built artifact
-        env:
-          E2E_QA_SECRET: ${{ secrets.E2E_QA_SECRET }}
-        run: npm run test:e2e
 
       - name: Publish dist to hostinger-staging branch
         run: |
