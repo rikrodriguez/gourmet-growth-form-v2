@@ -31,6 +31,8 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
       trustProxy: false,
       encryptionKeyBase64: Buffer.alloc(32, 7).toString('base64'),
       encryptionKeyId: 'integration-v1', qaMarkerSecret: 'qa-secret',
+      measurementEnvironment: 'staging', googleAdsCustomerId: '1112667809',
+      googleAdsConversionActionId: '7476344812',
     };
     const store = createPostgresStore(databaseUrl!);
     app = await buildApp({
@@ -143,6 +145,13 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
       idempotency_key: idempotencyKey,
       attribution: eventFixture().attribution,
       answers: { guest_range: '26-50', service_style: 'full-service', zip_code: '97205' },
+      measurement_consent: {
+        version: 1,
+        updated_at: '2026-09-25T12:00:00.000Z',
+        ad_storage: 'granted',
+        ad_user_data: 'granted',
+        ad_personalization: 'denied',
+      },
     };
     const headers = {
       origin, 'content-type': 'application/json',
@@ -153,6 +162,7 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
     });
     assert.equal(created.statusCode, 201);
     assert.equal(created.json().status, 'created');
+    assert.match(created.json().conversion_id, /^[a-f0-9]{64}$/);
     const leadId = created.json().lead_id as string;
 
     const repeated = await app.inject({
@@ -176,6 +186,13 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
       [leadId],
     );
     assert.deepEqual(queued.rows[0], { count: 1, status: 'pending', version: 1 });
+    const measurementState = await inspection.query(
+      `SELECT
+         (SELECT count(*)::int FROM growth_v2.lead_measurement_consents WHERE lead_id=$1) AS consents,
+         (SELECT count(*)::int FROM growth_v2.measurement_outbox WHERE lead_id=$1) AS jobs`,
+      [leadId],
+    );
+    assert.deepEqual(measurementState.rows[0], { consents: 1, jobs: 0 });
 
     const updated = await app.inject({
       method: 'PATCH', url: `/v1/leads/${leadId}`,

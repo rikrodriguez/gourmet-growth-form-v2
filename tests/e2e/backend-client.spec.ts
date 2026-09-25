@@ -88,7 +88,7 @@ test('lead capture failure is visible and retry completes one progressive lead',
     await route.fulfill({
       status: 201,
       contentType: 'application/json',
-      body: JSON.stringify({ lead_id: leadId, status: 'created' }),
+      body: JSON.stringify({ lead_id: leadId, conversion_id: 'b'.repeat(64), status: 'created' }),
     });
   });
   await page.route(`**/v1/leads/${leadId}`, async (route) => {
@@ -125,6 +125,12 @@ test('lead capture failure is visible and retry completes one progressive lead',
   expect(captureBodies[1].answers).toEqual({
     guest_range: '26-50', service_style: 'full-service', zip_code: '97205',
   });
+  expect(captureBodies[1].measurement_consent).toMatchObject({
+    version: 1,
+    ad_storage: 'granted',
+    ad_user_data: 'granted',
+    ad_personalization: 'granted',
+  });
   expect(patchBodies).toEqual([
     { event_type: 'Corporate' },
     { date_window: 'still-deciding', exact_date: null },
@@ -143,6 +149,9 @@ test('lead capture failure is visible and retry completes one progressive lead',
     () => window.__GOURMET_MEASUREMENT_DEBUG__?.getSnapshot().emitted_events ?? [],
   );
   expect(measurementEvents.filter((event) => event.event === 'generate_lead')).toHaveLength(1);
+  expect(measurementEvents.find((event) => event.event === 'generate_lead')).toMatchObject({
+    transaction_id: 'b'.repeat(64),
+  });
   expect(JSON.stringify(measurementEvents)).not.toContain('5035550123');
   expect(JSON.stringify(measurementEvents)).not.toContain('Secure QA Name');
 

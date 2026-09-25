@@ -177,12 +177,20 @@ export async function buildApp({ config, store, phoneEncryptor }: AppDependencie
     const validated = validateCapturePhone(request.body);
     if (!validated.input || !validated.phone) return reply.code(422).send({ error: validated.code });
     const encryptedPhone = phoneEncryptor.encrypt(validated.phone);
+    const isQa = requestIsQa(request, config);
+    const consent = validated.input.measurement_consent;
+    const enhancedConversionEligible = config.measurementEnvironment === 'production'
+      && Boolean(config.googleAdsCustomerId && config.googleAdsConversionActionId)
+      && !isQa
+      && consent?.ad_storage === 'granted'
+      && consent.ad_user_data === 'granted';
     const result = await store.captureLead(
-      { ...validated.input, encryptedPhone },
-      requestIsQa(request, config),
+      { ...validated.input, encryptedPhone, enhancedConversionEligible },
+      isQa,
     );
     return reply.code(result.status === 'created' ? 201 : 200).send({
       lead_id: result.leadId,
+      conversion_id: result.conversionId,
       status: result.status,
     });
   });

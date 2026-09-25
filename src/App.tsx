@@ -430,12 +430,13 @@ function BBQFunnel() {
       setIsSavingLead(true);
       try {
         if (step === 'phone') {
-          await leadClient.capturePhone(context, normalizedPhoneDigits(answers.phone || ''), {
+          const captured = await leadClient.capturePhone(context, normalizedPhoneDigits(answers.phone || ''), {
             guest_range: answers.guests,
             service_style: answers.service,
             zip_code: answers.zip,
-          });
-          measurement.generateLead();
+          }, measurement.getServerConsentEvidence());
+          if (!captured) throw new Error('missing_captured_lead');
+          measurement.generateLead(captured.conversionId);
         } else if (leadUpdates) {
           const leadId = leadClient.getLeadId();
           if (!leadId) throw new Error('missing_lead_id');

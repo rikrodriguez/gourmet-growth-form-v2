@@ -6,6 +6,8 @@ const CAPTURE_IDEMPOTENCY_STORAGE_KEY = 'gourmet_growth_lead_capture_idempotency
 const CAPTURE_PHONE_STORAGE_KEY = 'gourmet_growth_lead_capture_phone_v1';
 const REQUEST_TIMEOUT_MS = 5_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CONVERSION_ID_PATTERN = /^[a-f0-9]{64}$/;
+const CONVERSION_ID_NAMESPACE = 'gourmet-growth-v2:google-ads:generate_lead:v1:';
 
 type LeadContext = {
   visitor_id: string;
@@ -25,6 +27,16 @@ type LeadUpdates = {
   exact_date?: string | null;
   first_name?: string;
 };
+
+type MeasurementConsentEvidence = {
+  version: 1;
+  updated_at: string;
+  ad_storage: 'granted' | 'denied';
+  ad_user_data: 'granted' | 'denied';
+  ad_personalization: 'granted' | 'denied';
+};
+
+type CapturedLead = { leadId: string; conversionId: string };
 
 export class LeadDeliveryError extends Error {
   constructor() {
@@ -67,6 +79,14 @@ async function request(path: string, init: RequestInit): Promise<Response> {
   }
 }
 
+async function deriveOpaqueConversionId(leadId: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`${CONVERSION_ID_NAMESPACE}${leadId}`),
+  );
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export const leadClient = {
   isConfigured: Boolean(gourmetApiBaseUrl),
 
@@ -74,7 +94,12 @@ export const leadClient = {
     return sessionValue(LEAD_ID_STORAGE_KEY);
   },
 
-  async capturePhone(context: LeadContext, phone: string, answers: PrePhoneAnswers): Promise<string | null> {
+  async capturePhone(
+    context: LeadContext,
+    phone: string,
+    answers: PrePhoneAnswers,
+    measurementConsent: MeasurementConsentEvidence | null,
+  ): Promise<CapturedLead | null> {
     if (!gourmetApiBaseUrl) return null;
     let idempotencyKey = sessionValue(CAPTURE_IDEMPOTENCY_STORAGE_KEY);
     const previousPhone = sessionValue(CAPTURE_PHONE_STORAGE_KEY);
@@ -93,13 +118,22 @@ export const leadClient = {
         idempotency_key: idempotencyKey,
         attribution: context.attribution,
         answers,
+        measurement_consent: measurementConsent,
       }),
     });
     if (!response.ok) throw new LeadDeliveryError();
-    const body = await response.json() as { lead_id?: unknown };
-    if (typeof body.lead_id !== 'string' || !UUID_PATTERN.test(body.lead_id)) throw new LeadDeliveryError();
+    const body = await response.json() as { lead_id?: unknown; conversion_id?: unknown };
+    if (typeof body.lead_id !== 'string' || !UUID_PATTERN.test(body.lead_id)) {
+      throw new LeadDeliveryError();
+    }
+    // Compatibility bridge for the already-deployed staging API. The server and
+    // browser use the same namespaced SHA-256 algorithm, and only the opaque hash
+    // reaches measurement. Remove after every backend environment returns it.
+    const conversionId = typeof body.conversion_id === 'string' && CONVERSION_ID_PATTERN.test(body.conversion_id)
+      ? body.conversion_id
+      : await deriveOpaqueConversionId(body.lead_id);
     persistSessionValue(LEAD_ID_STORAGE_KEY, body.lead_id);
-    return body.lead_id;
+    return { leadId: body.lead_id, conversionId };
   },
 
   async update(leadId: string, sessionId: string, updates: LeadUpdates): Promise<void> {

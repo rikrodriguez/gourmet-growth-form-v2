@@ -14,6 +14,9 @@ export type BackendConfig = {
   encryptionKeyBase64: string;
   encryptionKeyId: string;
   qaMarkerSecret: string | null;
+  measurementEnvironment: 'staging' | 'production';
+  googleAdsCustomerId: string | null;
+  googleAdsConversionActionId: string | null;
 };
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -33,6 +36,12 @@ function validateOrigin(value: string): string {
     throw new Error(`Invalid CORS origin: ${value}`);
   }
   return parsed.origin;
+}
+
+function numericId(value: string | undefined, length: { min: number; max: number }): string | null {
+  if (!value) return null;
+  if (!new RegExp(`^\\d{${length.min},${length.max}}$`).test(value)) throw new Error('Invalid Google Ads numeric ID.');
+  return value;
 }
 
 export function loadBackendConfig(env: NodeJS.ProcessEnv = process.env): BackendConfig {
@@ -63,5 +72,8 @@ export function loadBackendConfig(env: NodeJS.ProcessEnv = process.env): Backend
     encryptionKeyBase64,
     encryptionKeyId: env.LEAD_ENCRYPTION_KEY_ID ?? 'v1',
     qaMarkerSecret: env.QA_MARKER_SECRET || null,
+    measurementEnvironment: env.MEASUREMENT_ENVIRONMENT === 'production' ? 'production' : 'staging',
+    googleAdsCustomerId: numericId(env.GOOGLE_ADS_CUSTOMER_ID, { min: 10, max: 10 }),
+    googleAdsConversionActionId: numericId(env.GOOGLE_ADS_CONVERSION_ACTION_ID, { min: 1, max: 20 }),
   };
 }

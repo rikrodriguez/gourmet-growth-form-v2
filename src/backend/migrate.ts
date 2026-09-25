@@ -80,6 +80,9 @@ try {
       growth_v2.attribution_touches,
       growth_v2.leads,
       growth_v2.lead_answers,
+      growth_v2.lead_measurement_consents,
+      growth_v2.measurement_outbox,
+      growth_v2.measurement_worker_state,
       growth_v2.crm_outbox,
       growth_v2.crm_worker_state
       TO ${appRole}`);

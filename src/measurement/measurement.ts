@@ -72,8 +72,20 @@ class GourmetMeasurement {
     this.trackOnce('phone_capture', 'phone_capture', { valid: true });
   }
 
-  generateLead() {
-    this.trackOnce('generate_lead', 'generate_lead', {});
+  generateLead(transactionId: string) {
+    this.trackOnce('generate_lead', 'generate_lead', { transaction_id: transactionId });
+  }
+
+  getServerConsentEvidence() {
+    const consent = consentManager.getPreference();
+    if (!consent) return null;
+    return {
+      version: consent.version,
+      updated_at: consent.updated_at,
+      ad_storage: consent.ad_storage,
+      ad_user_data: consent.ad_user_data,
+      ad_personalization: consent.ad_personalization,
+    } as const;
   }
 
   formComplete() {

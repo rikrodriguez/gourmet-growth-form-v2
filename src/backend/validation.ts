@@ -260,7 +260,7 @@ export function validateLeadAnswers(value: unknown, allowed: readonly (keyof Lea
 
 export function validateCapturePhone(value: unknown): { input?: CapturePhoneInput; phone?: string; code?: string } {
   if (!isRecord(value) || !hasOnlyKeys(value, [
-    'visitor_id', 'session_id', 'phone', 'intent_cluster', 'idempotency_key', 'attribution', 'answers',
+    'visitor_id', 'session_id', 'phone', 'intent_cluster', 'idempotency_key', 'attribution', 'answers', 'measurement_consent',
   ])) return { code: 'invalid_shape' };
   if (!isUuid(value.visitor_id) || !isUuid(value.session_id) || !isUuid(value.idempotency_key)) return { code: 'invalid_uuid' };
   if (value.intent_cluster !== 'bbq') return { code: 'invalid_intent_cluster' };
@@ -269,6 +269,19 @@ export function validateCapturePhone(value: unknown): { input?: CapturePhoneInpu
   if (value.attribution !== undefined && !validateAttribution(value.attribution)) return { code: 'invalid_attribution' };
   const answers = validateLeadAnswers(value.answers, ['guest_range', 'service_style', 'zip_code']);
   if (!answers) return { code: 'invalid_answers' };
+  if (value.measurement_consent !== undefined && value.measurement_consent !== null) {
+    const consent = value.measurement_consent;
+    if (!isRecord(consent) || !hasOnlyKeys(consent, [
+      'version', 'updated_at', 'ad_storage', 'ad_user_data', 'ad_personalization',
+    ])) return { code: 'invalid_measurement_consent' };
+    const allowed = new Set(['granted', 'denied']);
+    if (consent.version !== 1 || !isIsoTimestamp(consent.updated_at)
+      || !allowed.has(consent.ad_storage as string)
+      || !allowed.has(consent.ad_user_data as string)
+      || !allowed.has(consent.ad_personalization as string)) {
+      return { code: 'invalid_measurement_consent' };
+    }
+  }
   return { input: { ...value, phone, answers } as CapturePhoneInput, phone };
 }
 

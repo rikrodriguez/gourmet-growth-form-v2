@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import pg, { type PoolClient } from 'pg';
 import { ATTRIBUTION_KEYS, type AttributionTouch, type GourmetTelemetryEvent } from '../telemetry/types';
 import type {
@@ -10,6 +10,16 @@ import type {
 } from './contracts';
 
 const { Pool } = pg;
+
+function conversionIdForLead(leadId: string): string {
+  return createHash('sha256')
+    .update(`gourmet-growth-v2:google-ads:generate_lead:v1:${leadId}`)
+    .digest('hex');
+}
+
+function measurementDedupeKey(conversionId: string): string {
+  return createHash('sha256').update(`google_ads:generate_lead:${conversionId}`).digest('hex');
+}
 
 export class DataConflictError extends Error {
   constructor(message: string) {
@@ -175,16 +185,23 @@ class PostgresGrowthDataStore implements GrowthDataStore {
         throw new DataConflictError('Idempotency key is already associated with another session.');
       }
 
-      const existing = await client.query<{ lead_id: string; capture_idempotency_key: string }>(
-        'SELECT lead_id, capture_idempotency_key FROM growth_v2.leads WHERE session_id = $1 AND deleted_at IS NULL FOR UPDATE',
+      const existing = await client.query<{ lead_id: string; capture_idempotency_key: string; google_ads_conversion_id: string | null }>(
+        'SELECT lead_id, capture_idempotency_key, google_ads_conversion_id FROM growth_v2.leads WHERE session_id = $1 AND deleted_at IS NULL FOR UPDATE',
         [input.session_id],
       );
 
       let result: LeadCaptureResult;
       if (existing.rowCount) {
         const row = existing.rows[0];
+        const conversionId = row.google_ads_conversion_id ?? conversionIdForLead(row.lead_id);
+        if (!row.google_ads_conversion_id) {
+          await client.query(
+            'UPDATE growth_v2.leads SET google_ads_conversion_id=$2,updated_at=now() WHERE lead_id=$1',
+            [row.lead_id, conversionId],
+          );
+        }
         if (row.capture_idempotency_key === input.idempotency_key) {
-          result = { leadId: row.lead_id, status: 'existing' };
+          result = { leadId: row.lead_id, conversionId, status: 'existing' };
         } else {
           await client.query(
             `UPDATE growth_v2.leads
@@ -200,15 +217,17 @@ class PostgresGrowthDataStore implements GrowthDataStore {
               input.encryptedPhone.keyId,
             ],
           );
-          result = { leadId: row.lead_id, status: 'updated' };
+          result = { leadId: row.lead_id, conversionId, status: 'updated' };
         }
       } else {
         const leadId = randomUUID();
+        const conversionId = conversionIdForLead(leadId);
         await client.query(
           `INSERT INTO growth_v2.leads (
              lead_id, session_id, visitor_id, intent_cluster, capture_idempotency_key,
-             phone_ciphertext, phone_iv, phone_auth_tag, phone_key_id, is_qa
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+             phone_ciphertext, phone_iv, phone_auth_tag, phone_key_id, is_qa,
+             google_ads_conversion_id
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
           [
             leadId,
             input.session_id,
@@ -220,15 +239,48 @@ class PostgresGrowthDataStore implements GrowthDataStore {
             input.encryptedPhone.authTag,
             input.encryptedPhone.keyId,
             isQa,
+            conversionId,
           ],
         );
-        result = { leadId, status: 'created' };
+        result = { leadId, conversionId, status: 'created' };
       }
 
       await this.persistLeadAnswers(client, result.leadId, input.answers ?? {});
       if (input.attribution) {
         await this.persistAttribution(client, input.session_id, 'first', input.attribution.first_touch);
         await this.persistAttribution(client, input.session_id, 'latest', input.attribution.latest_touch);
+      }
+      if (input.measurement_consent) {
+        const consent = input.measurement_consent;
+        await client.query(
+          `INSERT INTO growth_v2.lead_measurement_consents (
+             lead_id, consent_version, ad_storage, ad_user_data, ad_personalization, consent_recorded_at
+           ) VALUES ($1,$2,$3,$4,$5,$6)
+           ON CONFLICT (lead_id) DO UPDATE SET
+             consent_version=EXCLUDED.consent_version,
+             ad_storage=EXCLUDED.ad_storage,
+             ad_user_data=EXCLUDED.ad_user_data,
+             ad_personalization=EXCLUDED.ad_personalization,
+             consent_recorded_at=EXCLUDED.consent_recorded_at,
+             updated_at=now()`,
+          [
+            result.leadId,
+            consent.version,
+            consent.ad_storage,
+            consent.ad_user_data,
+            consent.ad_personalization,
+            consent.updated_at,
+          ],
+        );
+      }
+      if (input.enhancedConversionEligible) {
+        await client.query(
+          `INSERT INTO growth_v2.measurement_outbox (
+             outbox_id, lead_id, destination, event_name, dedupe_key
+           ) VALUES ($1,$2,'google_ads','generate_lead',$3)
+           ON CONFLICT (lead_id, destination, event_name) DO NOTHING`,
+          [randomUUID(), result.leadId, measurementDedupeKey(result.conversionId)],
+        );
       }
       await client.query(
         `INSERT INTO growth_v2.crm_outbox (outbox_id, lead_id, dedupe_key)

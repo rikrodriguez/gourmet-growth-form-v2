@@ -13,6 +13,38 @@ x-worker-image: &worker-image
     dockerfile: Dockerfile.api
 
 services:
+  measurement-worker:
+    <<: *worker-image
+    profiles: ["measurement-worker"]
+    restart: unless-stopped
+    depends_on:
+      permissions:
+        condition: service_completed_successfully
+    command: ["npm", "run", "ads:worker"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${APP_DATABASE_ROLE}:${APP_DATABASE_PASSWORD}@db:5432/${POSTGRES_DB}
+      LEAD_ENCRYPTION_KEY_BASE64: ${LEAD_ENCRYPTION_KEY_BASE64}
+      LEAD_ENCRYPTION_KEY_ID: v1
+      MEASUREMENT_ENVIRONMENT: ${MEASUREMENT_ENVIRONMENT:-staging}
+      GOOGLE_ADS_DELIVERY_MODE: ${GOOGLE_ADS_DELIVERY_MODE:-disabled}
+      GOOGLE_ADS_CUSTOMER_ID: "1112667809"
+      GOOGLE_ADS_CONVERSION_ACTION_ID: "7476344812"
+      MEASUREMENT_WORKER_BATCH_SIZE: 10
+      MEASUREMENT_WORKER_CONCURRENCY: 2
+      MEASUREMENT_WORKER_POLL_MS: 10000
+      MEASUREMENT_WORKER_MAX_ATTEMPTS: 8
+      MEASUREMENT_WORKER_LEASE_MS: 120000
+      GIT_SHA: ${GIT_SHA}
+    networks:
+      - backend
+      - crm-egress
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
   crm-worker:
     <<: *worker-image
     restart: unless-stopped

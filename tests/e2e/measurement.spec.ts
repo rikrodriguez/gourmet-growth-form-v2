@@ -112,7 +112,7 @@ test('safe funnel events are concise, deduplicated, and PII-free', async ({ page
         await route.fulfill({
           status: 201,
           contentType: 'application/json',
-          body: JSON.stringify({ lead_id: leadId, status: 'created' }),
+          body: JSON.stringify({ lead_id: leadId, conversion_id: 'a'.repeat(64), status: 'created' }),
         });
         return;
       }
@@ -146,6 +146,11 @@ test('safe funnel events are concise, deduplicated, and PII-free', async ({ page
   expect(current.emitted_events.filter((event) => event.event === 'form_step_complete')).toHaveLength(7);
   expect(current.emitted_events.filter((event) => event.event === 'generate_lead'))
     .toHaveLength(configuredApiBuild ? 1 : 0);
+  if (configuredApiBuild) {
+    expect(current.emitted_events.find((event) => event.event === 'generate_lead')).toMatchObject({
+      transaction_id: 'a'.repeat(64),
+    });
+  }
 
   const serialized = await page.evaluate(() => JSON.stringify({
     dataLayer: window.dataLayer,

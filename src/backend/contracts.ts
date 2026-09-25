@@ -32,6 +32,15 @@ export type CapturePhoneInput = {
   idempotency_key: string;
   attribution?: AttributionContext;
   answers?: Pick<LeadAnswers, 'guest_range' | 'service_style' | 'zip_code'>;
+  measurement_consent?: MeasurementConsentEvidence | null;
+};
+
+export type MeasurementConsentEvidence = {
+  version: 1;
+  updated_at: string;
+  ad_storage: 'granted' | 'denied';
+  ad_user_data: 'granted' | 'denied';
+  ad_personalization: 'granted' | 'denied';
 };
 
 export type EncryptedPhone = {
@@ -43,10 +52,12 @@ export type EncryptedPhone = {
 
 export type LeadCaptureRecord = Omit<CapturePhoneInput, 'phone'> & {
   encryptedPhone: EncryptedPhone;
+  enhancedConversionEligible: boolean;
 };
 
 export type LeadCaptureResult = {
   leadId: string;
+  conversionId: string;
   status: 'created' | 'updated' | 'existing';
 };
 

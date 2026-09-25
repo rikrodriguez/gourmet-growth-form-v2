@@ -28,7 +28,7 @@ export type MeasurementEventProperties = {
     geo_state?: string;
   };
   phone_capture: { valid: true };
-  generate_lead: Record<string, never>;
+  generate_lead: { transaction_id: string };
   form_complete: Record<string, never>;
 };
 

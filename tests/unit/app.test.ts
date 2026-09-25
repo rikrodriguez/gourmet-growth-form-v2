@@ -23,6 +23,9 @@ const config: BackendConfig = {
   encryptionKeyBase64: Buffer.alloc(32).toString('base64'),
   encryptionKeyId: 'test',
   qaMarkerSecret: null,
+  measurementEnvironment: 'staging',
+  googleAdsCustomerId: null,
+  googleAdsConversionActionId: null,
 };
 
 function fakeStore(overrides: Partial<GrowthDataStore> = {}): GrowthDataStore {
@@ -31,7 +34,7 @@ function fakeStore(overrides: Partial<GrowthDataStore> = {}): GrowthDataStore {
     async ingestEvents(events) {
       return { accepted_event_ids: events.map((event) => event.event_id), duplicate_event_ids: [] };
     },
-    async captureLead() { return { leadId: randomUUID(), status: 'created' }; },
+    async captureLead() { return { leadId: randomUUID(), conversionId: 'a'.repeat(64), status: 'created' }; },
     async updateLead() { return true; },
     async cleanupQa() { return { events: 0, leads: 0, sessions: 0, visitors: 0 }; },
     async close() {},
@@ -41,9 +44,9 @@ function fakeStore(overrides: Partial<GrowthDataStore> = {}): GrowthDataStore {
 
 const apps: FastifyInstance[] = [];
 
-async function appFor(store: GrowthDataStore) {
+async function appFor(store: GrowthDataStore, configOverride: Partial<BackendConfig> = {}) {
   const app = await buildApp({
-    config,
+    config: { ...config, ...configOverride },
     store,
     phoneEncryptor: { encrypt: () => ({ ciphertext: 'cipher', iv: 'iv', authTag: 'tag', keyId: 'test' }) },
   });
@@ -56,6 +59,59 @@ afterEach(async () => {
 });
 
 describe('API security and failures', () => {
+  it('gates enhanced conversion eligibility on production, consent, configuration, and QA exclusion', async () => {
+    const captured: Array<{ eligible: boolean; isQa: boolean }> = [];
+    const store = fakeStore({
+      async captureLead(input, isQa) {
+        captured.push({ eligible: input.enhancedConversionEligible, isQa });
+        return { leadId: randomUUID(), conversionId: 'c'.repeat(64), status: 'created' };
+      },
+    });
+    const app = await appFor(store, {
+      measurementEnvironment: 'production',
+      googleAdsCustomerId: '1112667809',
+      googleAdsConversionActionId: '7476344812',
+      qaMarkerSecret: 'qa-secret',
+    });
+    const payload = {
+      visitor_id: randomUUID(), session_id: randomUUID(), phone: '5035550123',
+      intent_cluster: 'bbq', idempotency_key: randomUUID(),
+      measurement_consent: {
+        version: 1, updated_at: new Date().toISOString(),
+        ad_storage: 'granted', ad_user_data: 'granted', ad_personalization: 'denied',
+      },
+    };
+    const allowed = await app.inject({
+      method: 'POST', url: '/v1/leads/capture-phone',
+      headers: { origin: config.allowedOrigins[0], 'content-type': 'application/json' },
+      payload,
+    });
+    assert.equal(allowed.statusCode, 201);
+    assert.match(allowed.json().conversion_id, /^[a-f0-9]{64}$/);
+
+    await app.inject({
+      method: 'POST', url: '/v1/leads/capture-phone',
+      headers: {
+        origin: config.allowedOrigins[0], 'content-type': 'application/json',
+        'x-gourmet-qa-test': 'true', 'x-gourmet-qa-secret': 'qa-secret',
+      },
+      payload: { ...payload, session_id: randomUUID(), idempotency_key: randomUUID() },
+    });
+    await app.inject({
+      method: 'POST', url: '/v1/leads/capture-phone',
+      headers: { origin: config.allowedOrigins[0], 'content-type': 'application/json' },
+      payload: {
+        ...payload, session_id: randomUUID(), idempotency_key: randomUUID(),
+        measurement_consent: { ...payload.measurement_consent, ad_user_data: 'denied' },
+      },
+    });
+    assert.deepEqual(captured, [
+      { eligible: true, isQa: false },
+      { eligible: false, isQa: true },
+      { eligible: false, isQa: false },
+    ]);
+  });
+
   it('returns a real service error after database failure', async () => {
     const app = await appFor(fakeStore({ async ingestEvents() { throw new Error('db_down'); } }));
     const response = await app.inject({
