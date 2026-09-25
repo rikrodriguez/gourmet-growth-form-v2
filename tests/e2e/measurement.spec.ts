@@ -104,6 +104,26 @@ test('Manage, consent updates, revocation, and refresh persistence work', async 
 });
 
 test('safe funnel events are concise, deduplicated, and PII-free', async ({ page }) => {
+  const configuredApiBuild = Boolean(process.env.E2E_BASE_URL);
+  if (configuredApiBuild) {
+    const leadId = '41f4fd4d-09a4-42cf-80ce-c405a6fd0fa4';
+    await page.route('**/v1/leads/**', async (route) => {
+      if (route.request().url().endsWith('/capture-phone')) {
+        await route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({ lead_id: leadId, status: 'created' }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ lead_id: leadId, status: 'updated' }),
+      });
+    });
+  }
+
   await page.getByRole('button', { name: 'Accept all' }).click();
   await chooseAndContinue(page, '26-50');
   await chooseAndContinue(page, 'full-service');
@@ -124,7 +144,8 @@ test('safe funnel events are concise, deduplicated, and PII-free', async ({ page
   expect(current.emitted_events.filter((event) => event.event === 'phone_capture')).toHaveLength(1);
   expect(current.emitted_events.filter((event) => event.event === 'form_complete')).toHaveLength(1);
   expect(current.emitted_events.filter((event) => event.event === 'form_step_complete')).toHaveLength(7);
-  expect(current.emitted_events).not.toContainEqual(expect.objectContaining({ event: 'generate_lead' }));
+  expect(current.emitted_events.filter((event) => event.event === 'generate_lead'))
+    .toHaveLength(configuredApiBuild ? 1 : 0);
 
   const serialized = await page.evaluate(() => JSON.stringify({
     dataLayer: window.dataLayer,
