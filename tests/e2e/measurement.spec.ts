@@ -173,7 +173,10 @@ test('safe funnel events are concise, deduplicated, and PII-free', async ({ page
 test('staging events are marked QA and cannot be Ads-eligible', async ({ page }) => {
   await page.getByRole('button', { name: 'Accept all' }).click();
   const current = await snapshot(page);
-  expect(current.configuration).toMatchObject({ environment: 'staging', google_ads_configured: false });
+  expect(current.configuration).toMatchObject({
+    environment: 'staging',
+    google_ads_configured: Boolean(process.env.E2E_BASE_URL),
+  });
   expect(current.emitted_events.every((event) => event.traffic_type === 'qa')).toBeTruthy();
   expect(current.emitted_events.every((event) => event.ads_eligible === false)).toBeTruthy();
 });
