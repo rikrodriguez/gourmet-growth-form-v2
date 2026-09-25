@@ -127,7 +127,7 @@ export const leadClient = {
       idempotency_key: idempotencyKey,
       attribution: context.attribution,
       answers,
-      measurement_consent: measurementConsent,
+      ...(measurementConsent ? { measurement_consent: measurementConsent } : {}),
     };
     let response = await request('/v1/leads/capture-phone', {
       method: 'POST',

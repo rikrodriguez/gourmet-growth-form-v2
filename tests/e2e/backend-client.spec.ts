@@ -215,3 +215,27 @@ test('legacy capture API is retried once without unsupported consent evidence', 
   });
   expect(JSON.stringify(measurementEvents)).not.toContain('5035550123');
 });
+
+test('no consent choice omits consent evidence instead of sending a nullable field', async ({ page }) => {
+  const captureBodies: Array<Record<string, unknown>> = [];
+  const leadId = '388e68ce-f0e3-4c86-8b04-94d593978eaf';
+
+  await page.route('**/v1/leads/capture-phone', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    captureBodies.push(body);
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({ lead_id: leadId, status: 'created' }),
+    });
+  });
+
+  await openClean(page);
+  await reachPhone(page);
+  await page.getByLabel('Mobile number').fill('5035550123');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByText('Step 5 of 7')).toBeVisible();
+
+  expect(captureBodies).toHaveLength(1);
+  expect(captureBodies[0]).not.toHaveProperty('measurement_consent');
+});
