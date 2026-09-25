@@ -102,11 +102,14 @@ test('lead capture failure is visible and retry completes one progressive lead',
   });
 
   await openClean(page);
+  await page.getByRole('button', { name: 'Accept all' }).click();
   await reachPhone(page);
   await page.getByLabel('Mobile number').fill('5035550123');
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('alert')).toContainText('could not securely save');
   await expect(page.getByText('Step 4 of 7')).toBeVisible();
+  expect((await page.evaluate(() => window.__GOURMET_MEASUREMENT_DEBUG__?.getSnapshot().emitted_events ?? []))
+    .filter((event) => event.event === 'generate_lead')).toHaveLength(0);
 
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByText('Step 5 of 7')).toBeVisible();
@@ -136,4 +139,16 @@ test('lead capture failure is visible and retry completes one progressive lead',
   const phoneEvents = telemetryBodies.flatMap((body) => (body as { events: Array<{ event_name: string }> }).events)
     .filter((event) => event.event_name === 'phone_captured');
   expect(phoneEvents).toHaveLength(1);
+  const measurementEvents = await page.evaluate(
+    () => window.__GOURMET_MEASUREMENT_DEBUG__?.getSnapshot().emitted_events ?? [],
+  );
+  expect(measurementEvents.filter((event) => event.event === 'generate_lead')).toHaveLength(1);
+  expect(JSON.stringify(measurementEvents)).not.toContain('5035550123');
+  expect(JSON.stringify(measurementEvents)).not.toContain('Secure QA Name');
+
+  await page.reload();
+  const afterReload = await page.evaluate(
+    () => window.__GOURMET_MEASUREMENT_DEBUG__?.getSnapshot().emitted_events ?? [],
+  );
+  expect(afterReload.filter((event) => event.event === 'generate_lead')).toHaveLength(0);
 });

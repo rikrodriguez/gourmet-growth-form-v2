@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { leadClient } from './api/lead-client';
+import { ConsentBanner } from './measurement/ConsentBanner';
+import { measurement } from './measurement/measurement';
 import { telemetry } from './telemetry/telemetry';
 import {
   AnswerValue,
@@ -7,6 +9,7 @@ import {
   EventTypeAnswerValue,
   GuestAnswerValue,
   ServiceAnswerValue,
+  STEP_INDEX,
   StepId,
   ValidationCode,
 } from './telemetry/types';
@@ -325,11 +328,16 @@ function BBQFunnel() {
 
   useEffect(() => {
     telemetry.initialize(initialStep);
+    measurement.initialize();
+    measurement.formStart();
   }, [initialStep]);
 
   useEffect(() => {
     telemetry.stepViewed(step);
-    if (step === 'complete') telemetry.formCompleted();
+    if (step === 'complete') {
+      telemetry.formCompleted();
+      measurement.formComplete();
+    }
   }, [step]);
 
   useEffect(() => {
@@ -406,7 +414,10 @@ function BBQFunnel() {
     if (isSavingLead) return false;
     setDeliveryError('');
 
-    if (step === 'phone') telemetry.phoneCaptured();
+    if (step === 'phone') {
+      telemetry.phoneCaptured();
+      measurement.phoneCapture();
+    }
     if (leadClient.isConfigured && (step === 'phone' || leadUpdates)) {
       const context = telemetry.getLeadContext();
       if (!context) {
@@ -424,6 +435,7 @@ function BBQFunnel() {
             service_style: answers.service,
             zip_code: answers.zip,
           });
+          measurement.generateLead();
         } else if (leadUpdates) {
           const leadId = leadClient.getLeadId();
           if (!leadId) throw new Error('missing_lead_id');
@@ -450,6 +462,18 @@ function BBQFunnel() {
         : {},
     );
     if (!completed) return false;
+
+    measurement.stepComplete({
+      step_id: step,
+      step_index: STEP_INDEX[step],
+      ...(step === 'guests' && answers.guests ? { guest_range: answers.guests } : {}),
+      ...(step === 'service' && answers.service ? { service_style: answers.service } : {}),
+      ...(step === 'zip' && /^[A-Z]{2}$/.test(answers.state || '') ? { geo_state: answers.state } : {}),
+      ...(step === 'event_type' && currentEventType
+        ? { event_type: knownEventValues.has(currentEventType) ? currentEventType : 'Other' }
+        : {}),
+      ...(step === 'date' && answers.dateWindow ? { date_window: answers.dateWindow } : {}),
+    });
 
     setAnnouncement('');
     setDeliveryError('');
@@ -527,6 +551,7 @@ function BBQFunnel() {
     setIsSavingLead(false);
     leadClient.reset();
     telemetry.startNewFunnel();
+    measurement.startNewFunnel();
     setStepIndex(0);
   }
 
@@ -567,7 +592,10 @@ function BBQFunnel() {
           </div>
         </section>
 
-        <section className={`quote-panel${isComplete ? ' completion-shell' : ''}`}>
+        <section
+          className={`quote-panel${isComplete ? ' completion-shell' : ''}`}
+          data-clarity-mask="true"
+        >
           {!isComplete && <ProgressHeader stepIndex={stepIndex} onBack={back} />}
 
           {step === 'guests' && (
@@ -654,6 +682,7 @@ function BBQFunnel() {
                 <input
                   id="event-zip"
                   className="text-input"
+                  data-clarity-mask="true"
                   inputMode="numeric"
                   autoComplete="postal-code"
                   maxLength={5}
@@ -698,6 +727,7 @@ function BBQFunnel() {
                 <input
                   id="phone"
                   className="text-input"
+                  data-clarity-mask="true"
                   type="tel"
                   inputMode="tel"
                   autoComplete="tel"
@@ -769,6 +799,7 @@ function BBQFunnel() {
                     <input
                       id="event-other"
                       className="text-input"
+                      data-clarity-mask="true"
                       value={eventOther}
                       onChange={(event) => setEventOther(event.target.value)}
                       placeholder="e.g. Communion, anniversary…"
@@ -835,6 +866,7 @@ function BBQFunnel() {
                     <input
                       id="exact-date"
                       className="text-input"
+                      data-clarity-mask="true"
                       type="date"
                       min={todayIsoDate()}
                       value={answers.exactDate || ''}
@@ -889,6 +921,7 @@ function BBQFunnel() {
                 <input
                   id="first-name"
                   className="text-input"
+                  data-clarity-mask="true"
                   autoComplete="given-name"
                   value={answers.name || ''}
                   onChange={(event) => updateAnswer('name', event.target.value)}
@@ -945,6 +978,7 @@ function BBQFunnel() {
           )}
         </section>
       </div>
+      <ConsentBanner compact={stepIndex > 0} />
     </main>
   );
 }

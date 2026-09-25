@@ -88,10 +88,24 @@ jobs:
       - name: Run configured client delivery contracts
         env:
           VITE_GOURMET_API_BASE_URL: http://127.0.0.1:4173
+          VITE_MEASUREMENT_ENVIRONMENT: staging
           E2E_API_MODE: mock
         run: |
           npm run build
           npx playwright test tests/e2e/backend-client.spec.ts --project=mobile-chromium-390x844
+
+      - name: Run configured measurement vendor contracts
+        env:
+          VITE_MEASUREMENT_ENVIRONMENT: staging
+          VITE_GTM_CONTAINER_ID: GTM-QATEST
+          VITE_GA4_MEASUREMENT_ID: G-QATEST123
+          VITE_GOOGLE_ADS_CONVERSION_ID: AW-123456789
+          VITE_GOOGLE_ADS_CONVERSION_LABEL: qa-label
+          VITE_CLARITY_PROJECT_ID: clarityqa
+          E2E_MEASUREMENT_MODE: mock
+        run: |
+          npm run build
+          npx playwright test tests/e2e/measurement-vendors.spec.ts --project=mobile-chromium-390x844
 
       - name: Run required local E2E matrix without remote writes
         run: |
@@ -107,6 +121,12 @@ jobs:
       - name: Build static frontend
         env:
           VITE_GOURMET_API_BASE_URL: ${{ vars.VITE_GOURMET_API_BASE_URL }}
+          VITE_MEASUREMENT_ENVIRONMENT: staging
+          VITE_GTM_CONTAINER_ID: ${{ vars.VITE_GTM_CONTAINER_ID }}
+          VITE_GA4_MEASUREMENT_ID: ${{ vars.VITE_GA4_MEASUREMENT_ID }}
+          VITE_GOOGLE_ADS_CONVERSION_ID: ${{ vars.VITE_GOOGLE_ADS_CONVERSION_ID }}
+          VITE_GOOGLE_ADS_CONVERSION_LABEL: ${{ vars.VITE_GOOGLE_ADS_CONVERSION_LABEL }}
+          VITE_CLARITY_PROJECT_ID: ${{ vars.VITE_CLARITY_PROJECT_ID }}
         run: |
           npm run typecheck
           npm run build
