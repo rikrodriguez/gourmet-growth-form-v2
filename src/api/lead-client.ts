@@ -38,6 +38,17 @@ type MeasurementConsentEvidence = {
 
 type CapturedLead = { leadId: string; conversionId: string };
 
+type CapturePhonePayload = {
+  visitor_id: string;
+  session_id: string;
+  phone: string;
+  intent_cluster: 'bbq';
+  idempotency_key: string;
+  attribution: AttributionContext;
+  answers: PrePhoneAnswers;
+  measurement_consent?: MeasurementConsentEvidence | null;
+};
+
 export class LeadDeliveryError extends Error {
   constructor() {
     super('The lead could not be saved securely.');
@@ -108,19 +119,30 @@ export const leadClient = {
       persistSessionValue(CAPTURE_IDEMPOTENCY_STORAGE_KEY, idempotencyKey);
       persistSessionValue(CAPTURE_PHONE_STORAGE_KEY, phone);
     }
-    const response = await request('/v1/leads/capture-phone', {
+    const payload: CapturePhonePayload = {
+      visitor_id: context.visitor_id,
+      session_id: context.session_id,
+      phone,
+      intent_cluster: 'bbq',
+      idempotency_key: idempotencyKey,
+      attribution: context.attribution,
+      answers,
+      measurement_consent: measurementConsent,
+    };
+    let response = await request('/v1/leads/capture-phone', {
       method: 'POST',
-      body: JSON.stringify({
-        visitor_id: context.visitor_id,
-        session_id: context.session_id,
-        phone,
-        intent_cluster: 'bbq',
-        idempotency_key: idempotencyKey,
-        attribution: context.attribution,
-        answers,
-        measurement_consent: measurementConsent,
-      }),
+      body: JSON.stringify(payload),
     });
+    if (response.status === 422 && measurementConsent) {
+      const rejection = await response.clone().json().catch(() => null) as { error?: unknown } | null;
+      if (rejection?.error === 'invalid_shape') {
+        const { measurement_consent: _unsupported, ...legacyPayload } = payload;
+        response = await request('/v1/leads/capture-phone', {
+          method: 'POST',
+          body: JSON.stringify(legacyPayload),
+        });
+      }
+    }
     if (!response.ok) throw new LeadDeliveryError();
     const body = await response.json() as { lead_id?: unknown; conversion_id?: unknown };
     if (typeof body.lead_id !== 'string' || !UUID_PATTERN.test(body.lead_id)) {

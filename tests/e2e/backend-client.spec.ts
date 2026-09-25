@@ -161,3 +161,57 @@ test('lead capture failure is visible and retry completes one progressive lead',
   );
   expect(afterReload.filter((event) => event.event === 'generate_lead')).toHaveLength(0);
 });
+
+test('legacy capture API is retried once without unsupported consent evidence', async ({ page }) => {
+  const captureBodies: Array<Record<string, unknown>> = [];
+  const leadId = 'f450369a-0629-4d58-bc6a-5f47d8c08b90';
+
+  await page.route('**/v1/events/batch', async (route) => {
+    const body = route.request().postDataJSON() as { events: Array<{ event_id: string }> };
+    const ids = body.events.map((event) => event.event_id);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ accepted: ids.length, duplicates: 0, rejected: 0, acknowledged_event_ids: ids, rejections: [] }),
+    });
+  });
+  await page.route('**/v1/leads/capture-phone', async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    captureBodies.push(body);
+    if ('measurement_consent' in body) {
+      await route.fulfill({ status: 422, contentType: 'application/json', body: '{"error":"invalid_shape"}' });
+      return;
+    }
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({ lead_id: leadId, status: 'created' }),
+    });
+  });
+
+  await openClean(page);
+  await page.getByRole('button', { name: 'Accept all' }).click();
+  await reachPhone(page);
+  await page.getByLabel('Mobile number').fill('5035550123');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByText('Step 5 of 7')).toBeVisible();
+
+  expect(captureBodies).toHaveLength(2);
+  expect(captureBodies[0].measurement_consent).toMatchObject({
+    version: 1,
+    ad_storage: 'granted',
+    ad_user_data: 'granted',
+    ad_personalization: 'granted',
+  });
+  expect(captureBodies[1]).not.toHaveProperty('measurement_consent');
+  expect(captureBodies[1].idempotency_key).toBe(captureBodies[0].idempotency_key);
+
+  const measurementEvents = await page.evaluate(
+    () => window.__GOURMET_MEASUREMENT_DEBUG__?.getSnapshot().emitted_events ?? [],
+  );
+  expect(measurementEvents.filter((event) => event.event === 'generate_lead')).toHaveLength(1);
+  expect(measurementEvents.find((event) => event.event === 'generate_lead')).toMatchObject({
+    transaction_id: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  expect(JSON.stringify(measurementEvents)).not.toContain('5035550123');
+});
