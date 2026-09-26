@@ -24,7 +24,7 @@ The API is an independent Node.js/Fastify service. It must not be deployed under
 - `QA_MARKER_SECRET`: staging-only secret for marking disposable QA data.
 - `MEASUREMENT_ENVIRONMENT`: keep `staging` on the current API. A future production API must explicitly set `production`.
 - `GOOGLE_ADS_CUSTOMER_ID`: numeric conversion customer ID without hyphens (`1112667809`).
-- `GOOGLE_ADS_CONVERSION_ACTION_ID`: numeric existing website conversion action ID (`7476344812`).
+- `GOOGLE_ADS_CONVERSION_ACTION_ID`: current `generate_lead` Website conversion action ID (`7476344812`). This action remains browser/GTM-only and is not a valid Google Data Manager destination.
 - GitHub secret `E2E_QA_SECRET`: the same staging QA marker, injected only into Playwright requests and never into the frontend bundle.
 - GitHub variable `VITE_GOURMET_API_BASE_URL`: enabled only after the hosted API passes health and integration checks.
 
@@ -49,17 +49,25 @@ Down migrations are explicit and never run at application startup. Use `npm run 
 
 ## M3B Enhanced Conversions readiness
 
-The selected architecture supplements the existing `WEBPAGE` conversion through Google Data Manager API multi-source conversion ingestion. The browser sends only the normal conversion plus an opaque `transaction_id`; phone normalization, SHA-256 hashing, consent checks, and delivery stay server-side.
+Measurement uses two distinct conversion semantics and destinations:
+
+- `generate_lead` remains the existing Primary Website conversion `7476344812`, emitted through the browser/GTM path.
+- A future governed `qualified_lead` event will use the dedicated Secondary `UPLOAD_CLICKS` action `7796776533` (`Gourmet Growth V2 — Qualified Lead — CRM`) through Google Data Manager API.
+
+The Website action `7476344812` must never be configured as a Data Manager destination. Creating the dedicated action does not define when a lead becomes qualified and does not authorize live delivery. Phone normalization, SHA-256 hashing, consent checks, and any future Data Manager delivery remain server-side.
 
 The isolated production destinations provisioned for the future cutover are GTM `GTM-PJ4NSD4K`, GA4 `G-K1QGPQ1X06`, and Clarity `ynyby0wh14`. Their public build variables are stored only in the GitHub `production` environment. The repository-level variables used by staging remain unchanged. None of these resources is installed, published, or connected to customer traffic by M3B.
 
-`growth_v2.measurement_outbox` is written in the same transaction as lead capture only when the backend is explicitly configured for production, both `ad_storage` and `ad_user_data` were explicitly granted, the request is not QA, and the verified Ads IDs exist. The unique lead/event constraint and stable transaction ID prevent double counting across retries.
+Migration `0004_measurement_outbox` and the current backend outbox path are intentionally restricted to `generate_lead`. They must not be repurposed for `qualified_lead`. A future versioned migration, governed CRM qualification rule, separate action selection, and tests are required before `qualified_lead` can become operational.
+
+The current `growth_v2.measurement_outbox` path is written in the same transaction as lead capture only when the backend is explicitly configured for production, both `ad_storage` and `ad_user_data` were explicitly granted, the request is not QA, and the verified Ads IDs exist. The unique lead/event constraint and stable transaction ID prevent double counting across retries. Its worker remains disabled and must not be pointed at action `7796776533` until the future qualified-lead lifecycle is implemented.
 
 The `measurement-worker` Compose service is profile-gated and defaults to `GOOGLE_ADS_DELIVERY_MODE=disabled`. Do not start it until all of the following are separately approved:
 
-1. Production cutover and the production GTM container are published with the same transaction ID on the existing Ads conversion tag.
-2. Google Cloud Data Manager API access and Application Default Credentials are provisioned outside the repository.
-3. `GOOGLE_ADS_DELIVERY_MODE=validate-only` has passed without submitting a conversion.
-4. A separate authorization changes the mode to `live`.
+1. Production cutover and the production GTM container are published for the existing browser `generate_lead` conversion.
+2. A governed `qualified_lead` lifecycle and a new versioned outbox migration are approved and implemented.
+3. Keyless unattended Google Cloud authentication (preferably WIF) is provisioned outside the repository.
+4. `GOOGLE_ADS_DELIVERY_MODE=validate-only` passes against action `7796776533` without submitting a conversion.
+5. A separate authorization changes the qualified-lead delivery mode to `live`.
 
 `npm run ads:dry-run` is local-only, uses synthetic data, makes no network request, and prints no plaintext phone or name.
