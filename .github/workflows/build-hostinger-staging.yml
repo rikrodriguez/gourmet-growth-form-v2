@@ -170,6 +170,8 @@ jobs:
 
           for attempt in $(seq 1 60); do
             if curl --fail --silent --show-error \
+              --connect-timeout 3 \
+              --max-time 5 \
               "${STAGING_BUILD_INFO}?sha=${GITHUB_SHA}&attempt=${attempt}" \
               --output "${RUNNER_TEMP}/live-build-info.json"; then
               if node --input-type=module <<'NODE'
@@ -181,7 +183,7 @@ jobs:
                 exit 0
               fi
             fi
-            sleep 10
+            sleep 5
           done
 
           echo "Hostinger did not expose source SHA ${GITHUB_SHA} within 10 minutes." >&2
@@ -195,6 +197,8 @@ jobs:
 
           for attempt in $(seq 1 60); do
             if curl --fail --silent --show-error \
+              --connect-timeout 3 \
+              --max-time 5 \
               "${STAGING_URL}" \
               --dump-header "${RUNNER_TEMP}/live-headers.txt" \
               --output "${RUNNER_TEMP}/live-index.html"; then
@@ -220,7 +224,7 @@ jobs:
                 exit 0
               fi
             fi
-            sleep 10
+            sleep 5
           done
 
           echo "Canonical staging URL did not expose the exact artifact and cache policy within 10 minutes." >&2
