@@ -1,0 +1,19 @@
+{
+  "milestone": "M4A",
+  "reference": {
+    "path": null,
+    "dimensions": null,
+    "checksum_sha256": null,
+    "source": "Searched repository, Gourmet Corporation workspace, supplied attachments, and desktop project files on 2026-09-28; no approved BBQ mockup was found.",
+    "intended_viewport": "390x844 primary mobile; 360-430 mobile, 768-1024 tablet, 1440 desktop validation",
+    "status": "unknown"
+  },
+  "hero": {
+    "path": "public/assets/bbq-hero-mobile-v1.webp",
+    "dimensions": null,
+    "checksum_sha256": "eb102e50226eb213319ee9ba3a51f66b325f378051939e0c7d9910d56b618780",
+    "source": "Existing repository asset; binary signature is not WebP and browser decode fails.",
+    "intended_viewport": "mobile and desktop responsive hero",
+    "status": "provisional"
+  }
+}

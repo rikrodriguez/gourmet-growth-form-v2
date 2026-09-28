@@ -290,7 +290,7 @@ function ProgressHeader({
         </div>
         <div className="event-time">
           <ClockIcon />
-          <span><strong>Your Event</strong><small>1–2 min</small></span>
+          <span><strong>Short form</strong><small>7 steps</small></span>
         </div>
       </div>
     </>
@@ -382,6 +382,8 @@ function BBQFunnel() {
   }, [stepIndex]);
 
   function updateAnswer(key: keyof Answers, value: string) {
+    setAnnouncement('');
+    setDeliveryError('');
     setAnswers((current) => ({ ...current, [key]: value }));
   }
 
@@ -499,30 +501,10 @@ function BBQFunnel() {
       return;
     }
 
-    setZipLookup('loading');
-
-    try {
-      const group = zip.slice(0, 3);
-      const response = await fetch(`/bbq/cities/group-${group}.json`, { cache: 'no-store' });
-      if (!response.ok) throw new Error('ZIP lookup unavailable');
-
-      const data = await response.json();
-      const row = data?.[zip];
-      if (row?.City || row?.ST) {
-        setAnswers((current) => ({
-          ...current,
-          city: row.City || '',
-          state: row.ST || '',
-        }));
-        setZipLookup('found');
-      } else {
-        setAnswers((current) => ({ ...current, city: undefined, state: undefined }));
-        setZipLookup('unknown');
-      }
-    } catch {
-      setAnswers((current) => ({ ...current, city: undefined, state: undefined }));
-      setZipLookup('unknown');
-    }
+    // No trustworthy V2-owned ZIP dataset is available yet. Keep a transparent,
+    // non-blocking fallback instead of requesting the known-missing legacy file.
+    setAnswers((current) => ({ ...current, city: undefined, state: undefined }));
+    setZipLookup('unknown');
   }
 
   function handleZip(value: string) {
@@ -583,7 +565,7 @@ function BBQFunnel() {
             <p className="hero-eyebrow">BBQ CATERING · PORTLAND</p>
             <h1 id="bbq-title">BBQ Catering<br />in Portland</h1>
             <p className="hero-copy">
-              Amazing food. Unforgettable events. Get a personalized quote in under 2 minutes.
+              Tell us about your event and we’ll prepare a personalized catering quote.
             </p>
             <div className="hero-features" aria-label="Service highlights">
               <span><i><LeafIcon /></i>Local<br />team</span>
@@ -624,7 +606,7 @@ function BBQFunnel() {
                 <span className="proof-icon"><PeopleIcon /></span>
                 <span className="proof-copy">
                   <strong>Serving Portland-area events</strong>
-                  <small>Check availability in under 2 minutes</small>
+                  <small>We’ll confirm service details with your quote</small>
                 </span>
                 <span className="proof-chevron">›</span>
               </div>
@@ -722,7 +704,7 @@ function BBQFunnel() {
             >
               <fieldset>
                 <legend>What’s the best phone number to reach you?</legend>
-                <p className="question-help">We’ll only use it for this catering request. No spam.</p>
+                <p className="question-help">We’ll use it to follow up about this catering request.</p>
 
                 <label className="field-label" htmlFor="phone">Mobile number</label>
                 <input
@@ -735,9 +717,9 @@ function BBQFunnel() {
                   value={answers.phone || ''}
                   onChange={(event) => handlePhone(event.target.value)}
                   placeholder="(503) 555-0123"
-                  aria-describedby="phone-note"
+                  aria-describedby={deliveryError ? 'phone-note delivery-error' : 'phone-note'}
                 />
-                <p id="phone-note" className="trust-line"><LockIcon />Your information stays private.</p>
+                <p id="phone-note" className="trust-line"><LockIcon />Securely handled for this request.</p>
               </fieldset>
 
               <div className="step-spacer compact" />
@@ -745,12 +727,13 @@ function BBQFunnel() {
                 className="continue-button"
                 type="button"
                 disabled={normalizedPhoneDigits(answers.phone || '').length !== 10 || isSavingLead}
+                aria-busy={isSavingLead}
                 onClick={() => void advanceIfValid(
                   normalizedPhoneDigits(answers.phone || '').length === 10,
                   'Enter a valid 10-digit phone number.',
                 )}
               >
-                <span>{isSavingLead ? 'Saving securely…' : 'Continue'}</span><ArrowIcon />
+                <span>{isSavingLead ? 'Saving securely…' : deliveryError ? 'Retry secure save' : 'Continue'}</span><ArrowIcon />
               </button>
             </form>
           )}
@@ -953,7 +936,7 @@ function BBQFunnel() {
               <span className="completion-kicker">STAGING FLOW COMPLETE</span>
               <h2>Thanks{answers.name ? `, ${answers.name.trim()}` : ''}.</h2>
               <p>
-                Your BBQ quote flow is complete. CRM delivery and external tracking are intentionally not connected yet.
+                Your BBQ catering request has been saved. Our team can now review the details you provided.
               </p>
 
               <dl className="summary-list">
@@ -972,9 +955,9 @@ function BBQFunnel() {
 
           {!isComplete && (
             <>
-              {deliveryError && <p className="delivery-error" role="alert">{deliveryError}</p>}
-              <p className="privacy-note"><LockIcon />Your information is secure and never shared.</p>
-              <p className="sr-only" aria-live="polite">{announcement}</p>
+              {deliveryError && <p id="delivery-error" className="delivery-error" role="alert">{deliveryError}</p>}
+              {announcement && !deliveryError && <p className="validation-message" role="alert">{announcement}</p>}
+              <p className="privacy-note"><LockIcon />Securely handled for your catering request.</p>
             </>
           )}
         </section>

@@ -108,10 +108,12 @@ test('lead capture failure is visible and retry completes one progressive lead',
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('alert')).toContainText('could not securely save');
   await expect(page.getByText('Step 4 of 7')).toBeVisible();
+  await expect(page.getByLabel('Mobile number')).toHaveValue('(503) 555-0123');
+  await expect(page.getByRole('button', { name: 'Retry secure save' })).toBeEnabled();
   expect((await page.evaluate(() => window.__GOURMET_MEASUREMENT_DEBUG__?.getSnapshot().emitted_events ?? []))
     .filter((event) => event.event === 'generate_lead')).toHaveLength(0);
 
-  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Retry secure save' }).click();
   await expect(page.getByText('Step 5 of 7')).toBeVisible();
   await chooseAndContinue(page, 'Corporate');
   await chooseAndContinue(page, 'still-deciding');

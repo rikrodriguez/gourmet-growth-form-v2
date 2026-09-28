@@ -93,8 +93,11 @@ test('real card clicks advance once through the full funnel and Back preserves v
   expect(unexpectedMainFrameNavigations).toBe(0);
 });
 
-test('ZIP lookup failure falls back and does not block progression', async ({ page }) => {
-  await page.route('**/bbq/cities/group-972.json', (route) => route.abort('failed'));
+test('ZIP fallback does not request the missing legacy dataset or block progression', async ({ page }) => {
+  let legacyZipRequests = 0;
+  page.on('request', (request) => {
+    if (request.url().includes('/bbq/cities/')) legacyZipRequests += 1;
+  });
   await chooseAndContinue(page, '26-50', 2);
   await chooseAndContinue(page, 'full-service', 3);
 
@@ -102,6 +105,7 @@ test('ZIP lookup failure falls back and does not block progression', async ({ pa
   await expect(page.getByText(/confirm service availability/i)).toBeVisible();
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByText('Step 4 of 7')).toBeVisible();
+  expect(legacyZipRequests).toBe(0);
 });
 
 test('same-tab refresh preserves phone while local storage excludes PII', async ({ page, context }) => {
