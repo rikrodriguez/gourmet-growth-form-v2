@@ -8,9 +8,10 @@ export const bbqVariant = {
   serviceCategory: 'bbq',
   hero: {
     image: {
-      src: null,
+      src: '/form2/assets/bbq-hero-desktop-v2.webp',
+      mobileSrc: '/form2/assets/bbq-hero-mobile-v2.webp',
       alt: 'BBQ catering prepared by Gourmet Corp',
-      status: 'missing',
+      status: 'approved',
       referenceId: 'bbq-main-approved-mobile',
     },
     eyebrow: 'BBQ CATERING · PORTLAND',

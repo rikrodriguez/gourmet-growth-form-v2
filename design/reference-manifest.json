@@ -64,6 +64,17 @@
   ],
   "available_assets": [
     {
+      "path": "design/assets/bbq-hero-clean-master.png",
+      "dimensions": "1586x992",
+      "checksum_sha256": "28259c7e5044ae1815ad4d6237431cef455c1d927a7f143e78ed1b8cbcb9ea1e",
+      "provenance": "User-supplied approved clean BBQ hero source",
+      "verification_status": "approved_clean_source",
+      "responsive_derivatives": [
+        "public/assets/bbq-hero-mobile-v2.webp",
+        "public/assets/bbq-hero-desktop-v2.webp"
+      ]
+    },
+    {
       "path": "public/assets/bbq-hero-mobile-v1.webp",
       "dimensions": null,
       "checksum_sha256": "eb102e50226eb213319ee9ba3a51f66b325f378051939e0c7d9910d56b618780",
@@ -72,7 +83,8 @@
     }
   ],
   "hero_clean_source": {
-    "status": "blocked",
-    "reason": "No supplied binary contains a clean, adequately sized brisket photograph without device chrome, web UI, or text overlays. The Golden Master screenshots are retained as visual references only."
+    "status": "approved",
+    "path": "design/assets/bbq-hero-clean-master.png",
+    "reason": "User-supplied clean brisket photograph with dark left-side negative space and the food composition on the right."
   }
 }

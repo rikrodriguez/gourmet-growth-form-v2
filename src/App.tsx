@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { type CSSProperties, FormEvent, useEffect, useMemo, useState } from 'react';
 import { leadClient } from './api/lead-client';
 import { ConsentBanner } from './measurement/ConsentBanner';
 import { measurement } from './measurement/measurement';
@@ -665,10 +665,15 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
         <BrandHeader />
 
         <section
-          className={`bbq-hero variant-${variant.slug}`}
+          className={`bbq-hero variant-${variant.slug}${variant.hero.image.src ? ' has-hero-image' : ''}`}
           aria-labelledby="variant-title"
           {...(variant.hero.image.src
-            ? { style: { backgroundImage: `linear-gradient(90deg, rgba(10,12,10,.91) 0%, rgba(10,12,10,.74) 43%, rgba(10,12,10,.18) 77%, rgba(10,12,10,.02) 100%), url(${variant.hero.image.src})` } }
+            ? {
+                style: {
+                  '--hero-image-mobile': `url(${variant.hero.image.mobileSrc ?? variant.hero.image.src})`,
+                  '--hero-image-desktop': `url(${variant.hero.image.src})`,
+                } as CSSProperties,
+              }
             : {})}
         >
           <div className="hero-content">

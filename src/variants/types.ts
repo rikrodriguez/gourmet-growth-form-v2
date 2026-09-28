@@ -44,6 +44,7 @@ export type FunnelVariant = {
   hero: {
     image: {
       src: string | null;
+      mobileSrc?: string;
       alt: string;
       status: VariantAssetStatus;
       referenceId: string;

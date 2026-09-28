@@ -9,6 +9,8 @@ test('390 web surface is deterministic and excludes device chrome from compariso
   });
   await page.reload();
   await expect(page.locator('.mobile-app')).toBeVisible();
+  await expect(page.locator('.bbq-hero')).toHaveClass(/has-hero-image/);
+  await expect(page.locator('.bbq-hero')).toHaveCSS('background-image', /bbq-hero-mobile-v2\.webp/);
   const first = await page.locator('.mobile-app').screenshot({ animations: 'disabled' });
   const second = await page.locator('.mobile-app').screenshot({ animations: 'disabled' });
   expect(Buffer.compare(first, second)).toBe(0);

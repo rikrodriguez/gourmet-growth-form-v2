@@ -33,6 +33,12 @@ describe('variant registry', () => {
     assert.equal(url.search, '');
   });
 
+  it('uses the approved responsive BBQ hero derivatives', () => {
+    assert.equal(bbqVariant.hero.image.status, 'approved');
+    assert.equal(bbqVariant.hero.image.src, '/form2/assets/bbq-hero-desktop-v2.webp');
+    assert.equal(bbqVariant.hero.image.mobileSrc, '/form2/assets/bbq-hero-mobile-v2.webp');
+  });
+
   it('builds only the allowlisted non-PII redirect context after activation', () => {
     const activeVariant: FunnelVariant = {
       ...bbqVariant,
