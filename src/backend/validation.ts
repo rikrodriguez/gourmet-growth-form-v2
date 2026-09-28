@@ -8,6 +8,7 @@ import {
   type TelemetryEventName,
 } from '../telemetry/types';
 import type { CapturePhoneInput, EventRejection, LeadAnswers } from './contracts';
+import { registeredVariantMetadata } from '../variants/registry';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -49,6 +50,10 @@ const VALIDATION_CODES = new Set([
 const DATE_WINDOWS = DATE_VALUES;
 const MAX_EVENT_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_CLOCK_SKEW_MS = 10 * 60 * 1000;
+const VARIANT_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const REGISTERED_INTENT_CLUSTERS = new Set<string>(registeredVariantMetadata.map((metadata) => metadata.intentCluster));
+const REGISTERED_VARIANT_SLUGS = new Set<string>(registeredVariantMetadata.map((metadata) => metadata.variantSlug));
+const REGISTERED_SERVICE_CATEGORIES = new Set<string>(registeredVariantMetadata.map((metadata) => metadata.serviceCategory));
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -73,6 +78,14 @@ function isIsoTimestamp(value: unknown): value is string {
   if (!isBoundedString(value, 40)) return false;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed);
+}
+
+function isVariantIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && VARIANT_IDENTIFIER_PATTERN.test(value);
+}
+
+function isRegisteredIntentCluster(value: unknown): value is string {
+  return isVariantIdentifier(value) && REGISTERED_INTENT_CLUSTERS.has(value);
 }
 
 export function isUuid(value: unknown): value is string {
@@ -100,7 +113,10 @@ export function findPiiKey(value: unknown, depth = 0): string | null {
 
 function validateAttributionTouch(value: unknown): value is AttributionTouch {
   if (!isRecord(value)) return false;
-  const metadataKeys = ['captured_at', 'landing_path', 'landing_url_without_pii', 'referrer', 'intent_cluster'];
+  const metadataKeys = [
+    'captured_at', 'landing_path', 'landing_url_without_pii', 'referrer',
+    'intent_cluster', 'variant_slug', 'service_category',
+  ];
   if (!hasOnlyKeys(value, [...ATTRIBUTION_KEYS, ...metadataKeys])) return false;
   if (!isIsoTimestamp(value.captured_at)) return false;
   if (!isBoundedString(value.landing_path, 300) || !value.landing_path.startsWith('/') || /[?#]/.test(value.landing_path) || containsLikelyPii(value.landing_path)) return false;
@@ -120,7 +136,11 @@ function validateAttributionTouch(value: unknown): value is AttributionTouch {
       return false;
     }
   }
-  if (value.intent_cluster !== 'bbq') return false;
+  if (!isRegisteredIntentCluster(value.intent_cluster)) return false;
+  if (value.variant_slug !== undefined
+    && (!isVariantIdentifier(value.variant_slug) || !REGISTERED_VARIANT_SLUGS.has(value.variant_slug))) return false;
+  if (value.service_category !== undefined
+    && (!isVariantIdentifier(value.service_category) || !REGISTERED_SERVICE_CATEGORIES.has(value.service_category))) return false;
   for (const key of ATTRIBUTION_KEYS) {
     const candidate = value[key];
     if (candidate !== undefined && (!isBoundedString(candidate, 200) || containsLikelyPii(candidate))) return false;
@@ -203,7 +223,7 @@ export function validateEvent(value: unknown, now = Date.now()): { event?: Gourm
   if (occurred < now - MAX_EVENT_AGE_MS || occurred > now + MAX_CLOCK_SKEW_MS) {
     return { rejection: { event_id: eventId, code: 'occurred_at_out_of_range' } };
   }
-  if (value.intent_cluster !== 'bbq') return { rejection: { event_id: eventId, code: 'invalid_intent_cluster' } };
+  if (!isRegisteredIntentCluster(value.intent_cluster)) return { rejection: { event_id: eventId, code: 'invalid_intent_cluster' } };
   if (!isBoundedString(value.route, 300) || !value.route.startsWith('/') || /[?#]/.test(value.route)) {
     return { rejection: { event_id: eventId, code: 'invalid_route' } };
   }
@@ -263,7 +283,7 @@ export function validateCapturePhone(value: unknown): { input?: CapturePhoneInpu
     'visitor_id', 'session_id', 'phone', 'intent_cluster', 'idempotency_key', 'attribution', 'answers', 'measurement_consent',
   ])) return { code: 'invalid_shape' };
   if (!isUuid(value.visitor_id) || !isUuid(value.session_id) || !isUuid(value.idempotency_key)) return { code: 'invalid_uuid' };
-  if (value.intent_cluster !== 'bbq') return { code: 'invalid_intent_cluster' };
+  if (!isRegisteredIntentCluster(value.intent_cluster)) return { code: 'invalid_intent_cluster' };
   const phone = normalizeUsPhone(value.phone);
   if (!phone) return { code: 'invalid_phone' };
   if (value.attribution !== undefined && !validateAttribution(value.attribution)) return { code: 'invalid_attribution' };

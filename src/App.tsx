@@ -3,6 +3,9 @@ import { leadClient } from './api/lead-client';
 import { ConsentBanner } from './measurement/ConsentBanner';
 import { measurement } from './measurement/measurement';
 import { telemetry } from './telemetry/telemetry';
+import { buildThankYouRedirectUrl } from './variants/thank-you';
+import { resolveVariant } from './variants/registry';
+import type { FunnelVariant, VariantIcon } from './variants/types';
 import {
   AnswerValue,
   DateAnswerValue,
@@ -41,9 +44,6 @@ type Option<Value extends AnswerValue = AnswerValue> = {
   icon?: 'people';
 };
 
-const LEGACY_STORAGE_KEY = 'gourmet_growth_v2_bbq_v1';
-const SESSION_STORAGE_KEY = 'gourmet_growth_v2_bbq_session_v2';
-const NON_PII_STORAGE_KEY = 'gourmet_growth_v2_bbq_non_pii_v2';
 const STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
 const TOTAL_STEPS = 7;
 const TELEMETRY_STEPS: readonly StepId[] = [
@@ -100,25 +100,34 @@ const dateOptions: Option<DateAnswerValue>[] = [
   { value: 'still-deciding', title: 'Still deciding', subtitle: 'Not sure yet' },
 ];
 
-function loadSavedState(previewGolden: boolean): SavedState {
-  try {
-    window.sessionStorage.removeItem(LEGACY_STORAGE_KEY);
-    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+function storageKeys(variantSlug: string) {
+  return {
+    legacy: `gourmet_growth_v2_${variantSlug}_v1`,
+    session: `gourmet_growth_v2_${variantSlug}_session_v2`,
+    nonPii: `gourmet_growth_v2_${variantSlug}_non_pii_v2`,
+  };
+}
 
-    const sessionRaw = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+function loadSavedState(previewGolden: boolean, variantSlug: string): SavedState {
+  const keys = storageKeys(variantSlug);
+  try {
+    window.sessionStorage.removeItem(keys.legacy);
+    window.localStorage.removeItem(keys.legacy);
+
+    const sessionRaw = window.sessionStorage.getItem(keys.session);
     if (sessionRaw) {
       const parsed = JSON.parse(sessionRaw) as SavedState;
       const fresh = parsed.version === 2 && Date.now() - parsed.updatedAt < STORAGE_TTL_MS;
       if (fresh) return parsed;
-      window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      window.sessionStorage.removeItem(keys.session);
     }
 
-    const raw = window.localStorage.getItem(NON_PII_STORAGE_KEY);
+    const raw = window.localStorage.getItem(keys.nonPii);
     if (raw) {
       const parsed = JSON.parse(raw) as SavedState;
       const fresh = parsed.version === 2 && Date.now() - parsed.updatedAt < STORAGE_TTL_MS;
       if (fresh) return parsed;
-      window.localStorage.removeItem(NON_PII_STORAGE_KEY);
+      window.localStorage.removeItem(keys.nonPii);
     }
   } catch {
     // Storage can be unavailable in private browsing modes. The funnel still works.
@@ -227,6 +236,12 @@ function ArrowIcon() {
   );
 }
 
+function TrustBadgeIcon({ icon }: { icon: VariantIcon }) {
+  if (icon === 'leaf') return <LeafIcon />;
+  if (icon === 'people') return <PeopleIcon />;
+  return <StarIcon />;
+}
+
 function OptionCard<Value extends AnswerValue>({
   option,
   selected,
@@ -262,9 +277,11 @@ function OptionCard<Value extends AnswerValue>({
 function ProgressHeader({
   stepIndex,
   onBack,
+  variant,
 }: {
   stepIndex: number;
   onBack: () => void;
+  variant: FunnelVariant;
 }) {
   const stepNumber = Math.min(stepIndex + 1, TOTAL_STEPS);
   return (
@@ -276,7 +293,7 @@ function ProgressHeader({
       )}
       <div className="progress-row">
         <div className="progress-left">
-          <strong>Step {stepNumber} of {TOTAL_STEPS}</strong>
+          <strong>{variant.progress.stepLabel} {stepNumber} of {TOTAL_STEPS}</strong>
           <div
             className="progress-track"
             role="progressbar"
@@ -290,19 +307,22 @@ function ProgressHeader({
         </div>
         <div className="event-time">
           <ClockIcon />
-          <span><strong>Short form</strong><small>7 steps</small></span>
+          <span><strong>{variant.progress.shortLabel}</strong><small>{variant.progress.countLabel}</small></span>
         </div>
       </div>
     </>
   );
 }
 
-function BBQFunnel() {
+function VariantFunnel({ variant }: { variant: FunnelVariant }) {
   const goldenPreview = useMemo(
     () => new URLSearchParams(window.location.search).get('preview') === 'golden',
     [],
   );
-  const initial = useMemo(() => loadSavedState(goldenPreview), [goldenPreview]);
+  const initial = useMemo(
+    () => loadSavedState(goldenPreview, variant.slug),
+    [goldenPreview, variant.slug],
+  );
 
   const [stepIndex, setStepIndex] = useState(initial.stepIndex);
   const [answers, setAnswers] = useState<Answers>(initial.answers);
@@ -323,14 +343,14 @@ function BBQFunnel() {
   const isComplete = step === 'complete';
 
   useEffect(() => {
-    document.title = 'BBQ Catering in Portland | Gourmet Corp';
-  }, []);
+    document.title = variant.documentTitle;
+  }, [variant.documentTitle]);
 
   useEffect(() => {
-    telemetry.initialize(initialStep);
-    measurement.initialize();
+    telemetry.initialize(initialStep, variant.metadata);
+    measurement.initialize(variant.metadata);
     measurement.formStart();
-  }, [initialStep]);
+  }, [initialStep, variant.metadata]);
 
   useEffect(() => {
     telemetry.stepViewed(step);
@@ -341,6 +361,7 @@ function BBQFunnel() {
   }, [step]);
 
   useEffect(() => {
+    const keys = storageKeys(variant.slug);
     const fullSaved: SavedState = {
       version: 2,
       updatedAt: Date.now(),
@@ -367,12 +388,12 @@ function BBQFunnel() {
     };
 
     try {
-      window.sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(fullSaved));
-      window.localStorage.setItem(NON_PII_STORAGE_KEY, JSON.stringify(durableSaved));
+      window.sessionStorage.setItem(keys.session, JSON.stringify(fullSaved));
+      window.localStorage.setItem(keys.nonPii, JSON.stringify(durableSaved));
     } catch {
       // Ignore storage failures; do not block the funnel.
     }
-  }, [answers, stepIndex]);
+  }, [answers, stepIndex, variant.slug]);
 
   useEffect(() => {
     if (stepIndex === TOTAL_STEPS) return;
@@ -436,11 +457,11 @@ function BBQFunnel() {
             guest_range: answers.guests,
             service_style: answers.service,
             zip_code: answers.zip,
-          }, measurement.getServerConsentEvidence());
+          }, measurement.getServerConsentEvidence(), variant.metadata);
           if (!captured) throw new Error('missing_captured_lead');
           measurement.generateLead(captured.conversionId);
         } else if (leadUpdates) {
-          const leadId = leadClient.getLeadId();
+          const leadId = leadClient.getLeadId(variant.metadata);
           if (!leadId) throw new Error('missing_lead_id');
           await leadClient.update(leadId, context.session_id, leadUpdates);
         }
@@ -477,6 +498,18 @@ function BBQFunnel() {
         : {}),
       ...(step === 'date' && answers.dateWindow ? { date_window: answers.dateWindow } : {}),
     });
+
+    if (step === 'name') {
+      const context = telemetry.getLeadContext();
+      const persistedLead = leadClient.getLeadId(variant.metadata);
+      const redirectUrl = context ? buildThankYouRedirectUrl(variant, context.attribution) : null;
+      if (redirectUrl && leadClient.isConfigured && persistedLead) {
+        telemetry.formCompleted();
+        measurement.formComplete();
+        window.location.assign(redirectUrl);
+        return true;
+      }
+    }
 
     setAnnouncement('');
     setDeliveryError('');
@@ -518,11 +551,12 @@ function BBQFunnel() {
   }
 
   function resetFunnel() {
+    const keys = storageKeys(variant.slug);
     try {
-      window.localStorage.removeItem(NON_PII_STORAGE_KEY);
-      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
-      window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
-      window.sessionStorage.removeItem(LEGACY_STORAGE_KEY);
+      window.localStorage.removeItem(keys.nonPii);
+      window.localStorage.removeItem(keys.legacy);
+      window.sessionStorage.removeItem(keys.session);
+      window.sessionStorage.removeItem(keys.legacy);
     } catch {
       // Ignore storage failures.
     }
@@ -532,7 +566,7 @@ function BBQFunnel() {
     setAnnouncement('');
     setDeliveryError('');
     setIsSavingLead(false);
-    leadClient.reset();
+    leadClient.reset(variant.metadata);
     telemetry.startNewFunnel();
     measurement.startNewFunnel();
     setStepIndex(0);
@@ -560,17 +594,23 @@ function BBQFunnel() {
           <span className="menu-button" aria-hidden="true"><MenuIcon /></span>
         </header>
 
-        <section className="bbq-hero" aria-labelledby="bbq-title">
+        <section
+          className={`bbq-hero variant-${variant.slug}`}
+          aria-labelledby="variant-title"
+          {...(variant.hero.image.src
+            ? { style: { backgroundImage: `linear-gradient(90deg, rgba(10,12,10,.91) 0%, rgba(10,12,10,.74) 43%, rgba(10,12,10,.18) 77%, rgba(10,12,10,.02) 100%), url(${variant.hero.image.src})` } }
+            : {})}
+        >
           <div className="hero-content">
-            <p className="hero-eyebrow">BBQ CATERING · PORTLAND</p>
-            <h1 id="bbq-title">BBQ Catering<br />in Portland</h1>
-            <p className="hero-copy">
-              Tell us about your event and we’ll prepare a personalized catering quote.
-            </p>
+            <p className="hero-eyebrow">{variant.hero.eyebrow}</p>
+            <h1 id="variant-title">{variant.hero.headline[0]}{variant.hero.headline[1] && <><br />{variant.hero.headline[1]}</>}</h1>
+            <p className="hero-copy">{variant.hero.subheadline}</p>
             <div className="hero-features" aria-label="Service highlights">
-              <span><i><LeafIcon /></i>Local<br />team</span>
-              <span><i><PeopleIcon /></i>Events of<br />any size</span>
-              <span><i><StarIcon /></i>Custom<br />menus</span>
+              {variant.trustBadges.map((badge) => (
+                <span key={badge.lines.join('-')}>
+                  <i><TrustBadgeIcon icon={badge.icon} /></i>{badge.lines[0]}<br />{badge.lines[1]}
+                </span>
+              ))}
             </div>
           </div>
         </section>
@@ -579,7 +619,7 @@ function BBQFunnel() {
           className={`quote-panel${isComplete ? ' completion-shell' : ''}`}
           data-clarity-mask="true"
         >
-          {!isComplete && <ProgressHeader stepIndex={stepIndex} onBack={back} />}
+          {!isComplete && <ProgressHeader stepIndex={stepIndex} onBack={back} variant={variant} />}
 
           {step === 'guests' && (
             <form onSubmit={(event) => continueWith(event, Boolean(answers.guests), 'Choose a guest range to continue.')}>
@@ -605,8 +645,8 @@ function BBQFunnel() {
               <div className="local-proof" aria-label="Local service information">
                 <span className="proof-icon"><PeopleIcon /></span>
                 <span className="proof-copy">
-                  <strong>Serving Portland-area events</strong>
-                  <small>We’ll confirm service details with your quote</small>
+                  <strong>{variant.proofBar.headline}</strong>
+                  <small>{variant.proofBar.supportingCopy}</small>
                 </span>
                 <span className="proof-chevron">›</span>
               </div>
@@ -617,7 +657,7 @@ function BBQFunnel() {
                 disabled={!answers.guests}
                 onClick={() => void advanceIfValid(Boolean(answers.guests), 'Choose a guest range to continue.')}
               >
-                <span>Continue</span><ArrowIcon />
+                <span>{variant.cta.continue}</span><ArrowIcon />
               </button>
             </form>
           )}
@@ -650,7 +690,7 @@ function BBQFunnel() {
                 disabled={!answers.service}
                 onClick={() => void advanceIfValid(Boolean(answers.service), 'Choose a service style to continue.')}
               >
-                <span>Continue</span><ArrowIcon />
+                <span>{variant.cta.continue}</span><ArrowIcon />
               </button>
             </form>
           )}
@@ -689,7 +729,7 @@ function BBQFunnel() {
                 disabled={!/^\d{5}$/.test(answers.zip || '')}
                 onClick={() => void advanceIfValid(/^\d{5}$/.test(answers.zip || ''), 'Enter a 5-digit ZIP code.')}
               >
-                <span>Continue</span><ArrowIcon />
+                <span>{variant.cta.continue}</span><ArrowIcon />
               </button>
             </form>
           )}
@@ -703,10 +743,10 @@ function BBQFunnel() {
               )}
             >
               <fieldset>
-                <legend>What’s the best phone number to reach you?</legend>
-                <p className="question-help">We’ll use it to follow up about this catering request.</p>
+                <legend>{variant.phoneStep.headline}</legend>
+                <p className="question-help">{variant.phoneStep.subheadline}</p>
 
-                <label className="field-label" htmlFor="phone">Mobile number</label>
+                <label className="field-label" htmlFor="phone">{variant.phoneStep.fieldLabel}</label>
                 <input
                   id="phone"
                   className="text-input"
@@ -719,7 +759,7 @@ function BBQFunnel() {
                   placeholder="(503) 555-0123"
                   aria-describedby={deliveryError ? 'phone-note delivery-error' : 'phone-note'}
                 />
-                <p id="phone-note" className="trust-line"><LockIcon />Securely handled for this request.</p>
+                <p id="phone-note" className="trust-line"><LockIcon />{variant.phoneStep.privacyCopy}</p>
               </fieldset>
 
               <div className="step-spacer compact" />
@@ -733,7 +773,7 @@ function BBQFunnel() {
                   'Enter a valid 10-digit phone number.',
                 )}
               >
-                <span>{isSavingLead ? 'Saving securely…' : deliveryError ? 'Retry secure save' : 'Continue'}</span><ArrowIcon />
+                <span>{isSavingLead ? variant.cta.saving : deliveryError ? variant.cta.retry : variant.cta.continue}</span><ArrowIcon />
               </button>
             </form>
           )}
@@ -755,7 +795,7 @@ function BBQFunnel() {
             >
               <fieldset>
                 <legend>What kind of event is it?</legend>
-                <p className="question-help">BBQ is your catering style; this tells us the occasion.</p>
+                <p className="question-help">Your catering style is set; this tells us the occasion.</p>
 
                 <div className="guest-grid is-two">
                   {eventOptions.map((option) => (
@@ -810,7 +850,7 @@ function BBQFunnel() {
                   );
                 }}
               >
-                <span>{isSavingLead ? 'Saving securely…' : 'Continue'}</span><ArrowIcon />
+                <span>{isSavingLead ? variant.cta.saving : variant.cta.continue}</span><ArrowIcon />
               </button>
             </form>
           )}
@@ -881,7 +921,7 @@ function BBQFunnel() {
                   } : undefined,
                 )}
               >
-                <span>{isSavingLead ? 'Saving securely…' : 'Continue'}</span><ArrowIcon />
+                <span>{isSavingLead ? variant.cta.saving : variant.cta.continue}</span><ArrowIcon />
               </button>
             </form>
           )}
@@ -926,18 +966,16 @@ function BBQFunnel() {
                     : undefined,
                 )}
               >
-                <span>{isSavingLead ? 'Saving securely…' : 'Finish'}</span><ArrowIcon />
+                <span>{isSavingLead ? variant.cta.saving : variant.cta.finish}</span><ArrowIcon />
               </button>
             </form>
           )}
 
           {step === 'complete' && (
             <div className="completion-panel">
-              <span className="completion-kicker">STAGING FLOW COMPLETE</span>
-              <h2>Thanks{answers.name ? `, ${answers.name.trim()}` : ''}.</h2>
-              <p>
-                Your BBQ catering request has been saved. Our team can now review the details you provided.
-              </p>
+              <span className="completion-kicker">{variant.completion.kicker}</span>
+              <h2>{variant.completion.headline}{answers.name ? `, ${answers.name.trim()}` : ''}.</h2>
+              <p>{variant.completion.body}</p>
 
               <dl className="summary-list">
                 <div><dt>Guests</dt><dd>{answers.guests || '—'}</dd></div>
@@ -948,7 +986,7 @@ function BBQFunnel() {
               </dl>
 
               <button className="continue-button secondary-action" type="button" onClick={resetFunnel}>
-                <span>Start a new quote</span>
+                <span>{variant.cta.startNew}</span>
               </button>
             </div>
           )}
@@ -986,5 +1024,6 @@ function FoundationScreen() {
 }
 
 export default function App() {
-  return window.location.pathname.includes('/bbq') ? <BBQFunnel /> : <FoundationScreen />;
+  const variant = resolveVariant(window.location.pathname);
+  return variant ? <VariantFunnel variant={variant} /> : <FoundationScreen />;
 }

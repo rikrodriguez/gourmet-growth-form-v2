@@ -17,6 +17,45 @@ describe('server-side validation', () => {
     assert.equal(validateEvent(unknown).rejection?.code, 'unsupported_contract');
   });
 
+  it('accepts registered variant metadata and rejects unregistered identifiers', () => {
+    const registeredVariant = eventFixture({
+      attribution: {
+        first_touch: {
+          ...eventFixture().attribution.first_touch,
+          variant_slug: 'bbq',
+          service_category: 'bbq-catering',
+        },
+        latest_touch: {
+          ...eventFixture().attribution.latest_touch,
+          variant_slug: 'bbq',
+          service_category: 'bbq-catering',
+        },
+      },
+    });
+    assert.ok(validateEvent(registeredVariant).event);
+    const futureVariant = {
+      ...registeredVariant,
+      intent_cluster: 'corporate',
+      route: '/form2/corporate/',
+      attribution: {
+        first_touch: {
+          ...eventFixture().attribution.first_touch,
+          intent_cluster: 'corporate',
+          variant_slug: 'corporate',
+          service_category: 'corporate-catering',
+        },
+        latest_touch: {
+          ...eventFixture().attribution.latest_touch,
+          intent_cluster: 'corporate',
+          variant_slug: 'corporate',
+          service_category: 'corporate-catering',
+        },
+      },
+    };
+    assert.equal(validateEvent(futureVariant).rejection?.code, 'invalid_intent_cluster');
+    assert.equal(validateEvent({ ...futureVariant, intent_cluster: '../unsafe' }).rejection?.code, 'invalid_intent_cluster');
+  });
+
   it('rejects likely phone or email PII hidden in attribution values', () => {
     const phoneAttribution = eventFixture();
     phoneAttribution.attribution.latest_touch.utm_term = '5035550123';

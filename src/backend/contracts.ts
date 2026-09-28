@@ -28,7 +28,7 @@ export type CapturePhoneInput = {
   visitor_id: string;
   session_id: string;
   phone: string;
-  intent_cluster: 'bbq';
+  intent_cluster: string;
   idempotency_key: string;
   attribution?: AttributionContext;
   answers?: Pick<LeadAnswers, 'guest_range' | 'service_style' | 'zip_code'>;

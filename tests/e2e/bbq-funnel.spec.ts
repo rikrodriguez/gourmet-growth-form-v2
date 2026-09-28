@@ -151,3 +151,9 @@ test('Other event and Exact date conditional fields are required and usable', as
 test('layout has no horizontal overflow on the initial viewport', async ({ page }) => {
   await expectNoHorizontalOverflow(page);
 });
+
+test('unregistered keyword routes never inherit the BBQ funnel', async ({ page }) => {
+  await page.goto('/form2/funeral/');
+  await expect(page.getByRole('heading', { name: 'Growth Form V2' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /BBQ Catering/i })).toHaveCount(0);
+});

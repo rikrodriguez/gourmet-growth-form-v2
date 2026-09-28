@@ -10,6 +10,7 @@ import type {
 import { MEASUREMENT_SCHEMA_VERSION } from './contracts';
 import { pushMeasurementEvent, setDefaultConsent, updateGoogleConsent } from './data-layer';
 import { loadClarity, loadGtm, updateClarityConsent } from './vendors';
+import type { VariantMetadata } from '../variants/types';
 
 const MILESTONES_STORAGE_KEY = 'gourmet_growth_measurement_milestones_v1';
 const PENDING_STORAGE_KEY = 'gourmet_growth_measurement_pending_v1';
@@ -45,8 +46,10 @@ class GourmetMeasurement {
   private milestones = new Set<string>();
   private pending: MeasurementEvent[] = [];
   private emitted: MeasurementEvent[] = [];
+  private intentCluster = 'bbq';
 
-  initialize() {
+  initialize(metadata?: VariantMetadata) {
+    if (metadata) this.intentCluster = metadata.intentCluster;
     if (this.initialized) return;
     this.initialized = true;
     this.milestones = new Set(readStringArray(MILESTONES_STORAGE_KEY));
@@ -110,7 +113,7 @@ class GourmetMeasurement {
     const event = {
       event: eventName,
       schema_version: MEASUREMENT_SCHEMA_VERSION,
-      intent_cluster: 'bbq',
+      intent_cluster: this.intentCluster,
       measurement_environment: measurementConfig.environment,
       traffic_type: measurementConfig.environment === 'production' ? 'customer' : 'qa',
       analytics_eligible: Boolean(measurementConfig.ga4MeasurementId),

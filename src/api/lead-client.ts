@@ -1,5 +1,6 @@
 import type { AttributionContext } from '../telemetry/types';
 import { gourmetApiBaseUrl } from './config';
+import type { VariantMetadata } from '../variants/types';
 
 const LEAD_ID_STORAGE_KEY = 'gourmet_growth_lead_id_v1';
 const CAPTURE_IDEMPOTENCY_STORAGE_KEY = 'gourmet_growth_lead_capture_idempotency_v1';
@@ -42,7 +43,7 @@ type CapturePhonePayload = {
   visitor_id: string;
   session_id: string;
   phone: string;
-  intent_cluster: 'bbq';
+  intent_cluster: string;
   idempotency_key: string;
   attribution: AttributionContext;
   answers: PrePhoneAnswers;
@@ -70,6 +71,10 @@ function persistSessionValue(key: string, value: string) {
   } catch {
     // The active UI state remains available when browser storage is unavailable.
   }
+}
+
+function variantStorageKey(base: string, variantSlug: string): string {
+  return variantSlug === 'bbq' ? base : `${base}_${variantSlug}`;
 }
 
 async function request(path: string, init: RequestInit): Promise<Response> {
@@ -101,8 +106,8 @@ async function deriveOpaqueConversionId(leadId: string): Promise<string> {
 export const leadClient = {
   isConfigured: Boolean(gourmetApiBaseUrl),
 
-  getLeadId(): string | null {
-    return sessionValue(LEAD_ID_STORAGE_KEY);
+  getLeadId(metadata: VariantMetadata): string | null {
+    return sessionValue(variantStorageKey(LEAD_ID_STORAGE_KEY, metadata.variantSlug));
   },
 
   async capturePhone(
@@ -110,20 +115,24 @@ export const leadClient = {
     phone: string,
     answers: PrePhoneAnswers,
     measurementConsent: MeasurementConsentEvidence | null,
+    metadata: VariantMetadata,
   ): Promise<CapturedLead | null> {
     if (!gourmetApiBaseUrl) return null;
-    let idempotencyKey = sessionValue(CAPTURE_IDEMPOTENCY_STORAGE_KEY);
-    const previousPhone = sessionValue(CAPTURE_PHONE_STORAGE_KEY);
+    const idempotencyStorageKey = variantStorageKey(CAPTURE_IDEMPOTENCY_STORAGE_KEY, metadata.variantSlug);
+    const phoneStorageKey = variantStorageKey(CAPTURE_PHONE_STORAGE_KEY, metadata.variantSlug);
+    const leadStorageKey = variantStorageKey(LEAD_ID_STORAGE_KEY, metadata.variantSlug);
+    let idempotencyKey = sessionValue(idempotencyStorageKey);
+    const previousPhone = sessionValue(phoneStorageKey);
     if (!idempotencyKey || previousPhone !== phone) {
       idempotencyKey = crypto.randomUUID();
-      persistSessionValue(CAPTURE_IDEMPOTENCY_STORAGE_KEY, idempotencyKey);
-      persistSessionValue(CAPTURE_PHONE_STORAGE_KEY, phone);
+      persistSessionValue(idempotencyStorageKey, idempotencyKey);
+      persistSessionValue(phoneStorageKey, phone);
     }
     const payload: CapturePhonePayload = {
       visitor_id: context.visitor_id,
       session_id: context.session_id,
       phone,
-      intent_cluster: 'bbq',
+      intent_cluster: metadata.intentCluster,
       idempotency_key: idempotencyKey,
       attribution: context.attribution,
       answers,
@@ -154,7 +163,7 @@ export const leadClient = {
     const conversionId = typeof body.conversion_id === 'string' && CONVERSION_ID_PATTERN.test(body.conversion_id)
       ? body.conversion_id
       : await deriveOpaqueConversionId(body.lead_id);
-    persistSessionValue(LEAD_ID_STORAGE_KEY, body.lead_id);
+    persistSessionValue(leadStorageKey, body.lead_id);
     return { leadId: body.lead_id, conversionId };
   },
 
@@ -168,11 +177,11 @@ export const leadClient = {
     if (!response.ok) throw new LeadDeliveryError();
   },
 
-  reset() {
+  reset(metadata: VariantMetadata) {
     try {
-      window.sessionStorage.removeItem(LEAD_ID_STORAGE_KEY);
-      window.sessionStorage.removeItem(CAPTURE_IDEMPOTENCY_STORAGE_KEY);
-      window.sessionStorage.removeItem(CAPTURE_PHONE_STORAGE_KEY);
+      window.sessionStorage.removeItem(variantStorageKey(LEAD_ID_STORAGE_KEY, metadata.variantSlug));
+      window.sessionStorage.removeItem(variantStorageKey(CAPTURE_IDEMPOTENCY_STORAGE_KEY, metadata.variantSlug));
+      window.sessionStorage.removeItem(variantStorageKey(CAPTURE_PHONE_STORAGE_KEY, metadata.variantSlug));
     } catch {
       // Ignore unavailable browser storage.
     }

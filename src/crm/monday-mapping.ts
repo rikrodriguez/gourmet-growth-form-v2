@@ -51,7 +51,14 @@ function dateOnly(value: Date): string {
 export function mondayItemName(lead: CrmLeadSnapshot): string {
   const prefix = lead.isQa ? '[QA] ' : '';
   const firstName = lead.answers.first_name?.trim();
-  return firstName ? `${prefix}${firstName}` : `${prefix}BBQ Lead — ${lead.leadId.slice(0, 6)}`;
+  const intent = lead.intentCluster === 'bbq'
+    ? 'BBQ'
+    : lead.intentCluster
+        .split('-')
+        .filter(Boolean)
+        .map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`)
+        .join(' ');
+  return firstName ? `${prefix}${firstName}` : `${prefix}${intent} Lead — ${lead.leadId.slice(0, 6)}`;
 }
 
 function commonColumns(lead: CrmLeadSnapshot, phone: string): MondayColumnValues {
@@ -78,4 +85,3 @@ export function mondayCreateColumns(lead: CrmLeadSnapshot, phone: string): Monda
 export function mondayUpdateColumns(lead: CrmLeadSnapshot, phone: string): MondayColumnValues {
   return { name: mondayItemName(lead), ...commonColumns(lead, phone) };
 }
-

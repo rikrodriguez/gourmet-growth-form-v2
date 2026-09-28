@@ -55,7 +55,9 @@ export type AttributionTouch = Partial<Record<AttributionKey, string>> & {
   landing_path: string;
   landing_url_without_pii: string;
   referrer: string | null;
-  intent_cluster: 'bbq';
+  intent_cluster: string;
+  variant_slug?: string;
+  service_category?: string;
 };
 
 export type AttributionContext = {
@@ -99,7 +101,7 @@ type TelemetryEventFor<Name extends TelemetryEventName> = {
   occurred_at: string;
   visitor_id: string;
   session_id: string;
-  intent_cluster: 'bbq';
+  intent_cluster: string;
   route: string;
   step_id: StepId;
   step_index: StepIndex;

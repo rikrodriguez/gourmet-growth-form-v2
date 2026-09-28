@@ -57,11 +57,14 @@ export class PostgresCrmOutboxStore implements CrmOutboxStore {
 
   async loadLead(leadId: string): Promise<CrmLeadSnapshot | null> {
     const result = await this.pool.query(
-      `SELECT l.lead_id,l.created_at,l.is_qa,l.monday_item_id,
+      `SELECT l.lead_id,l.intent_cluster,l.created_at,l.is_qa,l.monday_item_id,
               l.phone_ciphertext,l.phone_iv,l.phone_auth_tag,l.phone_key_id,
               COALESCE(jsonb_object_agg(a.field_key,a.field_value) FILTER (WHERE a.field_key IS NOT NULL AND a.cleared_at IS NULL),'{}') AS answers,
               max(t.utm_term) FILTER (WHERE t.touch_kind='first') AS utm_term,
-              COALESCE(max(t.landing_url_without_pii) FILTER (WHERE t.touch_kind='first'),'https://gourmet-corporation.com/form2/bbq/') AS landing_url
+              COALESCE(
+                max(t.landing_url_without_pii) FILTER (WHERE t.touch_kind='first'),
+                'https://gourmet-corporation.com/form2/' || l.intent_cluster || '/'
+              ) AS landing_url
        FROM growth_v2.leads l
        LEFT JOIN growth_v2.lead_answers a ON a.lead_id=l.lead_id
        LEFT JOIN growth_v2.attribution_touches t ON t.session_id=l.session_id
@@ -73,6 +76,7 @@ export class PostgresCrmOutboxStore implements CrmOutboxStore {
     if (!row) return null;
     return {
       leadId: row.lead_id,
+      intentCluster: row.intent_cluster,
       createdAt: row.created_at,
       isQa: row.is_qa,
       mondayItemId: row.monday_item_id === null ? null : String(row.monday_item_id),

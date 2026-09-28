@@ -1,4 +1,5 @@
 import { ATTRIBUTION_KEYS, AttributionKey, AttributionTouch, AttributionContext } from './types';
+import type { VariantMetadata } from '../variants/types';
 
 const FIRST_TOUCH_STORAGE_KEY = 'gourmet_growth_attribution_first_v1';
 const LATEST_TOUCH_STORAGE_KEY = 'gourmet_growth_attribution_latest_v1';
@@ -36,7 +37,7 @@ function safeReferrer(referrer: string): string | null {
   }
 }
 
-function captureTouch(now: number): AttributionTouch {
+function captureTouch(now: number, metadata: VariantMetadata): AttributionTouch {
   const url = new URL(window.location.href);
   const landingPath = safePath(url.pathname);
   const allowedValues: Partial<Record<AttributionKey, string>> = {};
@@ -52,8 +53,14 @@ function captureTouch(now: number): AttributionTouch {
     landing_path: landingPath,
     landing_url_without_pii: `${url.origin}${landingPath}`.slice(0, 500),
     referrer: safeReferrer(document.referrer),
-    intent_cluster: 'bbq',
+    intent_cluster: metadata.intentCluster,
+    variant_slug: metadata.variantSlug,
+    service_category: metadata.serviceCategory,
   };
+}
+
+function validIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(value);
 }
 
 function parseStoredTouch(raw: string | null, now: number): AttributionTouch | null {
@@ -64,7 +71,9 @@ function parseStoredTouch(raw: string | null, now: number): AttributionTouch | n
       stored.version === 1
       && typeof stored.expires_at === 'number'
       && stored.expires_at > now
-      && stored.touch?.intent_cluster === 'bbq'
+      && validIdentifier(stored.touch?.intent_cluster)
+      && (stored.touch?.variant_slug === undefined || validIdentifier(stored.touch.variant_slug))
+      && (stored.touch?.service_category === undefined || validIdentifier(stored.touch.service_category))
       && typeof stored.touch.landing_path === 'string'
       && typeof stored.touch.landing_url_without_pii === 'string'
     ) {
@@ -85,8 +94,8 @@ function persist(key: string, touch: AttributionTouch, now: number) {
   window.localStorage.setItem(key, JSON.stringify(stored));
 }
 
-export function resolveAttribution(now = Date.now()): AttributionContext {
-  const latestTouch = captureTouch(now);
+export function resolveAttribution(metadata: VariantMetadata, now = Date.now()): AttributionContext {
+  const latestTouch = captureTouch(now, metadata);
   const firstTouch = parseStoredTouch(window.localStorage.getItem(FIRST_TOUCH_STORAGE_KEY), now) ?? latestTouch;
 
   persist(FIRST_TOUCH_STORAGE_KEY, firstTouch, now);

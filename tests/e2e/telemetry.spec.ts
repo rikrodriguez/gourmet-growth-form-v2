@@ -210,6 +210,8 @@ test('attribution is allowlisted, first/latest touch are separated, and hostile 
     msclkid: 'safe-ms-click',
     ttclid: 'safe-tt-click',
     intent_cluster: 'bbq',
+    variant_slug: 'bbq',
+    service_category: 'bbq-catering',
     landing_path: '/form2/bbq/',
   });
   expect(first.attribution.first_touch).not.toHaveProperty('rogue');

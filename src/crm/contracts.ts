@@ -13,6 +13,7 @@ export type ClaimedCrmJob = {
 
 export type CrmLeadSnapshot = {
   leadId: string;
+  intentCluster: string;
   createdAt: Date;
   isQa: boolean;
   mondayItemId: string | null;
@@ -57,4 +58,3 @@ export interface MondayClient {
   getItem(itemId: string): Promise<MondayItem | null>;
   archiveItem(itemId: string, idempotencyKey: string): Promise<void>;
 }
-

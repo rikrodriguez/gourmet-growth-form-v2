@@ -2,6 +2,7 @@ import { resolveAttribution } from './attribution';
 import { gourmetApiBaseUrl } from '../api/config';
 import { resolveTelemetryIdentity, TelemetryIdentity } from './identity';
 import { createTelemetryTransport, deliverTelemetryBatch } from './transport';
+import type { VariantMetadata } from '../variants/types';
 import {
   AnswerSelectedProperties,
   AttributionContext,
@@ -74,13 +75,15 @@ class GourmetTelemetry {
   private deliveryTimer: number | null = null;
   private deliveryInFlight = false;
   private deliveryRetry = 0;
+  private metadata: VariantMetadata | null = null;
 
-  initialize(currentStep: StepId) {
+  initialize(currentStep: StepId, metadata: VariantMetadata) {
     if (this.initialized) return;
 
     try {
       this.identity = resolveTelemetryIdentity();
-      this.attribution = resolveAttribution();
+      this.metadata = metadata;
+      this.attribution = resolveAttribution(metadata);
       this.events = this.loadQueue(this.identity.sessionId);
       this.debugEvents = this.loadDebugHistory(this.identity.sessionId);
       this.completionTracked = window.sessionStorage.getItem(COMPLETION_STORAGE_KEY) === 'true';
@@ -198,7 +201,7 @@ class GourmetTelemetry {
       occurred_at: new Date().toISOString(),
       visitor_id: this.identity.visitorId,
       session_id: this.identity.sessionId,
-      intent_cluster: 'bbq',
+      intent_cluster: this.metadata?.intentCluster ?? 'unknown',
       route: window.location.pathname.slice(0, 300),
       step_id: step,
       step_index: STEP_INDEX[step],

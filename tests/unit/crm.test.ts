@@ -14,6 +14,7 @@ const encryptedPhone = createPhoneEncryptor(key, 'v1').encrypt('5035550199');
 function lead(overrides: Partial<CrmLeadSnapshot> = {}): CrmLeadSnapshot {
   return {
     leadId: 'a81f2c00-0000-4000-8000-000000000001',
+    intentCluster: 'bbq',
     createdAt: new Date('2026-09-24T18:00:00Z'),
     isQa: false,
     mondayItemId: null,

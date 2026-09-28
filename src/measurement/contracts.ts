@@ -37,7 +37,7 @@ export type MeasurementEventName = keyof MeasurementEventProperties;
 export type MeasurementEventFor<Name extends MeasurementEventName> = {
   event: Name;
   schema_version: typeof MEASUREMENT_SCHEMA_VERSION;
-  intent_cluster: 'bbq';
+  intent_cluster: string;
   measurement_environment: 'staging' | 'production';
   traffic_type: 'qa' | 'customer';
   analytics_eligible: boolean;
