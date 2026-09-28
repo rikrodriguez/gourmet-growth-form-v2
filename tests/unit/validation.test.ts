@@ -17,21 +17,8 @@ describe('server-side validation', () => {
     assert.equal(validateEvent(unknown).rejection?.code, 'unsupported_contract');
   });
 
-  it('accepts registered variant metadata and rejects unregistered identifiers', () => {
-    const registeredVariant = eventFixture({
-      attribution: {
-        first_touch: {
-          ...eventFixture().attribution.first_touch,
-          variant_slug: 'bbq',
-          service_category: 'bbq-catering',
-        },
-        latest_touch: {
-          ...eventFixture().attribution.latest_touch,
-          variant_slug: 'bbq',
-          service_category: 'bbq-catering',
-        },
-      },
-    });
+  it('accepts registered identifiers and rejects unregistered identifiers', () => {
+    const registeredVariant = eventFixture();
     assert.ok(validateEvent(registeredVariant).event);
     const futureVariant = {
       ...registeredVariant,
@@ -41,14 +28,10 @@ describe('server-side validation', () => {
         first_touch: {
           ...eventFixture().attribution.first_touch,
           intent_cluster: 'corporate',
-          variant_slug: 'corporate',
-          service_category: 'corporate-catering',
         },
         latest_touch: {
           ...eventFixture().attribution.latest_touch,
           intent_cluster: 'corporate',
-          variant_slug: 'corporate',
-          service_category: 'corporate-catering',
         },
       },
     };

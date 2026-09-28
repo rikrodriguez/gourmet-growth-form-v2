@@ -12,8 +12,6 @@ function attribution(): AttributionContext {
     landing_url_without_pii: 'https://gourmet-corporation.com/form2/bbq/',
     referrer: null,
     intent_cluster: 'bbq',
-    variant_slug: 'bbq',
-    service_category: 'bbq-catering',
     utm_source: 'google',
     utm_campaign: 'portland bbq',
   } as const;

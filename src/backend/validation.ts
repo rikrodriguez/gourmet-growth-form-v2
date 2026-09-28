@@ -52,8 +52,6 @@ const MAX_EVENT_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_CLOCK_SKEW_MS = 10 * 60 * 1000;
 const VARIANT_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const REGISTERED_INTENT_CLUSTERS = new Set<string>(registeredVariantMetadata.map((metadata) => metadata.intentCluster));
-const REGISTERED_VARIANT_SLUGS = new Set<string>(registeredVariantMetadata.map((metadata) => metadata.variantSlug));
-const REGISTERED_SERVICE_CATEGORIES = new Set<string>(registeredVariantMetadata.map((metadata) => metadata.serviceCategory));
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -113,10 +111,7 @@ export function findPiiKey(value: unknown, depth = 0): string | null {
 
 function validateAttributionTouch(value: unknown): value is AttributionTouch {
   if (!isRecord(value)) return false;
-  const metadataKeys = [
-    'captured_at', 'landing_path', 'landing_url_without_pii', 'referrer',
-    'intent_cluster', 'variant_slug', 'service_category',
-  ];
+  const metadataKeys = ['captured_at', 'landing_path', 'landing_url_without_pii', 'referrer', 'intent_cluster'];
   if (!hasOnlyKeys(value, [...ATTRIBUTION_KEYS, ...metadataKeys])) return false;
   if (!isIsoTimestamp(value.captured_at)) return false;
   if (!isBoundedString(value.landing_path, 300) || !value.landing_path.startsWith('/') || /[?#]/.test(value.landing_path) || containsLikelyPii(value.landing_path)) return false;
@@ -137,10 +132,6 @@ function validateAttributionTouch(value: unknown): value is AttributionTouch {
     }
   }
   if (!isRegisteredIntentCluster(value.intent_cluster)) return false;
-  if (value.variant_slug !== undefined
-    && (!isVariantIdentifier(value.variant_slug) || !REGISTERED_VARIANT_SLUGS.has(value.variant_slug))) return false;
-  if (value.service_category !== undefined
-    && (!isVariantIdentifier(value.service_category) || !REGISTERED_SERVICE_CATEGORIES.has(value.service_category))) return false;
   for (const key of ATTRIBUTION_KEYS) {
     const candidate = value[key];
     if (candidate !== undefined && (!isBoundedString(candidate, 200) || containsLikelyPii(candidate))) return false;

@@ -56,8 +56,6 @@ export type AttributionTouch = Partial<Record<AttributionKey, string>> & {
   landing_url_without_pii: string;
   referrer: string | null;
   intent_cluster: string;
-  variant_slug?: string;
-  service_category?: string;
 };
 
 export type AttributionContext = {

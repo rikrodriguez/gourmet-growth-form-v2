@@ -6,7 +6,7 @@
 
 Only `/form2/bbq/` is registered. Unknown or planned routes fail closed to the foundation screen; they never inherit BBQ copy accidentally. The shared funnel retains the existing step order, lead API, telemetry transport, consent handling, dashboard storage, and Monday outbox.
 
-Variant state is namespaced by slug. Anonymous visitor/session identity stays shared, while each attribution touch records the landing route, `variant_slug`, `service_category`, `intent_cluster`, approved UTM/click IDs, and origin-only referrer. The server derives its identifier allowlists from the same registry, so registering a future config extends the existing request contract without accepting arbitrary client-provided categories.
+Variant state is namespaced by slug. Anonymous visitor/session identity stays shared. To remain byte-for-byte compatible with the deployed backend contract, the registered variant uses one stable `intentCluster` as its persisted variant/service-category key; the landing route, approved UTM/click IDs, and origin-only referrer continue through the existing attribution object. The richer `variantSlug` and `serviceCategory` values remain typed config metadata for analytics/CRM adapters and are not added as new client payload fields. The server derives its intent allowlist from the same registry, so registering a future config extends the allowed value without changing the request shape or accepting arbitrary client-provided categories.
 
 ## Thank-you decision
 

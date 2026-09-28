@@ -54,8 +54,6 @@ function captureTouch(now: number, metadata: VariantMetadata): AttributionTouch 
     landing_url_without_pii: `${url.origin}${landingPath}`.slice(0, 500),
     referrer: safeReferrer(document.referrer),
     intent_cluster: metadata.intentCluster,
-    variant_slug: metadata.variantSlug,
-    service_category: metadata.serviceCategory,
   };
 }
 
@@ -72,8 +70,6 @@ function parseStoredTouch(raw: string | null, now: number): AttributionTouch | n
       && typeof stored.expires_at === 'number'
       && stored.expires_at > now
       && validIdentifier(stored.touch?.intent_cluster)
-      && (stored.touch?.variant_slug === undefined || validIdentifier(stored.touch.variant_slug))
-      && (stored.touch?.service_category === undefined || validIdentifier(stored.touch.service_category))
       && typeof stored.touch.landing_path === 'string'
       && typeof stored.touch.landing_url_without_pii === 'string'
     ) {

@@ -7,7 +7,7 @@ export const bbqVariant = {
   slug: 'bbq',
   route: '/form2/bbq/',
   documentTitle: 'BBQ Catering in Portland | Gourmet Corp',
-  serviceCategory: 'bbq-catering',
+  serviceCategory: 'bbq',
   hero: {
     image: {
       src: null,
@@ -65,7 +65,7 @@ export const bbqVariant = {
   metadata: {
     variantSlug: 'bbq',
     intentCluster: 'bbq',
-    serviceCategory: 'bbq-catering',
+    serviceCategory: 'bbq',
     leadSource: 'growth-form-v2',
   },
 } as const satisfies FunnelVariant;
