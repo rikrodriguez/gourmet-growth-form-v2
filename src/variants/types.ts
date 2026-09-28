@@ -1,3 +1,5 @@
+import type { EventTypeAnswerValue, StepId } from '../telemetry/types';
+
 export const VARIANT_CONFIG_VERSION = 1 as const;
 
 export type VariantIcon = 'leaf' | 'people' | 'star';
@@ -9,6 +11,8 @@ export type VariantMetadata = {
   serviceCategory: string;
   leadSource: string;
 };
+
+export type VisibleFunnelStep = Exclude<StepId, 'complete'>;
 
 export type ThankYouBehavior =
   | {
@@ -41,6 +45,11 @@ export type FunnelVariant = {
   route: `/form2/${string}/`;
   documentTitle: string;
   serviceCategory: string;
+  /** Visual navigation can omit a semantic step; telemetry retains canonical IDs. */
+  visibleSteps: readonly VisibleFunnelStep[];
+  prefilledAnswers?: Readonly<{
+    eventType?: EventTypeAnswerValue;
+  }>;
   hero: {
     image: {
       src: string | null;

@@ -58,7 +58,7 @@ export function mondayItemName(lead: CrmLeadSnapshot): string {
         .filter(Boolean)
         .map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`)
         .join(' ');
-  return firstName ? `${prefix}${firstName}` : `${prefix}${intent} Lead — ${lead.leadId.slice(0, 6)}`;
+  return firstName ? `${prefix}${firstName} — ${intent}` : `${prefix}${intent} Lead — ${lead.leadId.slice(0, 6)}`;
 }
 
 function commonColumns(lead: CrmLeadSnapshot, phone: string): MondayColumnValues {

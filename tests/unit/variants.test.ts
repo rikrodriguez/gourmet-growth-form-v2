@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { bbqVariant, resolveVariant, supportedVariantRoutes } from '../../src/variants/registry';
+import {
+  bbqVariant,
+  cateringNearMeVariant,
+  corporateVariant,
+  funeralVariant,
+  resolveVariant,
+  supportedVariantRoutes,
+  tacoVariant,
+} from '../../src/variants/registry';
 import { buildThankYouRedirectUrl } from '../../src/variants/thank-you';
 import type { AttributionContext } from '../../src/telemetry/types';
 import type { FunnelVariant } from '../../src/variants/types';
@@ -19,12 +27,27 @@ function attribution(): AttributionContext {
 }
 
 describe('variant registry', () => {
-  it('registers only the approved BBQ route and matches it exactly', () => {
-    assert.deepEqual(supportedVariantRoutes, ['/form2/bbq/']);
+  it('registers the shared BBQ baseline and four configuration-driven intent routes', () => {
+    assert.deepEqual(supportedVariantRoutes, [
+      '/form2/bbq/', '/form2/funeral/', '/form2/corporate/', '/form2/catering-near-me/', '/form2/taco/',
+    ]);
     assert.equal(resolveVariant('/form2/bbq'), bbqVariant);
     assert.equal(resolveVariant('/form2/bbq/'), bbqVariant);
     assert.equal(resolveVariant('/form2/bbq-unapproved/'), null);
-    assert.equal(resolveVariant('/form2/funeral/'), null);
+    assert.equal(resolveVariant('/form2/funeral/'), funeralVariant);
+    assert.equal(resolveVariant('/form2/corporate/'), corporateVariant);
+    assert.equal(resolveVariant('/form2/catering-near-me/'), cateringNearMeVariant);
+    assert.equal(resolveVariant('/form2/taco/'), tacoVariant);
+  });
+
+  it('uses canonical configuration steps while omitting only prefilled visible screens', () => {
+    assert.deepEqual(bbqVariant.visibleSteps, ['guests', 'service', 'zip', 'phone', 'event_type', 'date', 'name']);
+    assert.deepEqual(tacoVariant.visibleSteps, bbqVariant.visibleSteps);
+    assert.deepEqual(cateringNearMeVariant.visibleSteps, bbqVariant.visibleSteps);
+    assert.deepEqual(funeralVariant.visibleSteps, ['guests', 'service', 'zip', 'phone', 'date', 'name']);
+    assert.deepEqual(corporateVariant.visibleSteps, funeralVariant.visibleSteps);
+    assert.equal(funeralVariant.prefilledAnswers?.eventType, 'Memorial / Funeral');
+    assert.equal(corporateVariant.prefilledAnswers?.eventType, 'Corporate');
   });
 
   it('routes completed BBQ leads to the dedicated V2 confirmation without query data', () => {
@@ -37,6 +60,13 @@ describe('variant registry', () => {
     assert.equal(bbqVariant.hero.image.status, 'approved');
     assert.equal(bbqVariant.hero.image.src, '/form2/assets/bbq-hero-desktop-v2.webp');
     assert.equal(bbqVariant.hero.image.mobileSrc, '/form2/assets/bbq-hero-mobile-v2.webp');
+  });
+
+  it('marks non-BBQ gradients provisional until first-party hero assets are approved', () => {
+    for (const variant of [funeralVariant, corporateVariant, cateringNearMeVariant, tacoVariant]) {
+      assert.equal(variant.hero.image.status, 'provisional');
+      assert.equal(variant.hero.image.src, null);
+    }
   });
 
   it('builds only the allowlisted non-PII redirect context after activation', () => {

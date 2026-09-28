@@ -86,10 +86,12 @@ describe('Monday CRM mapping', () => {
 
   it('renames QA leads safely, maps exact dates, and clears flexible dates', () => {
     const exact = lead({ isQa: true, answers: { first_name: 'QA Monday', date_window: 'exact', exact_date: '2026-11-04' } });
-    assert.equal(mondayItemName(exact), '[QA] QA Monday');
+    assert.equal(mondayItemName(exact), '[QA] QA Monday — BBQ');
     assert.deepEqual(mondayUpdateColumns(exact, '5035550199')[MONDAY_COLUMNS.eventDate], { date: '2026-11-04' });
     const flexible = lead({ answers: { date_window: 'still-deciding' } });
     assert.equal(mondayUpdateColumns(flexible, '5035550199')[MONDAY_COLUMNS.eventDate], null);
+    assert.equal(mondayItemName(lead({ intentCluster: 'funeral' })), 'Funeral Lead — a81f2c');
+    assert.equal(mondayItemName(lead({ intentCluster: 'corporate', answers: { first_name: 'Michael' } })), 'Michael — Corporate');
   });
 });
 

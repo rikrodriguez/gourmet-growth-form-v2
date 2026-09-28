@@ -31,7 +31,7 @@ export type CapturePhoneInput = {
   intent_cluster: string;
   idempotency_key: string;
   attribution?: AttributionContext;
-  answers?: Pick<LeadAnswers, 'guest_range' | 'service_style' | 'zip_code'>;
+  answers?: Pick<LeadAnswers, 'guest_range' | 'service_style' | 'zip_code' | 'event_type'>;
   measurement_consent?: MeasurementConsentEvidence | null;
 };
 

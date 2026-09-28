@@ -46,8 +46,7 @@ type Option<Value extends AnswerValue = AnswerValue> = {
 };
 
 const STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
-const TOTAL_STEPS = 7;
-const TELEMETRY_STEPS: readonly StepId[] = [
+const CANONICAL_VISIBLE_STEPS: readonly Exclude<StepId, 'complete'>[] = [
   'guests',
   'service',
   'zip',
@@ -55,7 +54,6 @@ const TELEMETRY_STEPS: readonly StepId[] = [
   'event_type',
   'date',
   'name',
-  'complete',
 ];
 
 const VALIDATION_CODES: Record<Exclude<StepId, 'complete'>, ValidationCode> = {
@@ -109,8 +107,22 @@ function storageKeys(variantSlug: string) {
   };
 }
 
-function loadSavedState(previewGolden: boolean, variantSlug: string): SavedState {
-  const keys = storageKeys(variantSlug);
+function prefilledAnswers(variant: FunnelVariant): Answers {
+  return variant.prefilledAnswers?.eventType ? { eventType: variant.prefilledAnswers.eventType } : {};
+}
+
+function loadSavedState(previewGolden: boolean, variant: FunnelVariant): SavedState {
+  const keys = storageKeys(variant.slug);
+  const fallbackAnswers: Answers = {
+    ...prefilledAnswers(variant),
+    ...(previewGolden ? { guests: '10-25' } : {}),
+  };
+  const normalize = (candidate: SavedState): SavedState => ({
+    version: 2,
+    updatedAt: candidate.updatedAt,
+    stepIndex: Math.min(Math.max(candidate.stepIndex, 0), variant.visibleSteps.length),
+    answers: { ...candidate.answers, ...prefilledAnswers(variant) },
+  });
   try {
     window.sessionStorage.removeItem(keys.legacy);
     window.localStorage.removeItem(keys.legacy);
@@ -119,7 +131,7 @@ function loadSavedState(previewGolden: boolean, variantSlug: string): SavedState
     if (sessionRaw) {
       const parsed = JSON.parse(sessionRaw) as SavedState;
       const fresh = parsed.version === 2 && Date.now() - parsed.updatedAt < STORAGE_TTL_MS;
-      if (fresh) return parsed;
+      if (fresh) return normalize(parsed);
       window.sessionStorage.removeItem(keys.session);
     }
 
@@ -127,7 +139,7 @@ function loadSavedState(previewGolden: boolean, variantSlug: string): SavedState
     if (raw) {
       const parsed = JSON.parse(raw) as SavedState;
       const fresh = parsed.version === 2 && Date.now() - parsed.updatedAt < STORAGE_TTL_MS;
-      if (fresh) return parsed;
+      if (fresh) return normalize(parsed);
       window.localStorage.removeItem(keys.nonPii);
     }
   } catch {
@@ -138,7 +150,7 @@ function loadSavedState(previewGolden: boolean, variantSlug: string): SavedState
     version: 2,
     updatedAt: Date.now(),
     stepIndex: 0,
-    answers: previewGolden ? { guests: '10-25' } : {},
+    answers: fallbackAnswers,
   };
 }
 
@@ -362,14 +374,16 @@ function OptionCard<Value extends AnswerValue>({
 
 function ProgressHeader({
   stepIndex,
+  totalSteps,
   onBack,
   variant,
 }: {
   stepIndex: number;
+  totalSteps: number;
   onBack: () => void;
   variant: FunnelVariant;
 }) {
-  const stepNumber = Math.min(stepIndex + 1, TOTAL_STEPS);
+  const stepNumber = Math.min(stepIndex + 1, totalSteps);
   return (
     <>
       {stepIndex > 0 && (
@@ -379,16 +393,16 @@ function ProgressHeader({
       )}
       <div className="progress-row">
         <div className="progress-left">
-          <strong>{variant.progress.stepLabel} {stepNumber} of {TOTAL_STEPS}</strong>
+          <strong>{variant.progress.stepLabel} {stepNumber} of {totalSteps}</strong>
           <div
             className="progress-track"
             role="progressbar"
             aria-label="Quote progress"
             aria-valuemin={1}
-            aria-valuemax={TOTAL_STEPS}
+            aria-valuemax={totalSteps}
             aria-valuenow={stepNumber}
           >
-            <span style={{ width: `${(stepNumber / TOTAL_STEPS) * 100}%` }} />
+            <span style={{ width: `${(stepNumber / totalSteps) * 100}%` }} />
           </div>
         </div>
         <div className="event-time">
@@ -404,8 +418,8 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
   const previewMode = useMemo(() => new URLSearchParams(window.location.search).get('preview'), []);
   const goldenPreview = previewMode === 'golden';
   const initial = useMemo(
-    () => loadSavedState(goldenPreview, variant.slug),
-    [goldenPreview, variant.slug],
+    () => loadSavedState(goldenPreview, variant),
+    [goldenPreview, variant],
   );
 
   const [stepIndex, setStepIndex] = useState(initial.stepIndex);
@@ -422,8 +436,9 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
   const [announcement, setAnnouncement] = useState('');
   const [deliveryError, setDeliveryError] = useState('');
   const [isSavingLead, setIsSavingLead] = useState(false);
-  const step = TELEMETRY_STEPS[stepIndex] ?? 'complete';
-  const initialStep = TELEMETRY_STEPS[initial.stepIndex] ?? 'guests';
+  const visibleSteps = variant.visibleSteps;
+  const step: StepId = stepIndex >= visibleSteps.length ? 'complete' : visibleSteps[stepIndex];
+  const initialStep = visibleSteps[initial.stepIndex] ?? visibleSteps[0] ?? CANONICAL_VISIBLE_STEPS[0];
   const isComplete = step === 'complete';
   const showHero = step === 'guests' || step === 'zip' || step === 'date';
 
@@ -481,7 +496,7 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
   }, [answers, stepIndex, variant.slug]);
 
   useEffect(() => {
-    if (stepIndex === TOTAL_STEPS) return;
+    if (stepIndex === visibleSteps.length) return;
     requestAnimationFrame(() => {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
@@ -494,11 +509,11 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
   }
 
   function next() {
-    setStepIndex((current) => Math.min(current + 1, TOTAL_STEPS));
+    setStepIndex((current) => Math.min(current + 1, visibleSteps.length));
   }
 
   function back() {
-    const targetStep = TELEMETRY_STEPS[Math.max(stepIndex - 1, 0)] ?? 'guests';
+    const targetStep = visibleSteps[Math.max(stepIndex - 1, 0)] ?? visibleSteps[0] ?? 'guests';
     telemetry.backClicked(step, targetStep);
     setStepIndex((current) => Math.max(current - 1, 0));
   }
@@ -542,6 +557,7 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
             guest_range: answers.guests,
             service_style: answers.service,
             zip_code: answers.zip,
+            event_type: answers.eventType,
           }, measurement.getServerConsentEvidence(), variant.metadata);
           if (!captured) throw new Error('missing_captured_lead');
           measurement.generateLead(captured.conversionId);
@@ -656,7 +672,7 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
     } catch {
       // Ignore storage failures.
     }
-    setAnswers({});
+    setAnswers(prefilledAnswers(variant));
     setEventOther('');
     setZipLookup('idle');
     setAnnouncement('');
@@ -711,7 +727,7 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
           className={`quote-panel${isComplete ? ' completion-shell' : ''}`}
           data-clarity-mask="true"
         >
-          {!isComplete && <ProgressHeader stepIndex={stepIndex} onBack={back} variant={variant} />}
+          {!isComplete && <ProgressHeader stepIndex={stepIndex} totalSteps={visibleSteps.length} onBack={back} variant={variant} />}
 
           {step === 'guests' && (
             <form onSubmit={(event) => continueWith(event, Boolean(answers.guests), 'Choose a guest range to continue.')}>

@@ -17,26 +17,22 @@ describe('server-side validation', () => {
     assert.equal(validateEvent(unknown).rejection?.code, 'unsupported_contract');
   });
 
-  it('accepts registered identifiers and rejects unregistered identifiers', () => {
+  it('accepts every registered intent identifier and rejects unregistered identifiers', () => {
     const registeredVariant = eventFixture();
     assert.ok(validateEvent(registeredVariant).event);
-    const futureVariant = {
-      ...registeredVariant,
-      intent_cluster: 'corporate',
-      route: '/form2/corporate/',
-      attribution: {
-        first_touch: {
-          ...eventFixture().attribution.first_touch,
-          intent_cluster: 'corporate',
+    for (const intent of ['funeral', 'corporate', 'catering-near-me', 'taco']) {
+      const variant = {
+        ...registeredVariant,
+        intent_cluster: intent,
+        route: `/form2/${intent}/`,
+        attribution: {
+          first_touch: { ...eventFixture().attribution.first_touch, intent_cluster: intent, landing_path: `/form2/${intent}/`, landing_url_without_pii: `https://gourmet-corporation.com/form2/${intent}/` },
+          latest_touch: { ...eventFixture().attribution.latest_touch, intent_cluster: intent, landing_path: `/form2/${intent}/`, landing_url_without_pii: `https://gourmet-corporation.com/form2/${intent}/` },
         },
-        latest_touch: {
-          ...eventFixture().attribution.latest_touch,
-          intent_cluster: 'corporate',
-        },
-      },
-    };
-    assert.equal(validateEvent(futureVariant).rejection?.code, 'invalid_intent_cluster');
-    assert.equal(validateEvent({ ...futureVariant, intent_cluster: '../unsafe' }).rejection?.code, 'invalid_intent_cluster');
+      };
+      assert.ok(validateEvent(variant).event);
+    }
+    assert.equal(validateEvent({ ...registeredVariant, intent_cluster: '../unsafe' }).rejection?.code, 'invalid_intent_cluster');
   });
 
   it('rejects likely phone or email PII hidden in attribution values', () => {
@@ -73,6 +69,7 @@ describe('server-side validation', () => {
       answers: { guest_range: '26-50', service_style: 'full-service', zip_code: '97205' },
     });
     assert.ok(capture.input);
+    assert.ok(validateCapturePhone({ ...capture.input, intent_cluster: 'corporate', answers: { ...capture.input.answers, event_type: 'Corporate' } }).input);
     assert.equal(validateCapturePhone({ ...capture.input, admin: true }).code, 'invalid_shape');
     assert.deepEqual(validateLeadPatch({ event_type: 'Corporate', first_name: 'QA' }), {
       event_type: 'Corporate',

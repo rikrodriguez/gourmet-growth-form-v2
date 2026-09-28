@@ -4,7 +4,7 @@
 
 `src/variants/registry.ts` is the single route registry. A registered variant supplies presentation copy, visual asset metadata, progress wording, CTA labels, thank-you policy, and analytics/CRM metadata to the shared `VariantFunnel` engine in `src/App.tsx`.
 
-Only `/form2/bbq/` is registered. Unknown or planned routes fail closed to the foundation screen; they never inherit BBQ copy accidentally. The shared funnel retains the existing step order, lead API, telemetry transport, consent handling, dashboard storage, and Monday outbox.
+The active registry contains `/form2/bbq/`, `/form2/funeral/`, `/form2/corporate/`, `/form2/catering-near-me/`, and `/form2/taco/`. Unknown routes fail closed to the foundation screen; they never inherit BBQ copy accidentally. The shared funnel retains the existing lead API, telemetry transport, consent handling, dashboard storage, and Monday outbox.
 
 Variant state is namespaced by slug. Anonymous visitor/session identity stays shared. To remain byte-for-byte compatible with the deployed backend contract, the registered variant uses one stable `intentCluster` as its persisted variant/service-category key; the landing route, approved UTM/click IDs, and origin-only referrer continue through the existing attribution object. The richer `variantSlug` and `serviceCategory` values remain typed config metadata for analytics/CRM adapters and are not added as new client payload fields. The server derives its intent allowlist from the same registry, so registering a future config extends the allowed value without changing the request shape or accepting arbitrary client-provided categories.
 
@@ -25,14 +25,12 @@ The confirmation URL contains no query data. The session snapshot may contain th
 
 When the API is not configured, local development retains the internal completion state so the funnel remains testable without simulating a successful backend write.
 
-## Future variant rollout
+## Active variant policy
 
-For each of `funeral`, `corporate`, `catering-near-me`, and `taco`:
+BBQ, Taco, and Catering Near Me retain all seven visible question screens. Funeral and Corporate use six: the canonical `event_type` machine ID remains reserved as step 5, but its semantic value is a typed configuration prefill and its visible screen is omitted. Progress therefore says “Step N of 6” for those variants while telemetry stays canonical.
 
-1. approve message-matched copy, image assets, claims, and mobile Golden Masters;
-2. add one typed config entry and asset manifest records;
-3. register exactly one route after route-level content, accessibility, and responsive tests pass;
-4. verify the existing lead, telemetry, consent, dashboard, and Monday pipeline with that config's metadata;
-5. reuse the shared V2 confirmation policy after its variant language passes confirmation-page and tracking QA.
+The BBQ hero remains the approved first-party asset. Funeral, Corporate, Catering Near Me, and Taco intentionally use configuration-specific gradient fallbacks with `hero.status = "provisional"` until message-matched Gourmet-owned assets and visual approval are supplied. No exit-intent or social-proof component is active on any route.
+
+For every registered variant, the shared confirmation policy retains the variant slug in its session-only completion snapshot and resolves the corresponding safe configuration at `/form2/thank-you/`.
 
 No separate app, backend endpoint, database, telemetry schema, or Monday worker is required. New CRM columns remain a separately governed board change; the existing pipeline keeps its current columns and receives the variant context through the lead/session attribution model.

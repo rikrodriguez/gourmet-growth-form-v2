@@ -21,6 +21,12 @@ describe('dashboard filters', () => {
     assert.equal(parseListFilters({ limit: '50', status: 'ACTIVE', step: 'phone' }, now).limit, 50);
   });
 
+  it('preserves every registered variant cluster as a dashboard filter value', () => {
+    for (const intentCluster of ['bbq', 'funeral', 'corporate', 'catering-near-me', 'taco']) {
+      assert.equal(parseListFilters({ intent_cluster: intentCluster }, now).intentCluster, intentCluster);
+    }
+  });
+
   it('round-trips deterministic opaque cursors and rejects tampering', () => {
     const cursor = encodeCursor('2026-03-08T10:00:00.000Z', '43c6b8b9-e65f-44bc-9ba6-f015b2897832');
     assert.deepEqual(decodeCursor(cursor), ['2026-03-08T10:00:00.000Z', '43c6b8b9-e65f-44bc-9ba6-f015b2897832']);

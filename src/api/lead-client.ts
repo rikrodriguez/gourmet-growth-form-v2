@@ -20,6 +20,7 @@ type PrePhoneAnswers = {
   guest_range?: string;
   service_style?: string;
   zip_code?: string;
+  event_type?: string;
 };
 
 type LeadUpdates = {

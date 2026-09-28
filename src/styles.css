@@ -343,6 +343,31 @@ button { -webkit-tap-highlight-color: transparent; }
   background-position: 58% center;
 }
 
+/* Provisional, first-party-free visual treatments for M4B routes. */
+.bbq-hero.variant-funeral:not(.has-hero-image) {
+  background:
+    radial-gradient(ellipse at 82% 20%, rgba(177, 151, 116, .22), transparent 34%),
+    linear-gradient(115deg, #15181b 0%, #253039 52%, #6b5f53 100%);
+}
+
+.bbq-hero.variant-corporate:not(.has-hero-image) {
+  background:
+    radial-gradient(ellipse at 83% 20%, rgba(133, 161, 166, .22), transparent 34%),
+    linear-gradient(115deg, #11191d 0%, #1e3a43 52%, #526770 100%);
+}
+
+.bbq-hero.variant-catering-near-me:not(.has-hero-image) {
+  background:
+    radial-gradient(ellipse at 80% 18%, rgba(197, 160, 89, .2), transparent 32%),
+    linear-gradient(115deg, #161814 0%, #344034 50%, #756b51 100%);
+}
+
+.bbq-hero.variant-taco:not(.has-hero-image) {
+  background:
+    radial-gradient(ellipse at 84% 22%, rgba(211, 133, 63, .28), transparent 36%),
+    linear-gradient(115deg, #1c1510 0%, #674328 52%, #8c653a 100%);
+}
+
 .bbq-hero::after {
   content: "";
   position: absolute;

@@ -278,7 +278,7 @@ export function validateCapturePhone(value: unknown): { input?: CapturePhoneInpu
   const phone = normalizeUsPhone(value.phone);
   if (!phone) return { code: 'invalid_phone' };
   if (value.attribution !== undefined && !validateAttribution(value.attribution)) return { code: 'invalid_attribution' };
-  const answers = validateLeadAnswers(value.answers, ['guest_range', 'service_style', 'zip_code']);
+  const answers = validateLeadAnswers(value.answers, ['guest_range', 'service_style', 'zip_code', 'event_type']);
   if (!answers) return { code: 'invalid_answers' };
   if (value.measurement_consent !== undefined && value.measurement_consent !== null) {
     const consent = value.measurement_consent;
