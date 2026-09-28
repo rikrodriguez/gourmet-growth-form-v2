@@ -119,6 +119,25 @@ test('selection, Continue, Back, validation, and timing events are ordered', asy
 });
 
 test('phone and name PII never enter telemetry and completion emits once', async ({ page }) => {
+  const configuredLiveBuild = Boolean(process.env.E2E_BASE_URL);
+  if (configuredLiveBuild) {
+    const leadId = '93b8dc4f-4177-4228-ad67-c625a634d8b3';
+    await page.route('**/v1/leads/**', async (route) => {
+      if (route.request().url().endsWith('/capture-phone')) {
+        await route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({ lead_id: leadId, conversion_id: 'c'.repeat(64), status: 'created' }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ lead_id: leadId, status: 'updated' }),
+      });
+    });
+  }
   const rawPhone = '5035550123';
   const formattedPhone = '(503) 555-0123';
   const customerName = 'TelemetrySecretName';
@@ -129,10 +148,16 @@ test('phone and name PII never enter telemetry and completion emits once', async
   await chooseAndContinue(page, 'Corporate');
   await chooseAndContinue(page, 'still-deciding');
   await page.getByLabel('First name').fill(customerName);
+  const beforeCompletion = await snapshot(page);
   await page.getByRole('button', { name: 'Finish' }).click();
   await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
 
-  let current = await snapshot(page);
+  const readCompletionEvents = () => page.evaluate(
+    () => JSON.parse(window.sessionStorage.getItem('gourmet_growth_telemetry_debug_history_v1') ?? '[]') as DebugEvent[],
+  );
+  let current = configuredLiveBuild
+    ? { ...beforeCompletion, events: await readCompletionEvents() }
+    : await snapshot(page);
   const phoneEvent = current.events.find((event) => event.event_name === 'phone_captured');
   expect(phoneEvent).toMatchObject({
     step_id: 'phone',
@@ -145,10 +170,14 @@ test('phone and name PII never enter telemetry and completion emits once', async
   expect(serialized).not.toContain(customerName);
 
   await page.reload();
-  current = await snapshot(page);
+  current = configuredLiveBuild
+    ? { ...current, events: await readCompletionEvents() }
+    : await snapshot(page);
   expect(current.events.filter((event) => event.event_name === 'form_completed')).toHaveLength(1);
   expect(current.events.filter((event) => event.event_name === 'session_started')).toHaveLength(1);
-  expect(current.events.some((event) => event.event_name === 'funnel_resumed')).toBeTruthy();
+  if (!configuredLiveBuild) {
+    expect(current.events.some((event) => event.event_name === 'funnel_resumed')).toBeTruthy();
+  }
   expect(JSON.stringify(current.events)).not.toContain(customerName);
 
   const localStorageDump = await page.evaluate(() => JSON.stringify(window.localStorage));

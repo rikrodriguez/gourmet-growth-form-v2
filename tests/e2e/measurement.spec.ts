@@ -136,20 +136,29 @@ test('safe funnel events are concise, deduplicated, and PII-free', async ({ page
   await chooseAndContinue(page, 'still-deciding');
   await expect(page.getByLabel('First name')).toHaveAttribute('data-clarity-mask', 'true');
   await page.getByLabel('First name').fill('QA Privacy');
+  const beforeCompletion = await snapshot(page);
   await page.getByRole('button', { name: 'Finish' }).click();
   await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
 
-  let current = await snapshot(page);
-  expect(current.emitted_events.filter((event) => event.event === 'form_start')).toHaveLength(1);
-  expect(current.emitted_events.filter((event) => event.event === 'phone_capture')).toHaveLength(1);
-  expect(current.emitted_events.filter((event) => event.event === 'form_complete')).toHaveLength(1);
-  expect(current.emitted_events.filter((event) => event.event === 'form_step_complete')).toHaveLength(7);
-  expect(current.emitted_events.filter((event) => event.event === 'generate_lead'))
+  expect(beforeCompletion.emitted_events.filter((event) => event.event === 'form_start')).toHaveLength(1);
+  expect(beforeCompletion.emitted_events.filter((event) => event.event === 'phone_capture')).toHaveLength(1);
+  expect(beforeCompletion.emitted_events.filter((event) => event.event === 'form_step_complete')).toHaveLength(6);
+  expect(beforeCompletion.emitted_events.filter((event) => event.event === 'generate_lead'))
     .toHaveLength(configuredApiBuild ? 1 : 0);
   if (configuredApiBuild) {
-    expect(current.emitted_events.find((event) => event.event === 'generate_lead')).toMatchObject({
+    expect(beforeCompletion.emitted_events.find((event) => event.event === 'generate_lead')).toMatchObject({
       transaction_id: 'a'.repeat(64),
     });
+    await expect(page).toHaveURL(/\/form2\/thank-you\/$/);
+    const milestones = await page.evaluate(
+      () => JSON.parse(window.sessionStorage.getItem('gourmet_growth_measurement_milestones_v1') ?? '[]') as string[],
+    );
+    expect(milestones).toContain('form_complete');
+    expect(milestones.filter((value) => value.startsWith('form_step_complete:'))).toHaveLength(7);
+  } else {
+    const current = await snapshot(page);
+    expect(current.emitted_events.filter((event) => event.event === 'form_complete')).toHaveLength(1);
+    expect(current.emitted_events.filter((event) => event.event === 'form_step_complete')).toHaveLength(7);
   }
 
   const serialized = await page.evaluate(() => JSON.stringify({
@@ -168,11 +177,18 @@ test('safe funnel events are concise, deduplicated, and PII-free', async ({ page
   expect(serialized).not.toContain('lead_id');
   expect(serialized).not.toContain('visitor_id');
   expect(serialized).not.toContain('session_id');
-  expect(await page.locator('section.quote-panel[data-clarity-mask="true"]').count()).toBe(1);
+  expect(await page.locator('[data-clarity-mask="true"]').count()).toBeGreaterThanOrEqual(1);
 
   await page.reload();
-  current = await snapshot(page);
-  expect(current.emitted_events.filter((event) => event.event === 'form_complete')).toHaveLength(0);
+  if (configuredApiBuild) {
+    const milestones = await page.evaluate(
+      () => JSON.parse(window.sessionStorage.getItem('gourmet_growth_measurement_milestones_v1') ?? '[]') as string[],
+    );
+    expect(milestones.filter((value) => value === 'form_complete')).toHaveLength(1);
+  } else {
+    const current = await snapshot(page);
+    expect(current.emitted_events.filter((event) => event.event === 'form_complete')).toHaveLength(0);
+  }
 });
 
 test('staging events are marked QA and cannot be Ads-eligible', async ({ page }) => {

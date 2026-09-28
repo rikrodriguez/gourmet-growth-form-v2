@@ -46,6 +46,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('real card clicks advance once through the full funnel and Back preserves values', async ({ page }) => {
+  const configuredLiveBuild = Boolean(process.env.E2E_BASE_URL);
   let unexpectedMainFrameNavigations = 0;
   page.on('framenavigated', (frame) => {
     if (frame === page.mainFrame()) unexpectedMainFrameNavigations += 1;
@@ -86,11 +87,17 @@ test('real card clicks advance once through the full funnel and Back preserves v
   await page.getByRole('button', { name: 'Finish' }).click();
 
   await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
-  await expect(page.getByText('Thank you, QA Test.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Thank you, QA Test' })).toBeVisible();
   await expect(page.getByText('Corporate', { exact: true })).toBeVisible();
-  await expect(page.getByText('97205', { exact: false })).toBeVisible();
+  if (configuredLiveBuild) {
+    await expect(page).toHaveURL(/\/form2\/thank-you\/$/);
+    await expect(page.getByText('97205', { exact: false })).toHaveCount(0);
+    expect(unexpectedMainFrameNavigations).toBeGreaterThanOrEqual(1);
+  } else {
+    await expect(page.getByText('97205', { exact: false })).toBeVisible();
+    expect(unexpectedMainFrameNavigations).toBe(0);
+  }
   await expectNoHorizontalOverflow(page);
-  expect(unexpectedMainFrameNavigations).toBe(0);
 });
 
 test('ZIP fallback does not request the missing legacy dataset or block progression', async ({ page }) => {
