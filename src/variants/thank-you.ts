@@ -12,7 +12,11 @@ function safeValue(value: string | undefined): string | null {
 export function buildThankYouRedirectUrl(
   variant: FunnelVariant,
   attribution: AttributionContext,
+  baseOrigin = 'https://gourmet-corporation.com',
 ): string | null {
+  if (variant.thankYou.mode === 'confirmation') {
+    return new URL(variant.thankYou.path, baseOrigin).toString();
+  }
   if (variant.thankYou.mode !== 'external') return null;
 
   const url = new URL(variant.thankYou.url);

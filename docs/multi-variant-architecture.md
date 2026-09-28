@@ -8,22 +8,22 @@ Only `/form2/bbq/` is registered. Unknown or planned routes fail closed to the f
 
 Variant state is namespaced by slug. Anonymous visitor/session identity stays shared. To remain byte-for-byte compatible with the deployed backend contract, the registered variant uses one stable `intentCluster` as its persisted variant/service-category key; the landing route, approved UTM/click IDs, and origin-only referrer continue through the existing attribution object. The richer `variantSlug` and `serviceCategory` values remain typed config metadata for analytics/CRM adapters and are not added as new client payload fields. The server derives its intent allowlist from the same registry, so registering a future config extends the allowed value without changing the request shape or accepting arbitrary client-provided categories.
 
-## Thank-you decision
+## Thank-you decision and transition
 
 Direct reuse of `https://gourmet-corporation.com/thank-you/` is blocked. Read-only HTTP inspection on 2026-09-28 returned `200` and the title `Chef Felipe | Boutique Culinary Architecture & Premium Catering`; the body is a complete acquisition landing page with fresh proposal CTAs/forms, not a lead confirmation page. The response body was byte-identical for the bare URL, the `www` hostname, and a request with `variant`, `lead_source`, `utm_source`, and `utm_campaign`, so the page does not currently consume the proposed context.
 
-The BBQ config therefore keeps the existing internal completion state and performs no external redirect. The shared engine already enforces the future redirect sequence:
+M4A.1 adds the reusable V2 confirmation route at `/form2/thank-you/`; it contains no form or acquisition CTA. The BBQ config redirects there only when the first-party API is configured and the progressive lead has been persisted. The shared engine enforces this sequence:
 
 1. validate the name step;
 2. persist the final lead update successfully;
-3. emit completion measurement;
-4. require a persisted lead ID and configured first-party API;
-5. build an allowlisted URL containing only `variant`, `lead_source`, `utm_source`, and `utm_campaign`;
+3. require a persisted lead ID and configured first-party API;
+4. save a minimal session-only confirmation snapshot without phone, ZIP, lead ID, visitor ID, or session ID;
+5. emit the complete step and completion measurement;
 6. navigate with `window.location.assign`.
 
-No phone, name, ZIP, email, visitor ID, session ID, raw query string, or full answer object is eligible for the redirect URL. If persistence fails, the user remains in the funnel with retry behavior.
+The confirmation URL contains no query data. The session snapshot may contain the first name and non-contact request summary under the existing current-session lifetime so the page can personalize the acknowledgement. If persistence fails, the user remains in the funnel with retry behavior.
 
-Activation requires either a corrected existing confirmation page or an exact approved reference for a V2-owned replica. No approximate replica is permitted.
+When the API is not configured, local development retains the internal completion state so the funnel remains testable without simulating a successful backend write.
 
 ## Future variant rollout
 
@@ -33,6 +33,6 @@ For each of `funeral`, `corporate`, `catering-near-me`, and `taco`:
 2. add one typed config entry and asset manifest records;
 3. register exactly one route after route-level content, accessibility, and responsive tests pass;
 4. verify the existing lead, telemetry, consent, dashboard, and Monday pipeline with that config's metadata;
-5. activate the shared external thank-you policy only after its destination passes confirmation-page and tracking QA.
+5. reuse the shared V2 confirmation policy after its variant language passes confirmation-page and tracking QA.
 
 No separate app, backend endpoint, database, telemetry schema, or Monday worker is required. New CRM columns remain a separately governed board change; the existing pipeline keeps its current columns and receives the variant context through the lead/session attribution model.

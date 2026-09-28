@@ -137,7 +137,7 @@ test('safe funnel events are concise, deduplicated, and PII-free', async ({ page
   await expect(page.getByLabel('First name')).toHaveAttribute('data-clarity-mask', 'true');
   await page.getByLabel('First name').fill('QA Privacy');
   await page.getByRole('button', { name: 'Finish' }).click();
-  await expect(page.getByText('STAGING FLOW COMPLETE')).toBeVisible();
+  await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
 
   let current = await snapshot(page);
   expect(current.emitted_events.filter((event) => event.event === 'form_start')).toHaveLength(1);

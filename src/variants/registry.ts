@@ -1,7 +1,5 @@
 import type { FunnelVariant } from './types';
 
-const EXISTING_THANK_YOU_URL = 'https://gourmet-corporation.com/thank-you/';
-
 export const bbqVariant = {
   schemaVersion: 1,
   slug: 'bbq',
@@ -52,14 +50,14 @@ export const bbqVariant = {
     startNew: 'Start a new quote',
   },
   completion: {
-    kicker: 'STAGING FLOW COMPLETE',
-    headline: 'Thanks',
-    body: 'Your BBQ catering request has been saved. Our team can now review the details you provided.',
+    kicker: 'REQUEST RECEIVED',
+    headline: 'Thank you',
+    body: 'Your catering request has been received. Our team can now review the event details you provided.',
   },
   thankYou: {
-    mode: 'blocked',
-    candidateUrl: EXISTING_THANK_YOU_URL,
-    reason: 'The candidate currently serves a new lead-generation landing page, not a post-submit confirmation experience.',
+    mode: 'confirmation',
+    path: '/form2/thank-you/',
+    requiresPersistedLead: true,
     safeQueryParams: [],
   },
   metadata: {

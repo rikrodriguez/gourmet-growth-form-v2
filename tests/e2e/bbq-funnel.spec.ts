@@ -85,8 +85,8 @@ test('real card clicks advance once through the full funnel and Back preserves v
   await expect(page.getByRole('button', { name: 'Finish' })).toBeEnabled();
   await page.getByRole('button', { name: 'Finish' }).click();
 
-  await expect(page.getByText('STAGING FLOW COMPLETE')).toBeVisible();
-  await expect(page.getByText('Thanks, QA Test.')).toBeVisible();
+  await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
+  await expect(page.getByText('Thank you, QA Test.')).toBeVisible();
   await expect(page.getByText('Corporate', { exact: true })).toBeVisible();
   await expect(page.getByText('97205', { exact: false })).toBeVisible();
   await expectNoHorizontalOverflow(page);
@@ -156,4 +156,25 @@ test('unregistered keyword routes never inherit the BBQ funnel', async ({ page }
   await page.goto('/form2/funeral/');
   await expect(page.getByRole('heading', { name: 'Growth Form V2' })).toBeVisible();
   await expect(page.getByRole('heading', { name: /BBQ Catering/i })).toHaveCount(0);
+});
+
+test('dedicated thank-you route is a confirmation page with no acquisition form', async ({ page }) => {
+  await page.goto('/form2/thank-you/');
+  await expect(page.getByRole('heading', { name: 'Thank you' })).toBeVisible();
+  await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
+  await expect(page.locator('form')).toHaveCount(0);
+  await expect(page.getByRole('textbox')).toHaveCount(0);
+  expect(page.url()).not.toContain('?');
+  await expectNoHorizontalOverflow(page);
+});
+
+test('disabled previews are absent by default and visible only with explicit QA parameters', async ({ page }) => {
+  await expect(page.locator('.exit-preview')).toHaveCount(0);
+  await expect(page.locator('.social-proof-toast')).toHaveCount(0);
+
+  await page.goto('/form2/bbq/?preview=exit-intent');
+  await expect(page.getByRole('dialog', { name: /Need more time/i })).toBeVisible();
+
+  await page.goto('/form2/bbq/?preview=social-proof');
+  await expect(page.locator('.social-proof-toast')).toBeVisible();
 });

@@ -102,6 +102,13 @@ export default defineConfig({
       },
     },
     {
+      name: 'tablet-chromium-1024x768',
+      use: {
+        browserName: 'chromium',
+        viewport: { width: 1024, height: 768 },
+      },
+    },
+    {
       name: 'desktop-chromium-1440x900',
       use: {
         browserName: 'chromium',

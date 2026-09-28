@@ -1,60 +1,65 @@
 {
-  "manifest_version": 2,
-  "milestone": "MULTI_KEYWORD_VARIANT_ARCHITECTURE",
+  "manifest_version": 3,
+  "milestone": "M4A.1_BBQ_GOLDEN_MASTER_VISUAL_MATCH",
+  "web_content_boundary": {
+    "description": "The approved references include an iPhone frame and Safari chrome. Only the Gourmet Corp header and content below it are web UI authority.",
+    "source_dimensions": "1122x1402",
+    "comparison_scope": "webpage content only; device hardware, status bar, browser address bar, and home indicator excluded"
+  },
   "references": [
     {
       "id": "bbq-main-approved-mobile",
-      "coverage": "main BBQ step",
-      "path": null,
-      "dimensions": null,
-      "checksum_sha256": null,
-      "provenance": "User-supplied and user-designated approved Golden Master for the BBQ funnel in this milestone.",
-      "verification_status": "missing_binary"
-    },
-    {
-      "id": "bbq-date-approved-mobile",
-      "coverage": "date step",
-      "path": null,
-      "dimensions": null,
-      "checksum_sha256": null,
-      "provenance": "User-supplied and user-designated approved Golden Master for the BBQ funnel in this milestone.",
-      "verification_status": "missing_binary"
+      "coverage": "GM-01 guests step",
+      "path": "design/golden/bbq/gm-01-guests.png",
+      "dimensions": "1122x1402",
+      "checksum_sha256": "b2e9b46a761183c387151dc9c9736d045a5a1314e33b38c5f8d8e83f08494940",
+      "provenance": "User-supplied and explicitly approved Golden Master",
+      "verification_status": "approved_reference"
     },
     {
       "id": "bbq-phone-approved-mobile",
-      "coverage": "phone step",
-      "path": null,
-      "dimensions": null,
-      "checksum_sha256": null,
-      "provenance": "User-supplied and user-designated approved Golden Master for the BBQ funnel in this milestone.",
-      "verification_status": "missing_binary"
+      "coverage": "GM-02 phone step",
+      "path": "design/golden/bbq/gm-02-phone.png",
+      "dimensions": "1122x1402",
+      "checksum_sha256": "0e275f7a175b9b7f36b91a3638e4b1bc57cbe962e802dcbdfa1dc60f84629b45",
+      "provenance": "User-supplied and explicitly approved Golden Master",
+      "verification_status": "approved_reference"
     },
     {
-      "id": "bbq-zip-approved-mobile",
-      "coverage": "ZIP step",
-      "path": null,
-      "dimensions": null,
-      "checksum_sha256": null,
-      "provenance": "User-supplied and user-designated approved Golden Master for the BBQ funnel in this milestone.",
-      "verification_status": "missing_binary"
+      "id": "bbq-date-approved-mobile",
+      "coverage": "GM-03 flexible date step",
+      "path": "design/golden/bbq/gm-03-date.png",
+      "dimensions": "1122x1402",
+      "checksum_sha256": "eda705bf9378375105be2e5a43822932f948d39fa8e51779ad2c6967ced1440c",
+      "provenance": "User-supplied and explicitly approved Golden Master",
+      "verification_status": "approved_reference"
     },
     {
       "id": "bbq-exit-intent-approved-mobile",
-      "coverage": "exit intent modal",
-      "path": null,
-      "dimensions": null,
-      "checksum_sha256": null,
-      "provenance": "User-supplied and user-designated approved Golden Master for the BBQ funnel in this milestone.",
-      "verification_status": "missing_binary"
+      "coverage": "GM-04 exit-intent component",
+      "path": "design/golden/bbq/gm-04-exit-intent.png",
+      "dimensions": "1122x1402",
+      "checksum_sha256": "3bd8f09241efc506fceba45b1f26395c69a5602230910dda85d583c111b6e019",
+      "provenance": "User-supplied and explicitly approved Golden Master",
+      "verification_status": "approved_reference"
     },
     {
       "id": "bbq-social-proof-approved-mobile",
-      "coverage": "floating social proof toast",
-      "path": null,
-      "dimensions": null,
-      "checksum_sha256": null,
-      "provenance": "User-supplied and user-designated approved Golden Master for the BBQ funnel in this milestone.",
-      "verification_status": "missing_binary"
+      "coverage": "GM-05 social-proof toast component",
+      "path": "design/golden/bbq/gm-05-social-proof.png",
+      "dimensions": "1122x1402",
+      "checksum_sha256": "ade9ef9740afc6a7659938bedd86bdfbeee52453e5cbb2dcc5f16b7f7a28f3d8",
+      "provenance": "User-supplied and explicitly approved Golden Master",
+      "verification_status": "approved_reference"
+    },
+    {
+      "id": "bbq-zip-approved-mobile",
+      "coverage": "GM-06 ZIP/location step",
+      "path": "design/golden/bbq/gm-06-zip.png",
+      "dimensions": "1122x1402",
+      "checksum_sha256": "3d0eb01bdd293a1e4957953dd37af3247ac19fe45cbb35ec049dff3970097f0b",
+      "provenance": "User-supplied and explicitly approved Golden Master",
+      "verification_status": "approved_reference"
     }
   ],
   "available_assets": [
@@ -62,9 +67,12 @@
       "path": "public/assets/bbq-hero-mobile-v1.webp",
       "dimensions": null,
       "checksum_sha256": "eb102e50226eb213319ee9ba3a51f66b325f378051939e0c7d9910d56b618780",
-      "provenance": "Pre-existing repository asset; it is not one of the newly supplied references.",
+      "provenance": "Pre-existing repository asset; not an approved Golden Master and not used by the application.",
       "verification_status": "invalid_image_binary"
     }
   ],
-  "note": "The milestone attachment directory contained only Pasted text.txt. No Golden Master image binaries were available to copy, inspect, checksum, or implement, so paths remain null rather than being invented."
+  "hero_clean_source": {
+    "status": "blocked",
+    "reason": "No supplied binary contains a clean, adequately sized brisket photograph without device chrome, web UI, or text overlays. The Golden Master screenshots are retained as visual references only."
+  }
 }

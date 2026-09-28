@@ -27,8 +27,10 @@ describe('variant registry', () => {
     assert.equal(resolveVariant('/form2/funeral/'), null);
   });
 
-  it('keeps the current BBQ thank-you redirect blocked', () => {
-    assert.equal(buildThankYouRedirectUrl(bbqVariant, attribution()), null);
+  it('routes completed BBQ leads to the dedicated V2 confirmation without query data', () => {
+    const url = new URL(buildThankYouRedirectUrl(bbqVariant, attribution())!);
+    assert.equal(url.pathname, '/form2/thank-you/');
+    assert.equal(url.search, '');
   });
 
   it('builds only the allowlisted non-PII redirect context after activation', () => {

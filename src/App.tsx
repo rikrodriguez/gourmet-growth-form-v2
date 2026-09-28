@@ -4,6 +4,7 @@ import { ConsentBanner } from './measurement/ConsentBanner';
 import { measurement } from './measurement/measurement';
 import { telemetry } from './telemetry/telemetry';
 import { buildThankYouRedirectUrl } from './variants/thank-you';
+import { loadCompletionSnapshot, saveCompletionSnapshot } from './variants/completion-snapshot';
 import { resolveVariant } from './variants/registry';
 import type { FunnelVariant, VariantIcon } from './variants/types';
 import {
@@ -236,10 +237,78 @@ function ArrowIcon() {
   );
 }
 
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="m8 12 2.6 2.7L16.5 9" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function PinIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 21s6-5.1 6-11a6 6 0 1 0-12 0c0 5.9 6 11 6 11Z" fill="currentColor" />
+      <circle cx="12" cy="10" r="2.2" fill="#fff" />
+    </svg>
+  );
+}
+
 function TrustBadgeIcon({ icon }: { icon: VariantIcon }) {
   if (icon === 'leaf') return <LeafIcon />;
   if (icon === 'people') return <PeopleIcon />;
   return <StarIcon />;
+}
+
+function BrandHeader() {
+  return (
+    <header className="brand-header">
+      <div className="brand-lockup" aria-label="Gourmet Corp">
+        <span className="brand-mark"><FlameIcon /></span>
+        <span className="brand-words">
+          <strong>GOURMET CORP</strong>
+          <small>FOOD BRINGS PEOPLE TOGETHER</small>
+        </span>
+      </div>
+      <span className="menu-button" aria-hidden="true"><MenuIcon /></span>
+    </header>
+  );
+}
+
+function SocialProofPreview() {
+  const [visible, setVisible] = useState(true);
+  if (!visible) return null;
+  return (
+    <aside className="social-proof-toast" aria-label="QA preview: service information">
+      <span className="proof-icon"><PeopleIcon /></span>
+      <span className="proof-copy">
+        <strong>Serving Portland-area events</strong>
+        <small>We’ll confirm details with your quote</small>
+      </span>
+      <button type="button" onClick={() => setVisible(false)} aria-label="Close preview">×</button>
+    </aside>
+  );
+}
+
+function ExitIntentPreview({ variant }: { variant: FunnelVariant }) {
+  const [visible, setVisible] = useState(true);
+  if (!visible) return null;
+  return (
+    <div className="exit-preview-backdrop" role="presentation">
+      <section className="exit-preview" role="dialog" aria-modal="true" aria-labelledby="exit-preview-title">
+        <button className="exit-preview-close" type="button" onClick={() => setVisible(false)} aria-label="Close preview">×</button>
+        <span className="exit-preview-icon"><CheckIcon /></span>
+        <p className="exit-preview-kicker">SAVE YOUR PROGRESS</p>
+        <h2 id="exit-preview-title">{variant.exitIntent.headline}</h2>
+        <p>{variant.exitIntent.supportingCopy}</p>
+        <button className="continue-button" type="button" onClick={() => setVisible(false)}>
+          <span>{variant.exitIntent.ctaLabel}</span><ArrowIcon />
+        </button>
+        <button className="exit-preview-later" type="button" onClick={() => setVisible(false)}>I’ll finish later</button>
+      </section>
+    </div>
+  );
 }
 
 function OptionCard<Value extends AnswerValue>({
@@ -315,10 +384,8 @@ function ProgressHeader({
 }
 
 function VariantFunnel({ variant }: { variant: FunnelVariant }) {
-  const goldenPreview = useMemo(
-    () => new URLSearchParams(window.location.search).get('preview') === 'golden',
-    [],
-  );
+  const previewMode = useMemo(() => new URLSearchParams(window.location.search).get('preview'), []);
+  const goldenPreview = previewMode === 'golden';
   const initial = useMemo(
     () => loadSavedState(goldenPreview, variant.slug),
     [goldenPreview, variant.slug],
@@ -341,6 +408,7 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
   const step = TELEMETRY_STEPS[stepIndex] ?? 'complete';
   const initialStep = TELEMETRY_STEPS[initial.stepIndex] ?? 'guests';
   const isComplete = step === 'complete';
+  const showHero = step === 'guests' || step === 'zip' || step === 'date';
 
   useEffect(() => {
     document.title = variant.documentTitle;
@@ -502,8 +570,19 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
     if (step === 'name') {
       const context = telemetry.getLeadContext();
       const persistedLead = leadClient.getLeadId(variant.metadata);
-      const redirectUrl = context ? buildThankYouRedirectUrl(variant, context.attribution) : null;
+      const redirectUrl = context
+        ? buildThankYouRedirectUrl(variant, context.attribution, window.location.origin)
+        : null;
       if (redirectUrl && leadClient.isConfigured && persistedLead) {
+        saveCompletionSnapshot({
+          variant: variant.slug,
+          firstName: answers.name,
+          eventType: answers.eventType,
+          guests: answers.guests,
+          service: answers.service,
+          timing: answers.dateWindow === 'exact' ? answers.exactDate : answers.dateWindow,
+        });
+        telemetry.stepViewed('complete');
         telemetry.formCompleted();
         measurement.formComplete();
         window.location.assign(redirectUrl);
@@ -582,17 +661,8 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
 
   return (
     <main className="mobile-stage">
-      <div className={`mobile-app${stepIndex > 0 ? ' has-progressed' : ''}`}>
-        <header className="brand-header">
-          <div className="brand-lockup" aria-label="Gourmet Corp">
-            <span className="brand-mark"><FlameIcon /></span>
-            <span className="brand-words">
-              <strong>GOURMET CORP</strong>
-              <small>FOOD BRINGS PEOPLE TOGETHER</small>
-            </span>
-          </div>
-          <span className="menu-button" aria-hidden="true"><MenuIcon /></span>
-        </header>
+      <div className={`mobile-app${stepIndex > 0 ? ' has-progressed' : ''}${showHero ? ' show-hero' : ''}`}>
+        <BrandHeader />
 
         <section
           className={`bbq-hero variant-${variant.slug}`}
@@ -702,18 +772,21 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
                 <p className="question-help">Enter the event ZIP code so we can localize the quote.</p>
 
                 <label className="field-label" htmlFor="event-zip">Event ZIP code</label>
-                <input
-                  id="event-zip"
-                  className="text-input"
-                  data-clarity-mask="true"
-                  inputMode="numeric"
-                  autoComplete="postal-code"
-                  maxLength={5}
-                  value={answers.zip || ''}
-                  onChange={(event) => handleZip(event.target.value)}
-                  placeholder="97205"
-                  aria-describedby="zip-status"
-                />
+                <div className="input-with-icon">
+                  <span aria-hidden="true"><PinIcon /></span>
+                  <input
+                    id="event-zip"
+                    className="text-input"
+                    data-clarity-mask="true"
+                    inputMode="numeric"
+                    autoComplete="postal-code"
+                    maxLength={5}
+                    value={answers.zip || ''}
+                    onChange={(event) => handleZip(event.target.value)}
+                    placeholder="97205"
+                    aria-describedby="zip-status"
+                  />
+                </div>
 
                 <div id="zip-status" className={`field-status ${zipLookup}`} aria-live="polite">
                   {zipLookup === 'loading' && 'Checking ZIP…'}
@@ -745,6 +818,12 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
               <fieldset>
                 <legend>{variant.phoneStep.headline}</legend>
                 <p className="question-help">{variant.phoneStep.subheadline}</p>
+
+                <div className="phone-assurances" aria-label="Phone privacy safeguards">
+                  <span><i><LockIcon /></i><strong>Request only</strong><small>Securely handled</small></span>
+                  <span><i><CheckIcon /></i><strong>Not in analytics</strong><small>Phone stays excluded</small></span>
+                  <span><i><ArrowIcon /></i><strong>Clean URL</strong><small>Never added to the link</small></span>
+                </div>
 
                 <label className="field-label" htmlFor="phone">{variant.phoneStep.fieldLabel}</label>
                 <input
@@ -998,9 +1077,59 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
               <p className="privacy-note"><LockIcon />Securely handled for your catering request.</p>
             </>
           )}
+          <ConsentBanner compact={stepIndex > 0} />
         </section>
       </div>
-      <ConsentBanner compact={stepIndex > 0} />
+      {previewMode === 'social-proof' && <SocialProofPreview />}
+      {previewMode === 'exit-intent' && <ExitIntentPreview variant={variant} />}
+    </main>
+  );
+}
+
+function readableValue(value: string | undefined) {
+  if (!value) return null;
+  return value.replace(/-/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function ThankYouScreen() {
+  const snapshot = useMemo(() => loadCompletionSnapshot(), []);
+  const variant = snapshot ? resolveVariant(`/form2/${snapshot.variant}/`) : null;
+  const firstName = snapshot?.firstName;
+  const summary = [
+    ['Event type', snapshot?.eventType],
+    ['Guests', snapshot?.guests],
+    ['Service', readableValue(snapshot?.service)],
+    ['Timing', readableValue(snapshot?.timing)],
+  ].filter((entry): entry is [string, string] => Boolean(entry[1]));
+
+  useEffect(() => {
+    document.title = 'Request received | Gourmet Corp';
+  }, []);
+
+  return (
+    <main className="thank-you-page" data-clarity-mask="true">
+      <BrandHeader />
+      <div className="thank-you-aura" aria-hidden="true" />
+      <section className="thank-you-card" aria-labelledby="thank-you-title">
+        <span className="thank-you-check"><CheckIcon /></span>
+        <p className="thank-you-kicker">{variant?.completion.kicker ?? 'REQUEST RECEIVED'}</p>
+        <h1 id="thank-you-title">Thank you{firstName ? `, ${firstName}` : ''}</h1>
+        <p className="thank-you-body">
+          {variant?.completion.body ?? 'Your catering request has been received. Our team can now review the event details you provided.'}
+        </p>
+        {summary.length > 0 && (
+          <dl className="thank-you-summary" aria-label="Request summary">
+            {summary.map(([label, value]) => (
+              <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+            ))}
+          </dl>
+        )}
+        <p className="thank-you-note"><LockIcon /> Your submitted details are not displayed in the page URL.</p>
+      </section>
+      <footer className="thank-you-footer">
+        <strong>GOURMET CORP</strong>
+        <span>FOOD BRINGS PEOPLE TOGETHER</span>
+      </footer>
     </main>
   );
 }
@@ -1024,6 +1153,7 @@ function FoundationScreen() {
 }
 
 export default function App() {
+  if (/^\/form2\/thank-you\/?$/.test(window.location.pathname)) return <ThankYouScreen />;
   const variant = resolveVariant(window.location.pathname);
   return variant ? <VariantFunnel variant={variant} /> : <FoundationScreen />;
 }

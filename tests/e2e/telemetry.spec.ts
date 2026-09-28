@@ -130,7 +130,7 @@ test('phone and name PII never enter telemetry and completion emits once', async
   await chooseAndContinue(page, 'still-deciding');
   await page.getByLabel('First name').fill(customerName);
   await page.getByRole('button', { name: 'Finish' }).click();
-  await expect(page.getByText('STAGING FLOW COMPLETE')).toBeVisible();
+  await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
 
   let current = await snapshot(page);
   const phoneEvent = current.events.find((event) => event.event_name === 'phone_captured');

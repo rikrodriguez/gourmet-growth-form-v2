@@ -115,11 +115,22 @@ test('lead capture failure is visible and retry completes one progressive lead',
 
   await page.getByRole('button', { name: 'Retry secure save' }).click();
   await expect(page.getByText('Step 5 of 7')).toBeVisible();
+  const measurementEvents = await page.evaluate(
+    () => window.__GOURMET_MEASUREMENT_DEBUG__?.getSnapshot().emitted_events ?? [],
+  );
+  expect(measurementEvents.filter((event) => event.event === 'generate_lead')).toHaveLength(1);
+  expect(measurementEvents.find((event) => event.event === 'generate_lead')).toMatchObject({
+    transaction_id: 'b'.repeat(64),
+  });
+  expect(JSON.stringify(measurementEvents)).not.toContain('5035550123');
+  expect(JSON.stringify(measurementEvents)).not.toContain('Secure QA Name');
   await chooseAndContinue(page, 'Corporate');
   await chooseAndContinue(page, 'still-deciding');
   await page.getByLabel('First name').fill('Secure QA Name');
   await page.getByRole('button', { name: 'Finish' }).click();
-  await expect(page.getByText('STAGING FLOW COMPLETE')).toBeVisible();
+  await expect(page).toHaveURL(/\/form2\/thank-you\/$/);
+  await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Thank you, Secure QA Name' })).toBeVisible();
 
   expect(captureBodies).toHaveLength(2);
   expect(captureBodies[0].phone).toBe('5035550123');
@@ -139,7 +150,20 @@ test('lead capture failure is visible and retry completes one progressive lead',
     { first_name: 'Secure QA Name' },
   ]);
   expect(page.url()).not.toContain(leadId);
+  const completionSnapshot = await page.evaluate(() => window.sessionStorage.getItem('gourmet_growth_v2_completion_v1'));
+  expect(completionSnapshot).toContain('Secure QA Name');
+  expect(completionSnapshot).not.toContain('5035550123');
+  expect(completionSnapshot).not.toContain('97205');
+  expect(completionSnapshot).not.toContain(leadId);
   expect(await page.evaluate(() => window.sessionStorage.getItem('gourmet_growth_lead_id_v1'))).toBe(leadId);
+  const telemetryHistory = await page.evaluate(
+    () => JSON.parse(window.sessionStorage.getItem('gourmet_growth_telemetry_debug_history_v1') ?? '[]') as Array<{ event_name: string; step_id: string }>,
+  );
+  expect(telemetryHistory.some((event) => event.event_name === 'step_viewed' && event.step_id === 'complete')).toBe(true);
+  expect(telemetryHistory.filter((event) => event.event_name === 'form_completed' && event.step_id === 'complete')).toHaveLength(1);
+  expect(telemetryHistory.some((event) => event.event_name === 'page_exit_signal' && event.step_id === 'complete')).toBe(true);
+  expect(JSON.stringify(telemetryHistory)).not.toContain('5035550123');
+  expect(JSON.stringify(telemetryHistory)).not.toContain('Secure QA Name');
 
   const telemetry = JSON.stringify(telemetryBodies);
   expect(telemetry).not.toContain('5035550123');
@@ -147,16 +171,6 @@ test('lead capture failure is visible and retry completes one progressive lead',
   const phoneEvents = telemetryBodies.flatMap((body) => (body as { events: Array<{ event_name: string }> }).events)
     .filter((event) => event.event_name === 'phone_captured');
   expect(phoneEvents).toHaveLength(1);
-  const measurementEvents = await page.evaluate(
-    () => window.__GOURMET_MEASUREMENT_DEBUG__?.getSnapshot().emitted_events ?? [],
-  );
-  expect(measurementEvents.filter((event) => event.event === 'generate_lead')).toHaveLength(1);
-  expect(measurementEvents.find((event) => event.event === 'generate_lead')).toMatchObject({
-    transaction_id: 'b'.repeat(64),
-  });
-  expect(JSON.stringify(measurementEvents)).not.toContain('5035550123');
-  expect(JSON.stringify(measurementEvents)).not.toContain('Secure QA Name');
-
   await page.reload();
   const afterReload = await page.evaluate(
     () => window.__GOURMET_MEASUREMENT_DEBUG__?.getSnapshot().emitted_events ?? [],

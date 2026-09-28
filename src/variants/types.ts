@@ -12,6 +12,12 @@ export type VariantMetadata = {
 
 export type ThankYouBehavior =
   | {
+      mode: 'confirmation';
+      path: '/form2/thank-you/';
+      requiresPersistedLead: true;
+      safeQueryParams: readonly [];
+    }
+  | {
       mode: 'external';
       url: string;
       requiresPersistedLead: true;
