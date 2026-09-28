@@ -71,7 +71,7 @@ for (const variant of variants) {
 
     if (variant.prefilledEventType) {
       await expect(page.getByText(`Step 5 of ${variant.visibleSteps}`)).toBeVisible();
-      await expect(page.getByRole('heading', { name: /What kind of event/i })).toHaveCount(0);
+      await expect(page.getByRole('group', { name: /What kind of event/i })).toHaveCount(0);
       const events = await page.evaluate(() => window.__GOURMET_TELEMETRY_DEBUG__!.getSnapshot().events);
       expect(events.some((event) => event.step_id === 'event_type')).toBeFalsy();
       await page.getByRole('button', { name: 'Back' }).click();
@@ -82,7 +82,7 @@ for (const variant of variants) {
     }
 
     await expect(page.getByText(`Step 5 of ${variant.visibleSteps}`)).toBeVisible();
-    await expect(page.getByRole('heading', { name: /What kind of event/i })).toBeVisible();
+    await expect(page.getByRole('group', { name: /What kind of event/i })).toBeVisible();
     await page.getByRole('button', { name: 'Back' }).click();
     await expect(page.getByText(`Step 4 of ${variant.visibleSteps}`)).toBeVisible();
     await page.reload();
