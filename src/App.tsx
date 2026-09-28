@@ -42,7 +42,7 @@ type Option<Value extends AnswerValue = AnswerValue> = {
   value: Value;
   title: string;
   subtitle?: string;
-  icon?: 'people';
+  icon?: 'people' | 'calendar' | 'help';
 };
 
 const STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -94,11 +94,11 @@ const eventOptions: Option<EventTypeAnswerValue>[] = [
 ];
 
 const dateOptions: Option<DateAnswerValue>[] = [
-  { value: 'exact', title: 'Exact date', subtitle: 'I know the date' },
-  { value: 'next-2-weeks', title: 'Next 2 weeks', subtitle: 'Soon' },
-  { value: 'this-month', title: 'This month', subtitle: 'Within 30 days' },
-  { value: '1-3-months', title: '1–3 months', subtitle: 'Planning ahead' },
-  { value: 'still-deciding', title: 'Still deciding', subtitle: 'Not sure yet' },
+  { value: 'exact', title: 'Exact date', subtitle: 'I know the date', icon: 'calendar' },
+  { value: 'next-2-weeks', title: 'Next 2 weeks', subtitle: 'Soon', icon: 'calendar' },
+  { value: 'this-month', title: 'This month', subtitle: 'Within 30 days', icon: 'calendar' },
+  { value: '1-3-months', title: '1–3 months', subtitle: 'Planning ahead', icon: 'calendar' },
+  { value: 'still-deciding', title: 'Still deciding', subtitle: 'Not sure yet', icon: 'help' },
 ];
 
 function storageKeys(variantSlug: string) {
@@ -178,14 +178,6 @@ function FlameIcon() {
   );
 }
 
-function MenuIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 function LeafIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -255,6 +247,26 @@ function PinIcon() {
   );
 }
 
+function CalendarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4.5" y="5.5" width="15" height="14" rx="2" fill="none" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M8 3.5v4M16 3.5v4M4.5 10h15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <path d="M8 14h.01M12 14h.01M16 14h.01" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function HelpIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M9.6 9.3a2.55 2.55 0 1 1 4.2 2c-.9.75-1.8 1.25-1.8 2.7" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <path d="M12 17.1h.01" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function TrustBadgeIcon({ icon }: { icon: VariantIcon }) {
   if (icon === 'leaf') return <LeafIcon />;
   if (icon === 'people') return <PeopleIcon />;
@@ -271,7 +283,6 @@ function BrandHeader() {
           <small>FOOD BRINGS PEOPLE TOGETHER</small>
         </span>
       </div>
-      <span className="menu-button" aria-hidden="true"><MenuIcon /></span>
     </header>
   );
 }
@@ -334,7 +345,13 @@ function OptionCard<Value extends AnswerValue>({
         checked={selected}
         onChange={onSelect}
       />
-      {option.icon && <span className="guest-option-icon"><PeopleIcon /></span>}
+      {option.icon && (
+        <span className="guest-option-icon" aria-hidden="true">
+          {option.icon === 'people' && <PeopleIcon />}
+          {option.icon === 'calendar' && <CalendarIcon />}
+          {option.icon === 'help' && <HelpIcon />}
+        </span>
+      )}
       <span className="guest-option-copy">
         <strong>{option.title}</strong>
         {option.subtitle && <small>{option.subtitle}</small>}
@@ -793,7 +810,8 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
                   />
                 </div>
 
-                <div id="zip-status" className={`field-status ${zipLookup}`} aria-live="polite">
+                <div id="zip-status" className={`field-status zip-status-card ${zipLookup}`} aria-live="polite">
+                  {zipLookup !== 'idle' && <span className="field-status-icon" aria-hidden="true"><PinIcon /></span>}
                   {zipLookup === 'loading' && 'Checking ZIP…'}
                   {zipLookup === 'found' && `✓ ZIP recognized: ${answers.city || ''}${answers.city && answers.state ? ', ' : ''}${answers.state || ''}`}
                   {zipLookup === 'unknown' && /^\d{5}$/.test(answers.zip || '') && 'We’ll confirm service availability for this ZIP with your quote.'}
@@ -825,9 +843,9 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
                 <p className="question-help">{variant.phoneStep.subheadline}</p>
 
                 <div className="phone-assurances" aria-label="Phone privacy safeguards">
-                  <span><i><LockIcon /></i><strong>Request only</strong><small>Securely handled</small></span>
-                  <span><i><CheckIcon /></i><strong>Not in analytics</strong><small>Phone stays excluded</small></span>
-                  <span><i><ArrowIcon /></i><strong>Clean URL</strong><small>Never added to the link</small></span>
+                  <span><i><CheckIcon /></i><strong>For your request</strong><small>Used only to follow up on this catering inquiry</small></span>
+                  <span><i><LockIcon /></i><strong>Securely handled</strong><small>Protected in our request system</small></span>
+                  <span><i><ArrowIcon /></i><strong>No tracking URL</strong><small>Your phone number is never added to the page URL</small></span>
                 </div>
 
                 <label className="field-label" htmlFor="phone">{variant.phoneStep.fieldLabel}</label>

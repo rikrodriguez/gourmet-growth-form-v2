@@ -110,6 +110,7 @@ test('ZIP fallback does not request the missing legacy dataset or block progress
 
   await page.getByLabel('Event ZIP code').fill('97205');
   await expect(page.getByText(/confirm service availability/i)).toBeVisible();
+  await expect(page.locator('.zip-status-card .field-status-icon')).toBeVisible();
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByText('Step 4 of 7')).toBeVisible();
   expect(legacyZipRequests).toBe(0);
@@ -148,6 +149,7 @@ test('Other event and Exact date conditional fields are required and usable', as
   await page.getByRole('button', { name: 'Continue' }).click();
 
   await option(page, 'exact').click();
+  await expect(page.locator('.date-grid .guest-option-icon')).toHaveCount(5);
   await expect(page.getByLabel('Event date')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue' })).toBeDisabled();
   await page.getByLabel('Event date').fill('2099-12-31');

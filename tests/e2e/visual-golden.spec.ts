@@ -11,6 +11,15 @@ test('390 web surface is deterministic and excludes device chrome from compariso
   await expect(page.locator('.mobile-app')).toBeVisible();
   await expect(page.locator('.bbq-hero')).toHaveClass(/has-hero-image/);
   await expect(page.locator('.bbq-hero')).toHaveCSS('background-image', /bbq-hero-mobile-v2\.webp/);
+  await expect(page.getByText('Your Event', { exact: true })).toBeVisible();
+  await expect(page.getByText('Quick form', { exact: true })).toBeVisible();
+  await expect(page.locator('.menu-button')).toHaveCount(0);
+  await expect(page.locator('.consent-panel')).not.toHaveCSS('position', 'fixed');
+  const consentActions = page.locator('.consent-actions button');
+  await expect(consentActions).toHaveCount(3);
+  for (let index = 0; index < 3; index += 1) {
+    await expect(consentActions.nth(index)).toHaveCSS('min-height', '44px');
+  }
   const first = await page.locator('.mobile-app').screenshot({ animations: 'disabled' });
   const second = await page.locator('.mobile-app').screenshot({ animations: 'disabled' });
   expect(Buffer.compare(first, second)).toBe(0);

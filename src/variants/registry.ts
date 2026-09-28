@@ -29,8 +29,8 @@ export const bbqVariant = {
   },
   progress: {
     stepLabel: 'Step',
-    shortLabel: 'Short form',
-    countLabel: '7 steps',
+    shortLabel: 'Your Event',
+    countLabel: 'Quick form',
   },
   phoneStep: {
     headline: 'What’s the best phone number to reach you?',
