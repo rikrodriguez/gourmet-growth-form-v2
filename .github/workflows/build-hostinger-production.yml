@@ -1,6 +1,14 @@
 name: Build and Deploy Form2 Production Artifact
 
 on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      confirmation:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       source_sha:

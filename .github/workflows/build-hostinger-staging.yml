@@ -5,6 +5,23 @@ on:
     branches:
       - develop
   workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: Select staging or the guarded production release
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+      source_sha:
+        description: Required exact SHA for a production deployment
+        required: false
+        type: string
+      confirmation:
+        description: Required typed confirmation for a production deployment
+        required: false
+        type: string
 
 concurrency:
   group: hostinger-staging-deploy
@@ -15,6 +32,7 @@ permissions:
 
 jobs:
   build-and-publish:
+    if: ${{ github.event_name == 'push' || inputs.deploy_target == 'staging' }}
     runs-on: ubuntu-latest
 
     services:
@@ -237,3 +255,11 @@ jobs:
         env:
           E2E_QA_SECRET: ${{ secrets.E2E_QA_SECRET }}
         run: npm run test:e2e:staging
+
+  deploy-production:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_target == 'production' }}
+    uses: ./.github/workflows/build-hostinger-production.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      confirmation: ${{ inputs.confirmation }}
+    secrets: inherit
