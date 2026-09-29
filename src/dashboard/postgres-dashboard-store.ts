@@ -3,10 +3,13 @@ import type {
   AuthenticatedStaff,
   DashboardListFilters,
   DashboardStore,
+  ExperimentReportFilters,
   ReportingRange,
   StaffUser,
 } from './contracts';
 import { decodeCursor, encodeCursor } from './filters';
+import { buildExperimentReport } from '../experiments/statistics';
+import type { ExperimentMetricsRow } from '../experiments/types';
 
 const { Pool } = pg;
 
@@ -480,6 +483,60 @@ export class PostgresDashboardStore implements DashboardStore {
       (groups[row.dimension] ??= []).push(item);
     }
     return { range: rangeMeta(range), groups };
+  }
+
+  async experiments(filters: ExperimentReportFilters): Promise<Record<string, unknown>> {
+    const result = await this.pool.query<ExperimentMetricsRow>(
+      `WITH exposures AS (
+         SELECT e.session_id,e.visitor_id,e.experiment_id,e.variant_id,min(e.occurred_at) AS exposed_at
+         FROM growth_v2.events e
+         JOIN growth_v2.sessions s ON s.session_id=e.session_id
+         WHERE e.event_name='step_viewed' AND e.step_id='guests'
+           AND e.experiment_id IS NOT NULL AND e.variant_id IS NOT NULL
+           AND s.started_at >= $1 AND s.started_at < $2
+           AND ($3::boolean OR NOT s.is_qa) AND s.deleted_at IS NULL
+           AND ($4::text IS NULL OR e.intent_cluster=$4)
+           AND ($5::text IS NULL OR e.experiment_id=$5)
+           AND ($6::text IS NULL OR e.variant_id=$6)
+         GROUP BY e.session_id,e.visitor_id,e.experiment_id,e.variant_id
+       ), session_metrics AS (
+         SELECT x.*,
+           min(e.occurred_at) FILTER (WHERE e.event_name='step_completed' AND e.step_id='guests') AS guest_completed_at,
+           bool_or(e.event_name='phone_captured') AS phone_captured,
+           bool_or(e.event_name='form_completed') AS form_completed,
+           min(e.occurred_at) FILTER (WHERE e.event_name='page_exit_signal') AS page_exit_at,
+           bool_or(e.event_name='validation_error' AND e.step_id='guests' AND e.properties->>'code'='guests_required') AS guest_validation_error
+         FROM exposures x
+         LEFT JOIN growth_v2.events e ON e.session_id=x.session_id AND e.occurred_at >= x.exposed_at
+         GROUP BY x.session_id,x.visitor_id,x.experiment_id,x.variant_id,x.exposed_at
+       )
+       SELECT experiment_id,variant_id,
+         count(DISTINCT session_id)::int AS exposed_sessions,
+         count(DISTINCT visitor_id)::int AS unique_visitors,
+         count(*) FILTER (WHERE guest_completed_at IS NOT NULL)::int AS guests_completed,
+         count(*) FILTER (WHERE phone_captured)::int AS phone_captures,
+         count(*) FILTER (WHERE form_completed)::int AS form_completes,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (guest_completed_at-exposed_at))*1000)
+           FILTER (WHERE guest_completed_at IS NOT NULL) AS median_time_to_guest_completion_ms,
+         count(*) FILTER (WHERE page_exit_at IS NOT NULL AND (guest_completed_at IS NULL OR page_exit_at < guest_completed_at))::int AS exits_before_guests,
+         count(*) FILTER (WHERE guest_validation_error)::int AS guest_validation_errors
+       FROM session_metrics
+       GROUP BY experiment_id,variant_id
+       ORDER BY experiment_id,variant_id`,
+      [filters.from, filters.to, filters.includeQa, filters.intentCluster, filters.experimentId, filters.variantId],
+    );
+    const report = buildExperimentReport(result.rows.map((row) => ({
+      ...row,
+      exposed_sessions: number(row.exposed_sessions),
+      unique_visitors: number(row.unique_visitors),
+      guests_completed: number(row.guests_completed),
+      phone_captures: number(row.phone_captures),
+      form_completes: number(row.form_completes),
+      median_time_to_guest_completion_ms: row.median_time_to_guest_completion_ms === null ? null : Math.round(number(row.median_time_to_guest_completion_ms)),
+      exits_before_guests: number(row.exits_before_guests),
+      guest_validation_errors: number(row.guest_validation_errors),
+    })));
+    return { range: rangeMeta(filters), ...report };
   }
 
   async crmHealth(): Promise<Record<string, unknown>> {

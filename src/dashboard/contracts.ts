@@ -34,6 +34,12 @@ export type DashboardListFilters = ReportingRange & {
   exactId: string | null;
 };
 
+export type ExperimentReportFilters = ReportingRange & {
+  intentCluster: string | null;
+  experimentId: string | null;
+  variantId: string | null;
+};
+
 export interface DashboardStore {
   health(): Promise<void>;
   findStaffByEmail(email: string): Promise<StaffUser | null>;
@@ -48,6 +54,7 @@ export interface DashboardStore {
   leads(filters: DashboardListFilters): Promise<Record<string, unknown>>;
   leadDetail(leadId: string, includeQa: boolean): Promise<Record<string, unknown> | null>;
   attribution(range: ReportingRange): Promise<Record<string, unknown>>;
+  experiments(filters: ExperimentReportFilters): Promise<Record<string, unknown>>;
   crmHealth(): Promise<Record<string, unknown>>;
   close(): Promise<void>;
 }

@@ -1,6 +1,7 @@
 import { resolveAttribution } from './attribution';
 import { gourmetApiBaseUrl } from '../api/config';
 import { resolveTelemetryIdentity, TelemetryIdentity } from './identity';
+import type { ExperimentContext } from '../experiments/context';
 import { createTelemetryTransport, deliverTelemetryBatch } from './transport';
 import type { VariantMetadata } from '../variants/types';
 import {
@@ -76,12 +77,16 @@ class GourmetTelemetry {
   private deliveryInFlight = false;
   private deliveryRetry = 0;
   private metadata: VariantMetadata | null = null;
+  private experiment: ExperimentContext['assignment'] = {
+    experimentId: null, variantId: null, source: 'none', eligible: false, eligibility: 'not_initialized',
+  };
 
-  initialize(currentStep: StepId, metadata: VariantMetadata) {
+  initialize(currentStep: StepId, metadata: VariantMetadata, experimentContext?: ExperimentContext) {
     if (this.initialized) return;
 
     try {
-      this.identity = resolveTelemetryIdentity();
+      this.identity = experimentContext?.identity ?? resolveTelemetryIdentity();
+      this.experiment = experimentContext?.assignment ?? this.experiment;
       this.metadata = metadata;
       this.attribution = resolveAttribution(metadata);
       this.events = this.loadQueue(this.identity.sessionId);
@@ -171,6 +176,8 @@ class GourmetTelemetry {
       visitor_id: this.identity.visitorId,
       session_id: this.identity.sessionId,
       attribution: this.attribution,
+      experiment_id: this.experiment.experimentId,
+      variant_id: this.experiment.variantId,
     });
   }
 
@@ -206,8 +213,8 @@ class GourmetTelemetry {
       step_id: step,
       step_index: STEP_INDEX[step],
       properties,
-      experiment_id: null,
-      variant_id: null,
+      experiment_id: this.experiment.experimentId,
+      variant_id: this.experiment.variantId,
       step_duration_ms: stepDurationMs,
       session_elapsed_ms: roundedMilliseconds(Date.now() - this.identity.sessionStartedAt),
       attribution: this.attribution,
@@ -331,6 +338,12 @@ class GourmetTelemetry {
       visitor_id: this.identity.visitorId,
       session_id: this.identity.sessionId,
       attribution: this.attribution,
+      experiment: {
+        experiment_id: this.experiment.experimentId,
+        variant_id: this.experiment.variantId,
+        eligibility: this.experiment.eligibility,
+        assignment_source: this.experiment.source,
+      },
       events: this.debugEvents,
     });
   }

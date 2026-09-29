@@ -132,6 +132,52 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
     ]);
   });
 
+  it('persists one experiment assignment per session, rejects crossover, and supports phone-first capture', async () => {
+    const headers = { origin, 'content-type': 'application/json' };
+    const experimentId = 'bbq-first-screen-density-v1';
+    const visitorId = randomUUID();
+    const sessionId = randomUUID();
+    const control = eventFixture({
+      visitor_id: visitorId, session_id: sessionId,
+      experiment_id: experimentId, variant_id: 'control',
+    });
+    const accepted = await app.inject({ method: 'POST', url: '/v1/events/batch', headers, payload: { events: [control] } });
+    assert.equal(accepted.statusCode, 200);
+
+    const crossover = await app.inject({
+      method: 'POST', url: '/v1/events/batch', headers,
+      payload: { events: [{ ...eventFixture({ visitor_id: visitorId, session_id: sessionId }), experiment_id: experimentId, variant_id: 'compact-first-screen' }] },
+    });
+    assert.equal(crossover.statusCode, 409);
+    assert.equal(crossover.json().error, 'experiment_assignment_conflict');
+
+    const phoneFirstVisitor = randomUUID();
+    const phoneFirstSession = randomUUID();
+    const captured = await app.inject({
+      method: 'POST', url: '/v1/leads/capture-phone', headers,
+      payload: {
+        visitor_id: phoneFirstVisitor, session_id: phoneFirstSession, phone: '5035550198',
+        intent_cluster: 'bbq', idempotency_key: randomUUID(),
+        experiment_id: experimentId, variant_id: 'compact-first-screen',
+      },
+    });
+    assert.equal(captured.statusCode, 201);
+    const followUp = await app.inject({
+      method: 'POST', url: '/v1/events/batch', headers,
+      payload: { events: [eventFixture({
+        visitor_id: phoneFirstVisitor, session_id: phoneFirstSession,
+        experiment_id: experimentId, variant_id: 'compact-first-screen',
+      })] },
+    });
+    assert.equal(followUp.statusCode, 200);
+    const persisted = await inspection.query(
+      `SELECT experiment_id, variant_id, is_qa FROM growth_v2.sessions WHERE session_id = $1`, [phoneFirstSession],
+    );
+    assert.deepEqual(persisted.rows[0], {
+      experiment_id: experimentId, variant_id: 'compact-first-screen', is_qa: true,
+    });
+  });
+
   it('captures one encrypted lead per session and progressively updates allowlisted answers', async () => {
     const visitorId = randomUUID();
     const sessionId = randomUUID();

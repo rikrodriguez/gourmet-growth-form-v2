@@ -1,4 +1,4 @@
-import type { DashboardListFilters, ReportingRange, SessionStatus } from './contracts';
+import type { DashboardListFilters, ExperimentReportFilters, ReportingRange, SessionStatus } from './contracts';
 
 const TIMEZONE = 'America/Los_Angeles' as const;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -115,6 +115,18 @@ export function parseListFilters(query: Record<string, unknown>, now = new Date(
     intentCluster: one(query, 'intent_cluster', 40),
     exactId,
   };
+}
+
+export function parseExperimentFilters(query: Record<string, unknown>, now = new Date()): ExperimentReportFilters {
+  const range = parseReportingRange(query, now);
+  const intentCluster = one(query, 'intent_cluster', 40);
+  const experimentId = one(query, 'experiment_id', 100);
+  const variantId = one(query, 'variant_id', 40);
+  const identifier = /^[a-z0-9][a-z0-9-]*$/;
+  if ((intentCluster && !identifier.test(intentCluster))
+    || (experimentId && !identifier.test(experimentId))
+    || (variantId && !identifier.test(variantId))) throw new InvalidDashboardFilterError('Invalid experiment filter.');
+  return { ...range, intentCluster, experimentId, variantId };
 }
 
 export function encodeCursor(timestamp: string, id: string): string {

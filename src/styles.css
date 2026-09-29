@@ -349,6 +349,20 @@ button { -webkit-tap-highlight-color: transparent; }
 .bbq-hero.variant-catering-near-me.has-hero-image { background-position: 60% center; }
 .bbq-hero.variant-taco.has-hero-image { background-position: 63% center; }
 
+/* M4C challenger: mobile BBQ only. Control intentionally receives no overrides. */
+@media (max-width: 767px) {
+  .mobile-app.experiment-compact-first-screen .bbq-hero.variant-bbq {
+    min-height: 230px;
+    padding-top: 20px;
+    padding-bottom: 17px;
+  }
+
+  .mobile-app.experiment-compact-first-screen .hero-eyebrow { margin-bottom: 6px; }
+  .mobile-app.experiment-compact-first-screen .hero-copy { margin: 8px 0 10px; }
+  .mobile-app.experiment-compact-first-screen .hero-features { gap: 10px; }
+  .mobile-app.experiment-compact-first-screen .quote-panel { margin-top: -18px; }
+}
+
 /* Provisional, first-party-free visual treatments for M4B routes. */
 .bbq-hero.variant-funeral:not(.has-hero-image) {
   background:

@@ -42,6 +42,7 @@ function fakeStore(options: { enabled?: boolean } = {}): DashboardStore & { revo
     async leads() { return { rows: [], next_cursor: null }; },
     async leadDetail() { return null; },
     async attribution() { return { groups: {} }; },
+    async experiments() { return { experiments: [], generated_at: new Date().toISOString() }; },
     async crmHealth() { return { counts: { pending: 0, retry: 0, processing: 0, dead: 0 }, worker: null }; },
     async close() {},
   };
@@ -71,6 +72,18 @@ describe('dashboard staff authentication', () => {
       method: 'GET', url: '/v1/admin/overview', headers: { 'x-gourmet-session-id': randomUUID() },
     });
     assert.equal(visitorIdentity.statusCode, 401);
+    assert.equal((await app.inject({ method: 'GET', url: '/v1/admin/experiments' })).statusCode, 401);
+  });
+
+  it('serves the experiment view only to an authenticated staff session', async () => {
+    const { app } = await appFor();
+    const response = await login(app);
+    const cookie = response.headers['set-cookie'].split(';')[0];
+    const experiments = await app.inject({
+      method: 'GET', url: '/v1/admin/experiments?include_qa=true&intent_cluster=bbq', headers: { cookie },
+    });
+    assert.equal(experiments.statusCode, 200);
+    assert.deepEqual(experiments.json().experiments, []);
   });
 
   it('sets a secure cookie, authenticates, logs out, and rejects the revoked session', async () => {

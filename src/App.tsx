@@ -3,6 +3,7 @@ import { leadClient } from './api/lead-client';
 import { ConsentBanner } from './measurement/ConsentBanner';
 import { measurement } from './measurement/measurement';
 import { telemetry } from './telemetry/telemetry';
+import { resolveExperimentContext } from './experiments/context';
 import { buildThankYouRedirectUrl } from './variants/thank-you';
 import { loadCompletionSnapshot, saveCompletionSnapshot } from './variants/completion-snapshot';
 import { resolveVariant } from './variants/registry';
@@ -441,16 +442,19 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
   const initialStep = visibleSteps[initial.stepIndex] ?? visibleSteps[0] ?? CANONICAL_VISIBLE_STEPS[0];
   const isComplete = step === 'complete';
   const showHero = step === 'guests' || step === 'zip' || step === 'date';
+  const experimentContext = useMemo(() => resolveExperimentContext(variant.metadata), [variant.metadata]);
+  const compactFirstScreen = experimentContext.assignment.experimentId === 'bbq-first-screen-density-v1'
+    && experimentContext.assignment.variantId === 'compact-first-screen';
 
   useEffect(() => {
     document.title = variant.documentTitle;
   }, [variant.documentTitle]);
 
   useEffect(() => {
-    telemetry.initialize(initialStep, variant.metadata);
+    telemetry.initialize(initialStep, variant.metadata, experimentContext);
     measurement.initialize(variant.metadata);
     measurement.formStart();
-  }, [initialStep, variant.metadata]);
+  }, [experimentContext, initialStep, variant.metadata]);
 
   useEffect(() => {
     telemetry.stepViewed(step);
@@ -694,7 +698,7 @@ function VariantFunnel({ variant }: { variant: FunnelVariant }) {
 
   return (
     <main className="mobile-stage">
-      <div className={`mobile-app${stepIndex > 0 ? ' has-progressed' : ''}${showHero ? ' show-hero' : ''}`}>
+      <div className={`mobile-app${stepIndex > 0 ? ' has-progressed' : ''}${showHero ? ' show-hero' : ''}${compactFirstScreen ? ' experiment-compact-first-screen' : ''}`}>
         <BrandHeader />
 
         <section

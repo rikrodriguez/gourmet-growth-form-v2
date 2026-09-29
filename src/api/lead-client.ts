@@ -14,6 +14,8 @@ type LeadContext = {
   visitor_id: string;
   session_id: string;
   attribution: AttributionContext;
+  experiment_id: string | null;
+  variant_id: string | null;
 };
 
 type PrePhoneAnswers = {
@@ -47,6 +49,8 @@ type CapturePhonePayload = {
   intent_cluster: string;
   idempotency_key: string;
   attribution: AttributionContext;
+  experiment_id: string | null;
+  variant_id: string | null;
   answers: PrePhoneAnswers;
   measurement_consent?: MeasurementConsentEvidence | null;
 };
@@ -136,6 +140,8 @@ export const leadClient = {
       intent_cluster: metadata.intentCluster,
       idempotency_key: idempotencyKey,
       attribution: context.attribution,
+      experiment_id: context.experiment_id,
+      variant_id: context.variant_id,
       answers,
       ...(measurementConsent ? { measurement_consent: measurementConsent } : {}),
     };
@@ -146,7 +152,12 @@ export const leadClient = {
     if (response.status === 422 && measurementConsent) {
       const rejection = await response.clone().json().catch(() => null) as { error?: unknown } | null;
       if (rejection?.error === 'invalid_shape') {
-        const { measurement_consent: _unsupported, ...legacyPayload } = payload;
+        const {
+          measurement_consent: _unsupported,
+          experiment_id: _experimentUnsupported,
+          variant_id: _variantUnsupported,
+          ...legacyPayload
+        } = payload;
         response = await request('/v1/leads/capture-phone', {
           method: 'POST',
           body: JSON.stringify(legacyPayload),

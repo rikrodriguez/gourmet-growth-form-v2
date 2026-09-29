@@ -22,7 +22,10 @@ function measurementDedupeKey(conversionId: string): string {
 }
 
 export class DataConflictError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly code: 'conflict' | 'experiment_assignment_conflict' = 'conflict',
+  ) {
     super(message);
     this.name = 'DataConflictError';
   }
@@ -55,6 +58,20 @@ class PostgresGrowthDataStore implements GrowthDataStore {
     }
   }
 
+  private assertSessionAssignment(
+    session: { experiment_id: string | null; variant_id: string | null },
+    incomingExperimentId: string | null,
+    incomingVariantId: string | null,
+  ) {
+    if (incomingExperimentId === null && incomingVariantId === null) return;
+    if (session.experiment_id !== incomingExperimentId || session.variant_id !== incomingVariantId) {
+      throw new DataConflictError(
+        'Experiment assignment conflicts with the existing session assignment.',
+        'experiment_assignment_conflict',
+      );
+    }
+  }
+
   async ingestEvents(events: GourmetTelemetryEvent[], isQa: boolean): Promise<EventBatchResult> {
     return this.transaction(async (client) => {
       const accepted_event_ids: string[] = [];
@@ -72,7 +89,7 @@ class PostgresGrowthDataStore implements GrowthDataStore {
           [event.visitor_id, occurredAt],
         );
 
-        const session = await client.query<{ visitor_id: string }>(
+        const session = await client.query<{ visitor_id: string; experiment_id: string | null; variant_id: string | null }>(
           `INSERT INTO growth_v2.sessions (
              session_id, visitor_id, intent_cluster, landing_path, started_at, last_seen_at,
              completed_at, last_step_id, last_step_index, experiment_id, variant_id, is_qa
@@ -83,9 +100,11 @@ class PostgresGrowthDataStore implements GrowthDataStore {
                completed_at = COALESCE(growth_v2.sessions.completed_at, EXCLUDED.completed_at),
                last_step_id = CASE WHEN EXCLUDED.last_seen_at >= growth_v2.sessions.last_seen_at THEN EXCLUDED.last_step_id ELSE growth_v2.sessions.last_step_id END,
                last_step_index = CASE WHEN EXCLUDED.last_seen_at >= growth_v2.sessions.last_seen_at THEN EXCLUDED.last_step_index ELSE growth_v2.sessions.last_step_index END,
+               experiment_id = COALESCE(growth_v2.sessions.experiment_id, EXCLUDED.experiment_id),
+               variant_id = COALESCE(growth_v2.sessions.variant_id, EXCLUDED.variant_id),
                updated_at = now(),
                is_qa = growth_v2.sessions.is_qa OR EXCLUDED.is_qa
-           RETURNING visitor_id`,
+           RETURNING visitor_id,experiment_id,variant_id`,
           [
             event.session_id,
             event.visitor_id,
@@ -104,6 +123,7 @@ class PostgresGrowthDataStore implements GrowthDataStore {
         if (session.rows[0].visitor_id !== event.visitor_id) {
           throw new DataConflictError('Session is already associated with another visitor.');
         }
+        this.assertSessionAssignment(session.rows[0], event.experiment_id, event.variant_id);
 
         await this.persistAttribution(client, event.session_id, 'first', event.attribution.first_touch);
         await this.persistAttribution(client, event.session_id, 'latest', event.attribution.latest_touch);
@@ -155,27 +175,32 @@ class PostgresGrowthDataStore implements GrowthDataStore {
          ON CONFLICT (visitor_id) DO UPDATE SET last_seen_at = GREATEST(growth_v2.visitors.last_seen_at, EXCLUDED.last_seen_at)`,
         [input.visitor_id, now],
       );
-      const session = await client.query<{ visitor_id: string }>(
+      const session = await client.query<{ visitor_id: string; experiment_id: string | null; variant_id: string | null }>(
         `INSERT INTO growth_v2.sessions (
-           session_id, visitor_id, intent_cluster, landing_path, started_at, last_seen_at, is_qa
-         ) VALUES ($1, $2, $3, $4, $5, $5, $6)
+           session_id, visitor_id, intent_cluster, landing_path, started_at, last_seen_at, experiment_id, variant_id, is_qa
+         ) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)
          ON CONFLICT (session_id) DO UPDATE
          SET started_at = LEAST(growth_v2.sessions.started_at, EXCLUDED.started_at),
              last_seen_at = GREATEST(growth_v2.sessions.last_seen_at, EXCLUDED.last_seen_at),
+             experiment_id = COALESCE(growth_v2.sessions.experiment_id, EXCLUDED.experiment_id),
+             variant_id = COALESCE(growth_v2.sessions.variant_id, EXCLUDED.variant_id),
              updated_at = now(), is_qa = growth_v2.sessions.is_qa OR EXCLUDED.is_qa
-         RETURNING visitor_id`,
+         RETURNING visitor_id,experiment_id,variant_id`,
         [
           input.session_id,
           input.visitor_id,
           input.intent_cluster,
           input.attribution?.first_touch.landing_path ?? '/form2/bbq/',
           now,
+          input.experiment_id,
+          input.variant_id,
           isQa,
         ],
       );
       if (session.rows[0].visitor_id !== input.visitor_id) {
         throw new DataConflictError('Session is already associated with another visitor.');
       }
+      this.assertSessionAssignment(session.rows[0], input.experiment_id, input.variant_id);
 
       const idempotencyOwner = await client.query<{ lead_id: string; session_id: string }>(
         'SELECT lead_id, session_id FROM growth_v2.leads WHERE capture_idempotency_key = $1 FOR UPDATE',

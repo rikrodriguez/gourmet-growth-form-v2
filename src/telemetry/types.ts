@@ -104,8 +104,8 @@ type TelemetryEventFor<Name extends TelemetryEventName> = {
   step_id: StepId;
   step_index: StepIndex;
   properties: TelemetryEventProperties[Name];
-  experiment_id: null;
-  variant_id: null;
+  experiment_id: string | null;
+  variant_id: string | null;
   step_duration_ms: number | null;
   session_elapsed_ms: number;
   attribution: AttributionContext;
@@ -119,6 +119,12 @@ export type TelemetryDebugSnapshot = {
   visitor_id: string;
   session_id: string;
   attribution: AttributionContext;
+  experiment: {
+    experiment_id: string | null;
+    variant_id: string | null;
+    eligibility: string;
+    assignment_source: 'deterministic' | 'persisted' | 'forced_qa' | 'none';
+  };
   events: GourmetTelemetryEvent[];
 };
 
@@ -126,6 +132,8 @@ export type TelemetryLeadContext = {
   visitor_id: string;
   session_id: string;
   attribution: AttributionContext;
+  experiment_id: string | null;
+  variant_id: string | null;
 };
 
 export type GourmetTelemetryDebug = {

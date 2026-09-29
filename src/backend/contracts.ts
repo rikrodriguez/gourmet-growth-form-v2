@@ -33,6 +33,8 @@ export type CapturePhoneInput = {
   attribution?: AttributionContext;
   answers?: Pick<LeadAnswers, 'guest_range' | 'service_style' | 'zip_code' | 'event_type'>;
   measurement_consent?: MeasurementConsentEvidence | null;
+  experiment_id: string | null;
+  variant_id: string | null;
 };
 
 export type MeasurementConsentEvidence = {

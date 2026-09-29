@@ -9,6 +9,7 @@ import {
 } from '../telemetry/types';
 import type { CapturePhoneInput, EventRejection, LeadAnswers } from './contracts';
 import { registeredVariantMetadata } from '../variants/registry';
+import { isRegisteredExperimentPair } from '../experiments/registry';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -189,7 +190,11 @@ function validateProperties(eventName: TelemetryEventName, stepId: StepId, value
   }
 }
 
-export function validateEvent(value: unknown, now = Date.now()): { event?: GourmetTelemetryEvent; rejection?: Omit<EventRejection, 'index'> } {
+export function validateEvent(
+  value: unknown,
+  now = Date.now(),
+  options: { allowQaExperiments?: boolean } = {},
+): { event?: GourmetTelemetryEvent; rejection?: Omit<EventRejection, 'index'> } {
   const eventId = isRecord(value) && isUuid(value.event_id) ? value.event_id : null;
   if (!isRecord(value)) return { rejection: { event_id: null, code: 'invalid_event' } };
   const requiredKeys = [
@@ -221,9 +226,13 @@ export function validateEvent(value: unknown, now = Date.now()): { event?: Gourm
   if (!STEPS.has(value.step_id as StepId) || STEP_INDEX[value.step_id as StepId] !== value.step_index) {
     return { rejection: { event_id: eventId, code: 'invalid_step' } };
   }
-  if (value.experiment_id !== null || value.variant_id !== null) {
-    return { rejection: { event_id: eventId, code: 'experiments_not_enabled' } };
-  }
+  if (!isRegisteredExperimentPair(
+    value.experiment_id as string | null,
+    value.variant_id as string | null,
+    value.intent_cluster as string,
+    value.route as string,
+    options.allowQaExperiments ?? true,
+  )) return { rejection: { event_id: eventId, code: 'invalid_experiment_assignment' } };
   const stepDuration = value.step_duration_ms;
   if (stepDuration !== null && (typeof stepDuration !== 'number' || !Number.isInteger(stepDuration) || stepDuration < 0 || stepDuration > 86_400_000)) {
     return { rejection: { event_id: eventId, code: 'invalid_step_duration' } };
@@ -269,12 +278,22 @@ export function validateLeadAnswers(value: unknown, allowed: readonly (keyof Lea
   return result;
 }
 
-export function validateCapturePhone(value: unknown): { input?: CapturePhoneInput; phone?: string; code?: string } {
+export function validateCapturePhone(
+  value: unknown,
+  options: { allowQaExperiments?: boolean } = {},
+): { input?: CapturePhoneInput; phone?: string; code?: string } {
   if (!isRecord(value) || !hasOnlyKeys(value, [
-    'visitor_id', 'session_id', 'phone', 'intent_cluster', 'idempotency_key', 'attribution', 'answers', 'measurement_consent',
+    'visitor_id', 'session_id', 'phone', 'intent_cluster', 'idempotency_key', 'attribution', 'answers', 'measurement_consent', 'experiment_id', 'variant_id',
   ])) return { code: 'invalid_shape' };
   if (!isUuid(value.visitor_id) || !isUuid(value.session_id) || !isUuid(value.idempotency_key)) return { code: 'invalid_uuid' };
   if (!isRegisteredIntentCluster(value.intent_cluster)) return { code: 'invalid_intent_cluster' };
+  if (!isRegisteredExperimentPair(
+    (value.experiment_id ?? null) as string | null,
+    (value.variant_id ?? null) as string | null,
+    value.intent_cluster,
+    `/form2/${value.intent_cluster}/`,
+    options.allowQaExperiments ?? true,
+  )) return { code: 'invalid_experiment_assignment' };
   const phone = normalizeUsPhone(value.phone);
   if (!phone) return { code: 'invalid_phone' };
   if (value.attribution !== undefined && !validateAttribution(value.attribution)) return { code: 'invalid_attribution' };
@@ -293,7 +312,16 @@ export function validateCapturePhone(value: unknown): { input?: CapturePhoneInpu
       return { code: 'invalid_measurement_consent' };
     }
   }
-  return { input: { ...value, phone, answers } as CapturePhoneInput, phone };
+  return {
+    input: {
+      ...value,
+      phone,
+      answers,
+      experiment_id: (value.experiment_id ?? null) as string | null,
+      variant_id: (value.variant_id ?? null) as string | null,
+    } as CapturePhoneInput,
+    phone,
+  };
 }
 
 export function validateLeadPatch(value: unknown): LeadAnswers | null {

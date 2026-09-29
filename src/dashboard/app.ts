@@ -15,7 +15,7 @@ import {
 } from './auth';
 import type { DashboardConfig } from './config';
 import type { AuthenticatedStaff, DashboardStore } from './contracts';
-import { InvalidDashboardFilterError, parseListFilters, parseReportingRange } from './filters';
+import { InvalidDashboardFilterError, parseExperimentFilters, parseListFilters, parseReportingRange } from './filters';
 
 type DashboardAppDependencies = {
   config: DashboardConfig;
@@ -173,6 +173,8 @@ export async function buildDashboardApp({ config, store, serveStatic = true }: D
   });
   app.get('/v1/admin/attribution', { preHandler: requireStaff }, async (request) =>
     store.attribution(parseReportingRange(request.query as Record<string, unknown>)));
+  app.get('/v1/admin/experiments', { preHandler: requireStaff }, async (request) =>
+    store.experiments(parseExperimentFilters(request.query as Record<string, unknown>)));
   app.get('/v1/admin/crm/health', { preHandler: requireStaff }, async () => store.crmHealth());
 
   if (serveStatic) {

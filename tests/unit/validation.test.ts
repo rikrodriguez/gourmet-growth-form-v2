@@ -17,6 +17,26 @@ describe('server-side validation', () => {
     assert.equal(validateEvent(unknown).rejection?.code, 'unsupported_contract');
   });
 
+  it('allows only the registered BBQ QA experiment pair on staging', () => {
+    const experiment = eventFixture({
+      experiment_id: 'bbq-first-screen-density-v1',
+      variant_id: 'compact-first-screen',
+    });
+    assert.ok(validateEvent(experiment, new Date(), { allowQaExperiments: true }).event);
+    assert.equal(
+      validateEvent({ ...experiment, variant_id: 'not-a-variant' }, new Date(), { allowQaExperiments: true }).rejection?.code,
+      'invalid_experiment_assignment',
+    );
+    assert.equal(
+      validateEvent(experiment, new Date(), { allowQaExperiments: false }).rejection?.code,
+      'invalid_experiment_assignment',
+    );
+    assert.equal(
+      validateEvent({ ...experiment, intent_cluster: 'corporate', route: '/form2/corporate/' }, new Date(), { allowQaExperiments: true }).rejection?.code,
+      'invalid_experiment_assignment',
+    );
+  });
+
   it('accepts every registered intent identifier and rejects unregistered identifiers', () => {
     const registeredVariant = eventFixture();
     assert.ok(validateEvent(registeredVariant).event);
@@ -71,6 +91,16 @@ describe('server-side validation', () => {
     assert.ok(capture.input);
     assert.ok(validateCapturePhone({ ...capture.input, intent_cluster: 'corporate', answers: { ...capture.input.answers, event_type: 'Corporate' } }).input);
     assert.equal(validateCapturePhone({ ...capture.input, admin: true }).code, 'invalid_shape');
+    assert.ok(validateCapturePhone({
+      ...capture.input,
+      experiment_id: 'bbq-first-screen-density-v1',
+      variant_id: 'control',
+    }, { allowQaExperiments: true }).input);
+    assert.equal(validateCapturePhone({
+      ...capture.input,
+      experiment_id: 'bbq-first-screen-density-v1',
+      variant_id: 'wrong',
+    }, { allowQaExperiments: true }).code, 'invalid_experiment_assignment');
     assert.deepEqual(validateLeadPatch({ event_type: 'Corporate', first_name: 'QA' }), {
       event_type: 'Corporate',
       first_name: 'QA',

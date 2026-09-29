@@ -7,6 +7,7 @@ import type { BackendConfig } from './config';
 import type { GrowthDataStore } from './contracts';
 import type { PhoneEncryptor } from './crypto';
 import { DataConflictError } from './postgres-store';
+import { isQaExperimentPair } from '../experiments/registry';
 import {
   isUuid,
   validateCapturePhone,
@@ -101,7 +102,7 @@ export async function buildApp({ config, store, phoneEncryptor }: AppDependencie
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof DataConflictError) {
-      return reply.code(409).send({ error: 'conflict', request_id: request.id });
+      return reply.code(409).send({ error: error.code, request_id: request.id });
     }
     const errorStatus = typeof error === 'object' && error !== null && 'statusCode' in error
       && typeof error.statusCode === 'number' ? error.statusCode : null;
@@ -153,7 +154,7 @@ export async function buildApp({ config, store, phoneEncryptor }: AppDependencie
     const accepted = [];
     const rejected = [];
     for (const [index, candidate] of events.entries()) {
-      const result = validateEvent(candidate);
+      const result = validateEvent(candidate, Date.now(), { allowQaExperiments: config.measurementEnvironment !== 'production' });
       if (result.event) accepted.push(result.event);
       else rejected.push({ index, ...result.rejection! });
     }
@@ -161,7 +162,10 @@ export async function buildApp({ config, store, phoneEncryptor }: AppDependencie
       return reply.code(422).send({ accepted: 0, duplicates: 0, rejected: rejected.length, rejections: rejected });
     }
 
-    const stored = await store.ingestEvents(accepted, requestIsQa(request, config));
+    const stored = await store.ingestEvents(
+      accepted,
+      requestIsQa(request, config) || accepted.some((event) => isQaExperimentPair(event.experiment_id, event.variant_id)),
+    );
     return reply.send({
       accepted: stored.accepted_event_ids.length,
       duplicates: stored.duplicate_event_ids.length,
@@ -174,10 +178,10 @@ export async function buildApp({ config, store, phoneEncryptor }: AppDependencie
   app.post('/v1/leads/capture-phone', {
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
   }, async (request, reply) => {
-    const validated = validateCapturePhone(request.body);
+    const validated = validateCapturePhone(request.body, { allowQaExperiments: config.measurementEnvironment !== 'production' });
     if (!validated.input || !validated.phone) return reply.code(422).send({ error: validated.code });
     const encryptedPhone = phoneEncryptor.encrypt(validated.phone);
-    const isQa = requestIsQa(request, config);
+    const isQa = requestIsQa(request, config) || isQaExperimentPair(validated.input.experiment_id, validated.input.variant_id);
     const consent = validated.input.measurement_consent;
     const enhancedConversionEligible = config.measurementEnvironment === 'production'
       && Boolean(config.googleAdsCustomerId && config.googleAdsConversionActionId)

@@ -1,6 +1,6 @@
 const VISITOR_STORAGE_KEY = 'gourmet_growth_telemetry_visitor_v1';
 const SESSION_STORAGE_KEY = 'gourmet_growth_telemetry_session_v1';
-const VISITOR_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+export const VISITOR_ID_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 type StoredVisitor = {
   version: 1;
@@ -22,6 +22,8 @@ export type TelemetryIdentity = {
   sessionStartedAt: number;
   isNewSession: boolean;
 };
+
+let pageLifecycleIdentity: TelemetryIdentity | null = null;
 
 function isUuid(value: unknown): value is string {
   return typeof value === 'string'
@@ -77,6 +79,7 @@ function parseSession(raw: string | null): StoredSession | null {
 }
 
 export function resolveTelemetryIdentity(now = Date.now()): TelemetryIdentity {
+  if (pageLifecycleIdentity) return pageLifecycleIdentity;
   let visitor = parseVisitor(window.localStorage.getItem(VISITOR_STORAGE_KEY), now);
   if (!visitor) {
     visitor = {
@@ -84,13 +87,13 @@ export function resolveTelemetryIdentity(now = Date.now()): TelemetryIdentity {
       id: randomUuid(),
       created_at: now,
       last_seen_at: now,
-      expires_at: now + VISITOR_TTL_MS,
+      expires_at: now + VISITOR_ID_TTL_MS,
     };
   } else {
     visitor = {
       ...visitor,
       last_seen_at: now,
-      expires_at: now + VISITOR_TTL_MS,
+      expires_at: now + VISITOR_ID_TTL_MS,
     };
   }
   window.localStorage.setItem(VISITOR_STORAGE_KEY, JSON.stringify(visitor));
@@ -102,10 +105,16 @@ export function resolveTelemetryIdentity(now = Date.now()): TelemetryIdentity {
     window.sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
   }
 
-  return {
+  pageLifecycleIdentity = {
     visitorId: visitor.id,
     sessionId: session.id,
     sessionStartedAt: session.started_at,
     isNewSession,
   };
+  return pageLifecycleIdentity;
+}
+
+/** Test-only lifecycle reset; normal navigation reloads this module naturally. */
+export function resetTelemetryIdentityForTests() {
+  pageLifecycleIdentity = null;
 }

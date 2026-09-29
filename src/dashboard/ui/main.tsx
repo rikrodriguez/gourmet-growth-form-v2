@@ -2,7 +2,7 @@ import React, { FormEvent, useCallback, useEffect, useMemo, useState } from 'rea
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-type NavPage = 'overview' | 'funnel' | 'sessions' | 'leads' | 'attribution';
+type NavPage = 'overview' | 'funnel' | 'sessions' | 'leads' | 'attribution' | 'experiments';
 type User = { staff_user_id: string; email: string; role: 'admin' | 'viewer' };
 type FilterState = { range: string; from: string; to: string; includeQa: boolean };
 type ListSearch = { status: string; step: string; source: string; campaign: string; intent: string; id: string };
@@ -13,6 +13,7 @@ const NAV: Array<{ id: NavPage; label: string; glyph: string }> = [
   { id: 'sessions', label: 'Sessions', glyph: '◎' },
   { id: 'leads', label: 'Leads', glyph: '◇' },
   { id: 'attribution', label: 'Attribution', glyph: '↗' },
+  { id: 'experiments', label: 'Experiments', glyph: '↔' },
 ];
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -172,6 +173,34 @@ function FunnelPage({ filters, nonce, unauthorized }: { filters: FilterState; no
   return <div className="page-stack"><section className="metric-grid"><MetricCard label="Median to phone" value={duration(data.median_time_to_phone_ms)} accent /><MetricCard label="Median full completion" value={duration(data.median_full_completion_ms)} /></section><section className="panel wide"><div className="panel-heading"><div><p className="eyebrow">DISTINCT SESSIONS</p><h2>Eight-stage funnel</h2></div><span className="meta-chip">Duplicate events excluded</span></div><FunnelBars steps={data.steps} /></section><section className="panel table-panel"><table><thead><tr><th>Step</th><th>Entered</th><th>Completed</th><th>From previous</th><th>From start</th><th>Drop</th><th>Median time</th><th>Average time</th></tr></thead><tbody>{data.steps.map((step: any) => <tr key={step.step_id}><td><strong>{step.label}</strong></td><td>{step.entered}</td><td>{step.completed}</td><td>{step.conversion_from_previous}%</td><td>{step.conversion_from_session_start}%</td><td>{step.drop_count} · {step.drop_percentage}%</td><td>{duration(step.median_step_duration_ms)}</td><td>{duration(step.average_step_duration_ms)}</td></tr>)}</tbody></table></section></div>;
 }
 
+function signedPercent(value: number | null | undefined, suffix = '%') {
+  if (value === null || value === undefined) return '—';
+  return `${value > 0 ? '+' : ''}${value}${suffix}`;
+}
+
+function Experiments({ filters, nonce, unauthorized }: { filters: FilterState; nonce: number; unauthorized: () => void }) {
+  const [data, setData] = useState<any>(null); const [error, setError] = useState(''); const [intent, setIntent] = useState('');
+  const load = useCallback(async () => {
+    try {
+      setData(await api<any>(`/v1/admin/experiments?${query(filters, intent ? { intent_cluster: intent } : {})}`)); setError('');
+    } catch (caught) { if (caught instanceof Error && caught.message === 'unauthorized') unauthorized(); else setError(caught instanceof Error ? caught.message : 'service_unavailable'); }
+  }, [filters, intent, unauthorized]);
+  useEffect(() => { void load(); }, [load, nonce]);
+  if (error) return <ErrorPanel error={error} retry={() => void load()} />;
+  if (!data) return <div className="loading-grid" aria-label="Loading experiments" />;
+  const experiment = data.experiments?.[0];
+  return <div className="page-stack">
+    <section className="panel experiment-filter"><label>Intent cluster<select value={intent} onChange={(event) => setIntent(event.target.value)}><option value="">All eligible</option><option value="bbq">bbq</option></select></label><p>Exposure is the first accepted <code>step_viewed / guests</code>; assignment alone is not counted.</p></section>
+    {!filters.includeQa && <Empty message="QA experiment data is excluded. Enable Include QA to review this QA-only experiment." />}
+    {filters.includeQa && !experiment && <Empty message="No matching experiment exposure was recorded in this range." />}
+    {filters.includeQa && experiment && <>
+      <section className="panel wide"><div className="panel-heading"><div><p className="eyebrow">QA DATA · FIRST-PARTY POSTGRESQL</p><h2>{experiment.experiment_id}</h2></div><div className="detail-actions"><span className="qa-badge">{experiment.status}</span><span className={`status-pill ${experiment.srm.status.toLowerCase()}`}><i />{experiment.srm.status.replace('_', ' ')}</span></div></div><p className="panel-note">Control and Challenger are comparison labels only. This dashboard never declares an automated winner.</p></section>
+      <section className="experiment-grid">{experiment.variants.map((variant: any) => <article className="panel experiment-card" key={variant.variant_id}><div className="panel-heading"><div><p className="eyebrow">{variant.variant_id === 'control' ? 'CONTROL' : 'CHALLENGER'}</p><h2>{variant.label}</h2></div><span className="meta-chip">{variant.evidence_state.replaceAll('_', ' ')}</span></div><dl className="experiment-metrics"><div><dt>Exposed sessions</dt><dd>{compactNumber(variant.exposed_sessions)}</dd></div><div><dt>Unique visitors</dt><dd>{compactNumber(variant.unique_visitors)}</dd></div><div><dt>Guests completed</dt><dd>{compactNumber(variant.guests_completed)}</dd></div><div><dt>Guest completion rate</dt><dd>{variant.guest_step_completion_rate}%</dd></div><div><dt>Phone capture rate</dt><dd>{variant.phone_capture_rate}%</dd></div><div><dt>Form completion rate</dt><dd>{variant.form_completion_rate}%</dd></div><div><dt>Median to guest completion</dt><dd>{duration(variant.median_time_to_guest_completion_ms)}</dd></div><div><dt>Exit before guests</dt><dd>{variant.page_exit_before_guest_completion_rate}%</dd></div><div><dt>Guest validation errors</dt><dd>{variant.guest_validation_error_rate}%</dd></div></dl></article>)}</section>
+      <section className="split-grid"><article className="panel"><p className="eyebrow">PRIMARY METRIC COMPARISON</p><h2>Guest step completion rate</h2><div className="lift-values"><div><span>Absolute difference</span><strong>{signedPercent(experiment.comparison.primary_metric_absolute_pp, ' pp')}</strong></div><div><span>Relative lift</span><strong>{signedPercent(experiment.comparison.primary_metric_relative_lift)}</strong></div></div><p className="panel-note">Operational threshold: {experiment.minimum_sample.exposed_sessions_per_variant} exposed sessions and {experiment.minimum_sample.primary_conversions_per_variant} primary conversions per variant.</p></article><article className="panel"><p className="eyebrow">SAMPLE RATIO MISMATCH</p><h2>{experiment.srm.status.replace('_', ' ')}</h2><div className="lift-values"><div><span>Observed Control / Challenger</span><strong>{experiment.srm.expected_control === 0 ? '0 / 0' : `${experiment.variants.find((v: any) => v.variant_id === 'control')?.exposed_sessions} / ${experiment.variants.find((v: any) => v.variant_id === 'compact-first-screen')?.exposed_sessions}`}</strong></div><div><span>Expected split</span><strong>50 / 50</strong></div><div><span>p-value</span><strong>{experiment.srm.p_value}</strong></div></div><p className="panel-note">SRM warning threshold: p &lt; 0.001. A warning means results require investigation before interpretation.</p></article></section>
+    </>}
+  </div>;
+}
+
 function Status({ value }: { value: string }) { return <span className={`status-pill ${value.toLowerCase()}`}><i />{value.replace('_', ' ')}</span>; }
 
 function listQuery(search: ListSearch, cursor?: string | null) {
@@ -253,7 +282,7 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
   }, [polling]);
   async function logout() { try { await api('/v1/admin/auth/logout', { method: 'POST', body: '{}' }); } finally { onLogout(); } }
   const title = NAV.find((item) => item.id === page)?.label ?? 'Overview';
-  const content = page === 'overview' ? <Overview filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'funnel' ? <FunnelPage filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'sessions' ? <Sessions filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'leads' ? <Leads filters={filters} nonce={nonce} unauthorized={unauthorized} /> : <Attribution filters={filters} nonce={nonce} unauthorized={unauthorized} />;
+  const content = page === 'overview' ? <Overview filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'funnel' ? <FunnelPage filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'sessions' ? <Sessions filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'leads' ? <Leads filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'attribution' ? <Attribution filters={filters} nonce={nonce} unauthorized={unauthorized} /> : <Experiments filters={filters} nonce={nonce} unauthorized={unauthorized} />;
   return <div className="dashboard-shell"><aside className={`sidebar ${mobileNav ? 'open' : ''}`}><div className="brand-lockup"><span className="brand-mark">G</span><span>GOURMET<br /><small>GROWTH OS</small></span></div><nav>{NAV.map((item) => <button className={page === item.id ? 'active' : ''} key={item.id} onClick={() => { setPage(item.id); setMobileNav(false); }}><i>{item.glyph}</i>{item.label}</button>)}</nav><div className="sidebar-foot"><span className="pulse" /> PostgreSQL live</div></aside><main className="workspace"><header className="topbar"><button className="menu-button" onClick={() => setMobileNav(!mobileNav)} aria-label="Toggle navigation">☰</button><div><p className="eyebrow">GROWTH FORM V2</p><h1>{title}</h1></div><div className="topbar-user"><div><strong>{user.email}</strong><span>{user.role}</span></div><button onClick={() => void logout()}>Logout</button></div></header><div className="toolbar"><span className="timezone">Reporting timezone <strong>America/Los_Angeles</strong></span><Filters value={filters} onChange={setFilters} refresh={() => setNonce((value) => value + 1)} polling={polling} setPolling={setPolling} /></div>{filters.includeQa && <div className="qa-banner">QA traffic is included in this view.</div>}<div className="content">{content}</div></main></div>;
 }
 
