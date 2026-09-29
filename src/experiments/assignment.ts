@@ -45,11 +45,11 @@ export function variantForBucket(experiment: ExperimentDefinition, bucket: numbe
   return null;
 }
 
-function parseStoredAssignment(raw: string | null, visitorId: string, experiment: ExperimentDefinition, now: number): PersistedExperimentAssignment | null {
+function parseStoredAssignment(raw: string | null, experiment: ExperimentDefinition, now: number): PersistedExperimentAssignment | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<PersistedExperimentAssignment>;
-    if (parsed.version !== 1 || parsed.visitor_id !== visitorId || parsed.experiment_id !== experiment.experimentId
+    if (parsed.version !== 1 || parsed.experiment_id !== experiment.experimentId
       || typeof parsed.variant_id !== 'string' || !experiment.variants.some((variant) => variant.id === parsed.variant_id)
       || typeof parsed.assigned_at !== 'number' || typeof parsed.expires_at !== 'number' || parsed.expires_at <= now) return null;
     return parsed as PersistedExperimentAssignment;
@@ -87,7 +87,7 @@ export function resolveExperimentAssignment(input: AssignmentInput): ExperimentA
     }
     return { experimentId: experiment.experimentId, variantId: input.forcedVariantId, source: 'forced_qa', eligible: true, eligibility: 'forced_qa' };
   }
-  const stored = parseStoredAssignment(storage?.getItem(`${STORAGE_PREFIX}${experiment.experimentId}`) ?? null, visitorId, experiment, now);
+  const stored = parseStoredAssignment(storage?.getItem(`${STORAGE_PREFIX}${experiment.experimentId}`) ?? null, experiment, now);
   if (stored) {
     return { experimentId: experiment.experimentId, variantId: stored.variant_id, source: 'persisted', eligible: true, eligibility: 'eligible' };
   }
@@ -95,7 +95,6 @@ export function resolveExperimentAssignment(input: AssignmentInput): ExperimentA
   if (!variantId) return noAssignment('invalid_weights');
   persist(storage, {
     version: 1,
-    visitor_id: visitorId,
     experiment_id: experiment.experimentId,
     variant_id: variantId,
     assigned_at: now,

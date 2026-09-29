@@ -34,7 +34,6 @@ export type ExperimentAssignment = {
 
 export type PersistedExperimentAssignment = {
   version: 1;
-  visitor_id: string;
   experiment_id: string;
   variant_id: string;
   assigned_at: number;
