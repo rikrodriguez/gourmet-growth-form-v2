@@ -343,6 +343,12 @@ button { -webkit-tap-highlight-color: transparent; }
   background-position: 58% center;
 }
 
+/* Each approved source has its focal detail on the right; retain its individual crop. */
+.bbq-hero.variant-funeral.has-hero-image { background-position: 64% center; }
+.bbq-hero.variant-corporate.has-hero-image { background-position: 61% center; }
+.bbq-hero.variant-catering-near-me.has-hero-image { background-position: 60% center; }
+.bbq-hero.variant-taco.has-hero-image { background-position: 63% center; }
+
 /* Provisional, first-party-free visual treatments for M4B routes. */
 .bbq-hero.variant-funeral:not(.has-hero-image) {
   background:
@@ -815,6 +821,11 @@ fieldset legend {
     background-position: 43% center;
   }
 
+  .bbq-hero.variant-funeral.has-hero-image { background-position: 48% center; }
+  .bbq-hero.variant-corporate.has-hero-image { background-position: 47% center; }
+  .bbq-hero.variant-catering-near-me.has-hero-image { background-position: 45% center; }
+  .bbq-hero.variant-taco.has-hero-image { background-position: 48% center; }
+
   .hero-content { max-width: 500px; }
   .hero-eyebrow { font-size: 12px; margin-bottom: 16px; }
   .hero-content h1 {
@@ -918,6 +929,11 @@ fieldset legend {
       var(--hero-image-desktop, var(--hero-image-mobile));
     background-position: 36% center;
   }
+
+  .bbq-hero.variant-funeral.has-hero-image { background-position: 44% center; }
+  .bbq-hero.variant-corporate.has-hero-image { background-position: 43% center; }
+  .bbq-hero.variant-catering-near-me.has-hero-image { background-position: 40% center; }
+  .bbq-hero.variant-taco.has-hero-image { background-position: 45% center; }
 
   .hero-content { max-width: 520px; }
 

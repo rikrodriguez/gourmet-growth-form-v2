@@ -92,7 +92,13 @@ export const funeralVariant = {
   visibleSteps: PREFILLED_EVENT_VISIBLE_STEPS,
   prefilledAnswers: { eventType: 'Memorial / Funeral' },
   hero: {
-    image: { src: null, alt: 'Funeral and memorial catering', status: 'provisional', referenceId: 'funeral-gradient-v1' },
+    image: {
+      src: '/form2/assets/funeral-hero-desktop-v1.webp',
+      mobileSrc: '/form2/assets/funeral-hero-mobile-v1.webp',
+      alt: 'Refined food service for a memorial gathering',
+      status: 'approved',
+      referenceId: 'funeral-approved-clean-v1',
+    },
     eyebrow: 'FUNERAL & MEMORIAL CATERING · PORTLAND',
     headline: ['Thoughtful Catering', 'for Memorial Gatherings'],
     subheadline: 'Tell us a few event details and our team can prepare an appropriate catering request.',
@@ -121,7 +127,13 @@ export const corporateVariant = {
   visibleSteps: PREFILLED_EVENT_VISIBLE_STEPS,
   prefilledAnswers: { eventType: 'Corporate' },
   hero: {
-    image: { src: null, alt: 'Corporate catering for Portland teams', status: 'provisional', referenceId: 'corporate-gradient-v1' },
+    image: {
+      src: '/form2/assets/corporate-hero-desktop-v1.webp',
+      mobileSrc: '/form2/assets/corporate-hero-mobile-v1.webp',
+      alt: 'Corporate catering buffet in a professional setting',
+      status: 'approved',
+      referenceId: 'corporate-approved-clean-v1',
+    },
     eyebrow: 'CORPORATE CATERING · PORTLAND',
     headline: ['Corporate Catering', 'for Portland Teams'],
     subheadline: 'Tell us about your office lunch, meeting or company event and we’ll prepare a tailored catering request.',
@@ -149,7 +161,13 @@ export const cateringNearMeVariant = {
   serviceCategory: 'general-catering',
   visibleSteps: SHARED_VISIBLE_STEPS,
   hero: {
-    image: { src: null, alt: 'Catering for Portland events', status: 'provisional', referenceId: 'catering-near-me-gradient-v1' },
+    image: {
+      src: '/form2/assets/catering-near-me-hero-desktop-v1.webp',
+      mobileSrc: '/form2/assets/catering-near-me-hero-mobile-v1.webp',
+      alt: 'Premium catering spread for an event',
+      status: 'approved',
+      referenceId: 'catering-near-me-approved-clean-v1',
+    },
     eyebrow: 'CATERING · PORTLAND AREA',
     headline: ['Catering for', 'Your Portland Event'],
     subheadline: 'Tell us a few details and we’ll prepare a personalized catering request for your event.',
@@ -177,7 +195,13 @@ export const tacoVariant = {
   serviceCategory: 'taco',
   visibleSteps: SHARED_VISIBLE_STEPS,
   hero: {
-    image: { src: null, alt: 'Taco catering for Portland events', status: 'provisional', referenceId: 'taco-gradient-v1' },
+    image: {
+      src: '/form2/assets/taco-hero-desktop-v1.webp',
+      mobileSrc: '/form2/assets/taco-hero-mobile-v1.webp',
+      alt: 'Taco catering with fresh salsas and garnishes',
+      status: 'approved',
+      referenceId: 'taco-approved-clean-v1',
+    },
     eyebrow: 'TACO CATERING · PORTLAND',
     headline: ['Taco Catering', 'in Portland'],
     subheadline: 'Tell us about your event and we’ll prepare a tailored taco catering request.',

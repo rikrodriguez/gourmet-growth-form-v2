@@ -32,6 +32,7 @@
     "test:e2e": "playwright test",
     "test:e2e:staging": "E2E_BASE_URL=https://gourmet-corporation.com playwright test",
     "visual:capture:m4a1": "node scripts/capture-m4a1.mjs",
+    "visual:capture:m4b2": "node scripts/capture-m4b2.mjs",
     "test:dashboard:e2e": "playwright test --config dashboard-playwright.config.ts",
     "preview:test": "vite preview --host 127.0.0.1 --port 4173"
   },

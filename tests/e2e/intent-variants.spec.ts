@@ -4,15 +4,17 @@ type VariantCase = {
   slug: string;
   headline: RegExp;
   visibleSteps: number;
+  mobileHeroAsset: string;
+  desktopHeroAsset: string;
   prefilledEventType?: 'Corporate' | 'Memorial / Funeral';
 };
 
 const variants: readonly VariantCase[] = [
-  { slug: 'bbq', headline: /BBQ Catering/i, visibleSteps: 7 },
-  { slug: 'funeral', headline: /Thoughtful Catering/i, visibleSteps: 6, prefilledEventType: 'Memorial / Funeral' },
-  { slug: 'corporate', headline: /Corporate Catering/i, visibleSteps: 6, prefilledEventType: 'Corporate' },
-  { slug: 'catering-near-me', headline: /Catering for/i, visibleSteps: 7 },
-  { slug: 'taco', headline: /Taco Catering/i, visibleSteps: 7 },
+  { slug: 'bbq', headline: /BBQ Catering/i, visibleSteps: 7, mobileHeroAsset: 'bbq-hero-mobile-v2.webp', desktopHeroAsset: 'bbq-hero-desktop-v2.webp' },
+  { slug: 'funeral', headline: /Thoughtful Catering/i, visibleSteps: 6, mobileHeroAsset: 'funeral-hero-mobile-v1.webp', desktopHeroAsset: 'funeral-hero-desktop-v1.webp', prefilledEventType: 'Memorial / Funeral' },
+  { slug: 'corporate', headline: /Corporate Catering/i, visibleSteps: 6, mobileHeroAsset: 'corporate-hero-mobile-v1.webp', desktopHeroAsset: 'corporate-hero-desktop-v1.webp', prefilledEventType: 'Corporate' },
+  { slug: 'catering-near-me', headline: /Catering for/i, visibleSteps: 7, mobileHeroAsset: 'catering-near-me-hero-mobile-v1.webp', desktopHeroAsset: 'catering-near-me-hero-desktop-v1.webp' },
+  { slug: 'taco', headline: /Taco Catering/i, visibleSteps: 7, mobileHeroAsset: 'taco-hero-mobile-v1.webp', desktopHeroAsset: 'taco-hero-desktop-v1.webp' },
 ];
 
 function pathFor(slug: string) {
@@ -48,10 +50,15 @@ async function completeVariant(page: Page, variant: VariantCase) {
 }
 
 for (const variant of variants) {
-  test(`${variant.slug} resolves with its configured intent, visible progress, and responsive surface`, async ({ page }) => {
+  test(`${variant.slug} resolves with its configured intent, visible progress, and responsive surface`, async ({ page }, testInfo) => {
     await cleanOpen(page, variant.slug);
     await expect(page.getByRole('heading', { name: variant.headline })).toBeVisible();
     await expect(page.getByText(`Step 1 of ${variant.visibleSteps}`)).toBeVisible();
+    await expect(page.locator('.bbq-hero')).toHaveClass(/has-hero-image/);
+    const heroAsset = /tablet|desktop/.test(testInfo.project.name)
+      ? variant.desktopHeroAsset
+      : variant.mobileHeroAsset;
+    await expect(page.locator('.bbq-hero')).toHaveCSS('background-image', new RegExp(heroAsset.replace('.', '\\.')));
     await expect(page.locator('.exit-preview, .social-proof-toast')).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy();
     const telemetry = await page.evaluate(() => window.__GOURMET_TELEMETRY_DEBUG__!.getSnapshot());

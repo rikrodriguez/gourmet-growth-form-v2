@@ -62,10 +62,23 @@ describe('variant registry', () => {
     assert.equal(bbqVariant.hero.image.mobileSrc, '/form2/assets/bbq-hero-mobile-v2.webp');
   });
 
-  it('marks non-BBQ gradients provisional until first-party hero assets are approved', () => {
+  it('uses the approved responsive hero derivatives for every non-BBQ variant', () => {
+    for (const [variant, slug] of [
+      [funeralVariant, 'funeral'],
+      [corporateVariant, 'corporate'],
+      [cateringNearMeVariant, 'catering-near-me'],
+      [tacoVariant, 'taco'],
+    ] as const) {
+      assert.equal(variant.hero.image.status, 'approved');
+      assert.equal(variant.hero.image.src, `/form2/assets/${slug}-hero-desktop-v1.webp`);
+      assert.equal(variant.hero.image.mobileSrc, `/form2/assets/${slug}-hero-mobile-v1.webp`);
+    }
+  });
+
+  it('does not change the approved BBQ hero while activating first-party variant heroes', () => {
     for (const variant of [funeralVariant, corporateVariant, cateringNearMeVariant, tacoVariant]) {
-      assert.equal(variant.hero.image.status, 'provisional');
-      assert.equal(variant.hero.image.src, null);
+      assert.notEqual(variant.hero.image.src, bbqVariant.hero.image.src);
+      assert.notEqual(variant.hero.image.mobileSrc, bbqVariant.hero.image.mobileSrc);
     }
   });
 

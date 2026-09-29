@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "milestone": "M4A.1_BBQ_GOLDEN_MASTER_VISUAL_MATCH",
+  "milestone": "M4B.2_APPROVED_HERO_INTEGRATION",
   "web_content_boundary": {
     "description": "The approved references include an iPhone frame and Safari chrome. Only the Gourmet Corp header and content below it are web UI authority.",
     "source_dimensions": "1122x1402",
@@ -75,6 +75,54 @@
       ]
     },
     {
+      "variant": "funeral",
+      "path": "design/assets/funeral-hero-clean-master.png",
+      "dimensions": "1586x992",
+      "checksum_sha256": "2d3102c4cec25808f4897cb130e3f69c087a851a9cdaa7bc8e19ae2899ba7612",
+      "provenance": "Generated in ChatGPT and explicitly approved by the user",
+      "verification_status": "approved_clean_source",
+      "responsive_derivatives": [
+        "public/assets/funeral-hero-mobile-v1.webp",
+        "public/assets/funeral-hero-desktop-v1.webp"
+      ]
+    },
+    {
+      "variant": "corporate",
+      "path": "design/assets/corporate-hero-clean-master.png",
+      "dimensions": "1586x992",
+      "checksum_sha256": "e277ede5eb77d94518ed4f615c411aa32063f5127045c1c54d81c80fbc714f3f",
+      "provenance": "Generated in ChatGPT and explicitly approved by the user",
+      "verification_status": "approved_clean_source",
+      "responsive_derivatives": [
+        "public/assets/corporate-hero-mobile-v1.webp",
+        "public/assets/corporate-hero-desktop-v1.webp"
+      ]
+    },
+    {
+      "variant": "catering-near-me",
+      "path": "design/assets/catering-near-me-hero-clean-master.png",
+      "dimensions": "1586x992",
+      "checksum_sha256": "5bfe602078c84f227ea7874dd5737fc172d4dffa917f64ef2cdbecc2ea95dad6",
+      "provenance": "Generated in ChatGPT and explicitly approved by the user",
+      "verification_status": "approved_clean_source",
+      "responsive_derivatives": [
+        "public/assets/catering-near-me-hero-mobile-v1.webp",
+        "public/assets/catering-near-me-hero-desktop-v1.webp"
+      ]
+    },
+    {
+      "variant": "taco",
+      "path": "design/assets/taco-hero-clean-master.png",
+      "dimensions": "1586x992",
+      "checksum_sha256": "e2abaad29f58fa33c5f93e5a8abb1fc29a244cdb5ffbeb61a553be5f0dc6112b",
+      "provenance": "Generated in ChatGPT and explicitly approved by the user",
+      "verification_status": "approved_clean_source",
+      "responsive_derivatives": [
+        "public/assets/taco-hero-mobile-v1.webp",
+        "public/assets/taco-hero-desktop-v1.webp"
+      ]
+    },
+    {
       "path": "public/assets/bbq-hero-mobile-v1.webp",
       "dimensions": null,
       "checksum_sha256": "eb102e50226eb213319ee9ba3a51f66b325f378051939e0c7d9910d56b618780",
@@ -86,5 +134,11 @@
     "status": "approved",
     "path": "design/assets/bbq-hero-clean-master.png",
     "reason": "User-supplied clean brisket photograph with dark left-side negative space and the food composition on the right."
+  },
+  "variant_hero_status": {
+    "funeral": "approved",
+    "corporate": "approved",
+    "catering-near-me": "approved",
+    "taco": "approved"
   }
 }
