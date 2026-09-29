@@ -2,12 +2,17 @@
 
 Independent CRO / Growth Form V2 for Gourmet Corporation.
 
-## Staging target
+## Form 2 static deployment target
 
 - Public URL: `https://gourmet-corporation.com/form2/`
 - Source branch: `develop`
-- Generated deployment branch: `hostinger-staging`
+- Generated deployment branch: `hostinger-staging` (the existing Hostinger-connected artifact branch)
 - Hostinger deployment path: `public_html/form2`
+
+`build-hostinger-staging.yml` builds the staging artifact after source changes.
+`build-hostinger-production.yml` is manual-only, requires an exact reviewed SHA
+and a typed deployment confirmation, and builds a separate production artifact
+before publishing it to the same Hostinger-connected static deployment branch.
 
 The existing production funnel is legacy control and must not be modified by this project.
 

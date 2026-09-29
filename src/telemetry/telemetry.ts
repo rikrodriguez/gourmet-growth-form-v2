@@ -1,5 +1,6 @@
 import { resolveAttribution } from './attribution';
 import { gourmetApiBaseUrl } from '../api/config';
+import { measurementConfig } from '../measurement/config';
 import { resolveTelemetryIdentity, TelemetryIdentity } from './identity';
 import type { ExperimentContext } from '../experiments/context';
 import { createTelemetryTransport, deliverTelemetryBatch } from './transport';
@@ -349,6 +350,7 @@ class GourmetTelemetry {
   }
 
   private exposeDebug() {
+    if (measurementConfig.environment === 'production') return;
     if (!window.location.pathname.startsWith('/form2/')) return;
     window.__GOURMET_TELEMETRY_DEBUG__ = {
       getSnapshot: () => this.snapshot(),

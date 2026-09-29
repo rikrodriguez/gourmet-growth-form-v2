@@ -32,7 +32,7 @@ export function resolveExperimentContext(metadata: VariantMetadata): ExperimentC
     return { identity, initialViewportWidth, assignment: { experimentId: null, variantId: null, source: 'none', eligible: false, eligibility: 'unknown_experiment' } };
   }
   const route = window.location.pathname;
-  const allowQa = measurementConfig.environment !== 'production';
+  const allowQa = measurementConfig.customerExperimentsEnabled;
   return {
     identity,
     initialViewportWidth,

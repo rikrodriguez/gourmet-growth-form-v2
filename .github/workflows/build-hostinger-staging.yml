@@ -108,6 +108,8 @@ jobs:
           npx playwright test tests/e2e/measurement-vendors.spec.ts --project=mobile-chromium-390x844
 
       - name: Run required local E2E matrix without remote writes
+        env:
+          VITE_CUSTOMER_EXPERIMENTS_ENABLED: true
         run: |
           npm run build
           npm run test:e2e
@@ -122,6 +124,7 @@ jobs:
         env:
           VITE_GOURMET_API_BASE_URL: ${{ vars.VITE_GOURMET_API_BASE_URL }}
           VITE_MEASUREMENT_ENVIRONMENT: staging
+          VITE_CUSTOMER_EXPERIMENTS_ENABLED: false
           VITE_GTM_CONTAINER_ID: ${{ vars.VITE_GTM_CONTAINER_ID }}
           VITE_GA4_MEASUREMENT_ID: ${{ vars.VITE_GA4_MEASUREMENT_ID }}
           VITE_GOOGLE_ADS_CONVERSION_ID: ${{ vars.VITE_GOOGLE_ADS_CONVERSION_ID }}
