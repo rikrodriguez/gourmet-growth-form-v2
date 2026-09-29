@@ -149,9 +149,9 @@ export const leadClient = {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    if (response.status === 422 && measurementConsent) {
+    if (response.status === 422) {
       const rejection = await response.clone().json().catch(() => null) as { error?: unknown } | null;
-      if (rejection?.error === 'invalid_shape') {
+      if (rejection?.error === 'invalid_shape' || rejection?.error === 'invalid_experiment_assignment') {
         const {
           measurement_consent: _unsupported,
           experiment_id: _experimentUnsupported,
