@@ -4,6 +4,11 @@ DirectoryIndex index.html
 RewriteEngine On
 RewriteBase /form2/
 
+# Keep the retired Form 2 confirmation route from rendering any page scripts.
+# This is intentionally scoped to /form2/thank-you/ and does not affect the
+# legacy site-level /thank-you/ route.
+RewriteRule ^thank-you/?$ request-received/ [R=302,L,NE]
+
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^ index.html [L]

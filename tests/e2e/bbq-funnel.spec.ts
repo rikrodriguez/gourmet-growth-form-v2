@@ -90,7 +90,7 @@ test('real card clicks advance once through the full funnel and Back preserves v
   await expect(page.getByRole('heading', { name: 'Thank you, QA Test' })).toBeVisible();
   await expect(page.getByText('Corporate', { exact: true })).toBeVisible();
   if (configuredLiveBuild) {
-    await expect(page).toHaveURL(/\/form2\/thank-you\/$/);
+    await expect(page).toHaveURL(/\/form2\/request-received\/$/);
     await expect(page.getByText('97205', { exact: false })).toHaveCount(0);
     expect(unexpectedMainFrameNavigations).toBeGreaterThanOrEqual(1);
   } else {
@@ -167,14 +167,22 @@ test('unregistered keyword routes never inherit the BBQ funnel', async ({ page }
   await expect(page.getByRole('heading', { name: /BBQ Catering/i })).toHaveCount(0);
 });
 
-test('dedicated thank-you route is a confirmation page with no acquisition form', async ({ page }) => {
-  await page.goto('/form2/thank-you/');
+test('dedicated confirmation route is a confirmation page with no acquisition form', async ({ page }) => {
+  await page.goto('/form2/request-received/');
   await expect(page.getByRole('heading', { name: 'Thank you' })).toBeVisible();
   await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
   await expect(page.locator('form')).toHaveCount(0);
   await expect(page.getByRole('textbox')).toHaveCount(0);
   expect(page.url()).not.toContain('?');
+  expect(page.url()).not.toContain('thank-you');
   await expectNoHorizontalOverflow(page);
+});
+
+test('retired Form 2 confirmation route moves to the new route before rendering the funnel', async ({ page }) => {
+  await page.goto('/form2/thank-you/');
+  await expect(page).toHaveURL(/\/form2\/request-received\/$/);
+  await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
+  await expect(page.locator('form')).toHaveCount(0);
 });
 
 test('disabled previews are absent by default and visible only with explicit QA parameters', async ({ page }) => {

@@ -1196,7 +1196,14 @@ function FoundationScreen() {
 }
 
 export default function App() {
-  if (/^\/form2\/thank-you\/?$/.test(window.location.pathname)) return <ThankYouScreen />;
+  if (/^\/form2\/thank-you\/?$/.test(window.location.pathname)) {
+    // Hostinger redirects this route at the Apache layer before index.html is
+    // served. This guard keeps local/dev fallbacks from initializing Form 2
+    // measurement before moving to the non-legacy confirmation URL.
+    window.location.replace('/form2/request-received/');
+    return null;
+  }
+  if (/^\/form2\/request-received\/?$/.test(window.location.pathname)) return <ThankYouScreen />;
   const variant = resolveVariant(window.location.pathname);
   return variant ? <VariantFunnel variant={variant} /> : <FoundationScreen />;
 }

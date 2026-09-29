@@ -128,7 +128,7 @@ test('lead capture failure is visible and retry completes one progressive lead',
   await chooseAndContinue(page, 'still-deciding');
   await page.getByLabel('First name').fill('Secure QA Name');
   await page.getByRole('button', { name: 'Finish' }).click();
-  await expect(page).toHaveURL(/\/form2\/thank-you\/$/);
+  await expect(page).toHaveURL(/\/form2\/request-received\/$/);
   await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Thank you, Secure QA Name' })).toBeVisible();
 

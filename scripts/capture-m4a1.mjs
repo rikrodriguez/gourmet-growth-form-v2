@@ -62,7 +62,7 @@ async function captureMobileFlow() {
   await page.getByLabel('First name').fill('Ricardo');
   await shot(page, '390-name.png');
 
-  await page.goto(`${baseUrl}/form2/thank-you/`);
+  await page.goto(`${baseUrl}/form2/request-received/`);
   await page.evaluate(() => sessionStorage.setItem('gourmet_growth_v2_completion_v1', JSON.stringify({
     version: 1,
     completedAt: Date.now(),
@@ -74,7 +74,7 @@ async function captureMobileFlow() {
     timing: 'still-deciding',
   })));
   await page.reload();
-  await shot(page, '390-thank-you.png');
+  await shot(page, '390-request-received.png');
 
   await cleanFunnel(page, '?preview=exit-intent');
   await shot(page, '390-exit-intent-preview.png');
@@ -93,8 +93,8 @@ async function captureResponsive(width, height, label) {
   await next(page);
   await page.getByLabel('Event ZIP code').fill('97205');
   await shot(page, `${label}-mid.png`);
-  await page.goto(`${baseUrl}/form2/thank-you/`);
-  await shot(page, `${label}-thank-you.png`);
+  await page.goto(`${baseUrl}/form2/request-received/`);
+  await shot(page, `${label}-request-received.png`);
   await page.close();
 }
 

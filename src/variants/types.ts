@@ -17,7 +17,7 @@ export type VisibleFunnelStep = Exclude<StepId, 'complete'>;
 export type ThankYouBehavior =
   | {
       mode: 'confirmation';
-      path: '/form2/thank-you/';
+      path: '/form2/request-received/';
       requiresPersistedLead: true;
       safeQueryParams: readonly [];
     }

@@ -149,7 +149,7 @@ test('safe funnel events are concise, deduplicated, and PII-free', async ({ page
     expect(beforeCompletion.emitted_events.find((event) => event.event === 'generate_lead')).toMatchObject({
       transaction_id: 'a'.repeat(64),
     });
-    await expect(page).toHaveURL(/\/form2\/thank-you\/$/);
+    await expect(page).toHaveURL(/\/form2\/request-received\/$/);
     const milestones = await page.evaluate(
       () => JSON.parse(window.sessionStorage.getItem('gourmet_growth_measurement_milestones_v1') ?? '[]') as string[],
     );

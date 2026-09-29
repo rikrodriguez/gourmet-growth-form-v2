@@ -52,8 +52,9 @@ describe('variant registry', () => {
 
   it('routes completed BBQ leads to the dedicated V2 confirmation without query data', () => {
     const url = new URL(buildThankYouRedirectUrl(bbqVariant, attribution())!);
-    assert.equal(url.pathname, '/form2/thank-you/');
+    assert.equal(url.pathname, '/form2/request-received/');
     assert.equal(url.search, '');
+    assert.equal(url.pathname.includes('thank-you'), false);
   });
 
   it('uses the approved responsive BBQ hero derivatives', () => {

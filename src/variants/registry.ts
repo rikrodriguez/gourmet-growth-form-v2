@@ -32,7 +32,7 @@ const sharedExitIntent = {
 
 const confirmation = {
   mode: 'confirmation',
-  path: '/form2/thank-you/',
+  path: '/form2/request-received/',
   requiresPersistedLead: true,
   safeQueryParams: [],
 } as const;

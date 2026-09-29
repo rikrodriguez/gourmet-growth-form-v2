@@ -102,7 +102,7 @@ for (const variant of variants) {
     await completeVariant(page, variant);
 
     if (process.env.E2E_BASE_URL) {
-      await expect(page).toHaveURL(/\/form2\/thank-you\/$/);
+      await expect(page).toHaveURL(/\/form2\/request-received\/$/);
     }
     await expect(page.getByText('REQUEST RECEIVED')).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Thank you, QA Variant' })).toBeVisible();
