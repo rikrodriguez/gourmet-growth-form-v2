@@ -1,0 +1,79 @@
+name: Gourmet Office Recovery Checks
+
+# This candidate only checks the approved recovery branch. It never publishes
+# an image, changes another branch, connects staging or deploys the application.
+on:
+  push:
+    branches:
+      - codex/gourmet-office-demo-recovery-20261010
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gourmet-office-recovery-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.repository == 'rikrodriguez/gourmet-growth-form-v2' && github.ref == 'refs/heads/codex/gourmet-office-demo-recovery-20261010'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CI: "true"
+      OFFICE_RUNTIME_MODE: development
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the triggering revision without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Use Node 24 without dependency cache publication
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install the lockfile-compatible Playwright Chromium
+        run: |
+          npx --no-install playwright install --with-deps chromium
+          node --input-type=module -e "import { chromium } from '@playwright/test'; console.log('PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=' + chromium.executablePath())" >> "$GITHUB_ENV"
+
+      - name: Check types and both builds
+        run: |
+          npm run typecheck
+          npm run build
+          npm run office:build
+
+      - name: Check synthetic operations (89 cases)
+        run: npm run test:operations
+
+      - name: Start the isolated candidate PostgreSQL database
+        run: npm run office:db -- start
+
+      - name: Check office, durable PostgreSQL and staging boundaries (49 cases)
+        run: npm run test:office
+
+      - name: Check baseline Chromium desktop and mobile (8 cases)
+        run: npm run test:e2e
+
+      - name: Check office Chromium desktop and mobile (26 cases)
+        run: npm run test:office:e2e
+
+      - name: Check compiled staging authentication with isolated fixtures (8 cases)
+        run: npm run test:staging:e2e
+
+      - name: Build the local staging runtime image without publishing
+        run: docker build --target runtime --tag gourmet-office-ci:checked .
+
+      - name: Stop the isolated test database
+        if: always()
+        continue-on-error: true
+        run: npm run office:db -- stop
