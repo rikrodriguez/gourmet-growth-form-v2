@@ -1,0 +1,72 @@
+services:
+  office-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16777216
+    environment:
+      NODE_ENV: production
+      OFFICE_RUNTIME_MODE: staging
+      OFFICE_STAGING_ORIGIN: ${OFFICE_STAGING_ORIGIN:?An exact HTTPS staging origin is required}
+      OFFICE_STAGING_USERNAME: ${OFFICE_STAGING_USERNAME:?A staging username is required}
+      OFFICE_STAGING_PASSWORD: ${OFFICE_STAGING_PASSWORD:?A staging password is required}
+      OFFICE_STAGING_ROLE: ${OFFICE_STAGING_ROLE:-viewer}
+      OFFICE_STAGING_TRUSTED_PROXY_CIDRS: 127.0.0.1/32,${OFFICE_STAGING_TRUSTED_PROXY_CIDRS:?Explicit private proxy CIDRs are required}
+      OFFICE_STAGING_DB_HOST: office-db
+      OFFICE_STAGING_DB_PORT: "5432"
+      OFFICE_STAGING_DB_USER: office_stage
+      OFFICE_STAGING_DB_NAME: gourmet_office_stage_demo
+      OFFICE_STAGING_DB_PASSWORD: ${OFFICE_STAGING_DB_PASSWORD:?A synthetic staging database password is required}
+    expose:
+      - "4180"
+    depends_on:
+      office-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "scripts/office-staging-health.mjs"]
+      interval: 30s
+      timeout: 8s
+      start_period: 30s
+      retries: 3
+    networks:
+      - frontend
+      - database
+
+  office-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_USER: office_stage
+      POSTGRES_DB: gourmet_office_stage_demo
+      POSTGRES_PASSWORD: ${OFFICE_STAGING_DB_PASSWORD:?A synthetic staging database password is required}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    command: ["postgres", "-c", "password_encryption=scram-sha-256"]
+    volumes:
+      - office-stage-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "office_stage", "-d", "gourmet_office_stage_demo"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    networks:
+      - database
+
+volumes:
+  office-stage-postgres:
+
+networks:
+  frontend:
+  database:
+    internal: true

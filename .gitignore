@@ -3,6 +3,10 @@ dist/
 .env
 .env.*
 !.env.example
+!.env.staging.example
 playwright-report/
 test-results/
+dist-office/
+.office-dev/
+office-test-results/
 .DS_Store

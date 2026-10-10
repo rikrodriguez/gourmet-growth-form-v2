@@ -1,0 +1,35 @@
+# Build context is an allowlist; private configuration and evidence stay out.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!package-lock.json
+!tsconfig.json
+!vite.office.config.ts
+!office/
+!office/**
+!src/
+!src/office/
+!src/office/**
+!src/operations/
+!src/operations/**
+!migrations/
+!migrations/office/
+!migrations/office/**
+!scripts/
+!scripts/office-staging-health.mjs
+# Keep accidental secret files or artifacts out even within source folders.
+**/.env*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.log
+**/*.zip
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.webp
+**/*.har
+**/node_modules
+**/test-results
+**/playwright-report
