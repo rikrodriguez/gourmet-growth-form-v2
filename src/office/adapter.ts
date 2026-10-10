@@ -1,4 +1,4 @@
-import type { AreaId, DataMode, Evidence, FunctionId, OfficeCase, OfficeCommand, OfficeSnapshot, WorkStatus } from './contracts';
+import type { AreaId, CommercialThread, DataMode, Evidence, FunctionId, OfficeCase, OfficeCommand, OfficeSnapshot, WorkStatus } from './contracts';
 
 export type OfficeErrorCode = 'unauthorized' | 'forbidden' | 'offline' | 'incompatible' | 'conflict' | 'validation';
 const ERROR_MESSAGES: Record<OfficeErrorCode, string> = {
@@ -67,9 +67,32 @@ function collection<T extends { id: string }>(value: unknown, map: (item: unknow
 function base(item: RecordValue, mode: DataMode, caseId: string) {
   return { id: id(item.id), functionId: choice(item.functionId, FUNCTIONS), evidence: evidence(item.evidence, mode, caseId) };
 }
+function commercialThread(value: unknown, mode: DataMode, caseId: string): CommercialThread {
+  const item = record(value);
+  keys(item, ['schemaVersion', 'id', 'caseId', 'revision', 'digest', 'subject', 'recipient', 'messages', 'references', 'evidence']);
+  if (mode !== 'demo' || item.schemaVersion !== 1 || item.caseId !== caseId || !Number.isSafeInteger(item.revision) || (item.revision as number) < 1 || (item.revision as number) > 1_000_000 || !DIGEST.test(string(item.digest, 64))) bad();
+  const recipient = string(item.recipient, 300);
+  if (!/^[^@\s]+@invalid\.test$/.test(recipient)) bad();
+  if (!Array.isArray(item.messages) || !item.messages.length || item.messages.length > 20 || !Array.isArray(item.references) || !item.references.length || item.references.length > 10) bad();
+  return {
+    schemaVersion: 1, id: id(item.id), caseId, revision: item.revision as number, digest: item.digest as string,
+    subject: string(item.subject, 200), recipient, evidence: evidence(item.evidence, mode, caseId),
+    messages: collection(item.messages, value => {
+      const row = record(value); keys(row, ['id', 'author', 'text', 'at']);
+      return { id: id(row.id), author: string(row.author, 100), text: string(row.text, 2000), at: date(row.at) };
+    }),
+    references: collection(item.references, value => {
+      const row = record(value); keys(row, ['id', 'source', 'status', 'label', 'detail', 'evidence']);
+      const status = choice(row.status, ['simulated', 'missing']);
+      const ev = nullableEvidence(row.evidence, mode, caseId);
+      if ((status === 'missing') !== (ev === null)) bad();
+      return { id: id(row.id), source: choice(row.source, ['fixture', 'gmail', 'monday']), status, label: string(row.label, 200), detail: string(row.detail, 1000), evidence: ev };
+    }),
+  };
+}
 function officeCase(value: unknown, mode: DataMode): OfficeCase {
   const c = record(value);
-  keys(c, ['id', 'title', 'subtitle', 'evidence', 'payment', 'paymentEvidence', 'supplier', 'supplierEvidence', 'capturedAt', 'attemptedAt', 'connectedAt', 'humanContactVerified', 'callEvidence', 'closerAvailable', 'assignment', 'saleClosed', 'history', 'tasks', 'results', 'approvals', 'messages']);
+  keys(c, ['id', 'title', 'subtitle', 'evidence', 'payment', 'paymentEvidence', 'supplier', 'supplierEvidence', 'capturedAt', 'attemptedAt', 'connectedAt', 'humanContactVerified', 'callEvidence', 'closerAvailable', 'assignment', 'saleClosed', 'history', 'tasks', 'results', 'approvals', 'messages'], ['commercialThreads']);
   const caseId = id(c.id);
   const result: OfficeCase = {
     id: caseId, title: string(c.title, 200), subtitle: string(c.subtitle, 600), evidence: evidence(c.evidence, mode, caseId),
@@ -81,14 +104,20 @@ function officeCase(value: unknown, mode: DataMode): OfficeCase {
     tasks: collection(c.tasks, value => { const item = record(value); keys(item, ['id', 'area', 'functionId', 'title', 'detail', 'status', 'evidence']); return { ...base(item, mode, caseId), area: choice(item.area, AREAS), title: string(item.title, 200), detail: string(item.detail), status: choice(item.status, STATUSES) }; }),
     results: collection(c.results, value => { const item = record(value); keys(item, ['id', 'area', 'functionId', 'title', 'detail', 'evidence']); return { ...base(item, mode, caseId), area: choice(item.area, AREAS), title: string(item.title, 200), detail: string(item.detail) }; }),
     approvals: collection(c.approvals, value => {
-      const item = record(value); keys(item, ['id', 'area', 'functionId', 'title', 'body', 'recipient', 'account', 'attachments', 'channel', 'revision', 'digest', 'status', 'evidence']);
+      const item = record(value); keys(item, ['id', 'area', 'functionId', 'title', 'body', 'recipient', 'account', 'attachments', 'channel', 'revision', 'digest', 'status', 'evidence'], ['commercialContext']);
       if (!Number.isSafeInteger(item.revision) || (item.revision as number) < 1 || !DIGEST.test(string(item.digest, 64))) bad();
       if (!Array.isArray(item.attachments) || item.attachments.length > 20) bad();
-      return { ...base(item, mode, caseId), area: choice(item.area, AREAS), title: string(item.title, 200), body: string(item.body, 12000), recipient: string(item.recipient, 300), account: string(item.account, 300), attachments: item.attachments.map(value => string(value, 1000)), channel: string(item.channel, 100), revision: item.revision as number, digest: item.digest as string, status: choice(item.status, ['pending', 'approved_demo', 'rejected_demo', 'cancelled_demo']) };
+      const context = Object.hasOwn(item, 'commercialContext') ? commercialThread(item.commercialContext, mode, caseId) : undefined;
+      if (context && (item.functionId !== 'sales' || item.recipient !== context.recipient)) bad();
+      return { ...base(item, mode, caseId), area: choice(item.area, AREAS), title: string(item.title, 200), body: string(item.body, 12000), recipient: string(item.recipient, 300), account: string(item.account, 300), attachments: item.attachments.map(value => string(value, 1000)), channel: string(item.channel, 100), revision: item.revision as number, digest: item.digest as string, status: choice(item.status, ['pending', 'approved_demo', 'rejected_demo', 'cancelled_demo']), ...(context ? { commercialContext: context } : {}) };
     }),
     messages: collection(c.messages, value => { const item = record(value); keys(item, ['id', 'area', 'functionId', 'author', 'text', 'evidence']); return { ...base(item, mode, caseId), area: choice(item.area, AREAS), author: string(item.author, 100), text: string(item.text, 12000) }; }),
     history: collection(c.history, value => { const item = record(value); keys(item, ['id', 'functionId', 'title', 'detail', 'status', 'evidence']); return { ...base(item, mode, caseId), title: string(item.title, 200), detail: string(item.detail), status: choice(item.status, STATUSES) }; }),
   };
+  if (Object.hasOwn(c, 'commercialThreads')) {
+    if (mode !== 'demo' || !Array.isArray(c.commercialThreads) || c.commercialThreads.length > 20) bad();
+    result.commercialThreads = collection(c.commercialThreads, value => commercialThread(value, mode, caseId));
+  }
   if ((result.payment === 'verified' && !result.paymentEvidence) || (result.supplier === 'accepted' && !result.supplierEvidence)) bad();
   if ((result.attemptedAt || result.connectedAt || result.humanContactVerified) && !result.callEvidence) bad();
   if (result.connectedAt && !result.humanContactVerified) bad();
@@ -184,13 +213,20 @@ function validatedCommand(command: OfficeCommand): OfficeCommand {
     choice(item.action, ['draft', 'chat', 'approve', 'reject', 'cancel', 'revise']);
     const decision = ['approve', 'reject', 'cancel', 'revise'].includes(command.action);
     const required = ['idempotencyKey', 'caseId', 'functionId', 'action', ...(decision ? ['approvalId', 'revision', 'digest'] : []), ...(['chat', 'revise'].includes(command.action) ? ['text'] : [])];
-    keys(item, required, command.action === 'draft' ? ['text'] : []);
+    const commercialFields = ['commercialThreadId', 'commercialThreadRevision', 'commercialThreadDigest'];
+    keys(item, required, command.action === 'draft' ? ['text', ...commercialFields] : []);
     const commandId = (value: unknown) => { const result = id(value); if (result.length > 96 || ['__proto__', 'prototype', 'constructor'].includes(result)) bad(); return result; };
     commandId(item.idempotencyKey); choice(item.caseId, ['demo-aurora', 'demo-cedar', 'demo-harbor']); choice(item.functionId, FUNCTIONS);
     if (item.text !== undefined) string(item.text, 2000);
     if (item.approvalId !== undefined) commandId(item.approvalId);
     if (item.revision !== undefined && (!Number.isSafeInteger(item.revision) || (item.revision as number) < 1 || (item.revision as number) > 1_000_000)) bad();
     if (item.digest !== undefined && !DIGEST.test(string(item.digest, 64))) bad();
+    if (commercialFields.some(key => Object.hasOwn(item, key))) {
+      if (!commercialFields.every(key => Object.hasOwn(item, key)) || item.action !== 'draft' || item.functionId !== 'sales' || Object.hasOwn(item, 'text')) bad();
+      commandId(item.commercialThreadId);
+      if (!Number.isSafeInteger(item.commercialThreadRevision) || (item.commercialThreadRevision as number) < 1 || (item.commercialThreadRevision as number) > 1_000_000) bad();
+      if (!DIGEST.test(string(item.commercialThreadDigest, 64))) bad();
+    }
     if (['chat', 'revise'].includes(command.action) && item.text === undefined) bad();
     if (['approve', 'reject', 'cancel', 'revise'].includes(command.action) && (item.approvalId === undefined || item.revision === undefined || item.digest === undefined)) bad();
     return { ...command };

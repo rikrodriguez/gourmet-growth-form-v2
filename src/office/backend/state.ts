@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import type { AreaId, Evidence, FunctionId, OfficeCase, OfficeCommand, OfficeHistory, OfficeSnapshot, WorkStatus } from '../contracts';
+import type { AreaId, CommercialThread, Evidence, FunctionId, OfficeCase, OfficeCommand, OfficeHistory, OfficeSnapshot, WorkStatus } from '../contracts';
 import { FUNCTIONS } from '../functions';
+import { assertCommercialContext, createCommercialThreads } from './commercial-fixtures';
 
 export const DEMO_ACTOR = 'OFFICE_DEMO_OPERATOR';
 export const CASE_IDS = ['demo-aurora', 'demo-cedar', 'demo-harbor'] as const;
@@ -10,10 +11,10 @@ export const FUNCTION_AREAS = Object.fromEntries(FUNCTIONS.map(row => [row.id, r
 export type DemoCaseId = typeof CASE_IDS[number];
 export type JobStatus = Exclude<WorkStatus, 'awaiting_approval'> | 'waiting_approval';
 export type OfficeJob = { id: string; caseId: DemoCaseId; area: AreaId; functionId: FunctionId; title: string; detail: string; status: JobStatus; evidence: Evidence; approvalId?: string; revision?: number };
-export type ApprovalLink = { id: string; caseId: DemoCaseId; functionId: FunctionId; coreDraftId: string; title: string; account: string; channel: 'email'; recipient: string; attachments: string[]; revision: number; digest: string; status: 'pending' | 'approved_demo' | 'rejected_demo' | 'cancelled_demo'; evidence: Evidence; coreApprovalId?: string; jobId: string };
+export type ApprovalLink = { id: string; caseId: DemoCaseId; functionId: FunctionId; coreDraftId: string; title: string; account: string; channel: 'email'; recipient: string; attachments: string[]; revision: number; digest: string; status: 'pending' | 'approved_demo' | 'rejected_demo' | 'cancelled_demo'; evidence: Evidence; coreApprovalId?: string; jobId: string; commercialContext?: CommercialThread };
 export type CommandRecord = { key: string; digest: string; input: OfficeCommand; actorId: typeof DEMO_ACTOR; atMs: number };
 export type HistoryRecord = OfficeHistory & { caseId: DemoCaseId; commandKey: string | null };
-export type DemoCase = Omit<OfficeCase, 'history' | 'tasks' | 'approvals'>;
+export type DemoCase = Omit<OfficeCase, 'history' | 'tasks' | 'approvals' | 'commercialThreads'>;
 export type CoreDraft = { kind: string; gourmetEventId: string; currentRevision: number; revisions: Record<string, { draftId: string; revision: number; text?: string; contentDigest: string; [key: string]: unknown }> };
 export type OfficeState = {
   version: 1; mode: 'simulation';
@@ -50,8 +51,11 @@ export function parseOfficeCommand(body: unknown): OfficeCommand {
   const actions = ['draft', 'chat', 'approve', 'reject', 'cancel', 'revise'];
   if (typeof body.action !== 'string' || !actions.includes(body.action)) throw new OfficeError('INVALID_ACTION');
   const decision = ['approve', 'reject', 'cancel', 'revise'].includes(body.action);
-  const required = [...base, ...(decision ? ['approvalId', 'revision', 'digest'] : []), ...(['chat', 'revise'].includes(body.action) ? ['text'] : [])];
-  const allowed = [...required, ...(body.action === 'draft' ? ['text'] : [])];
+  const commercialKeys = ['commercialThreadId', 'commercialThreadRevision', 'commercialThreadDigest'];
+  const commercial = commercialKeys.some(key => Object.hasOwn(body, key));
+  if (commercial && (body.action !== 'draft' || body.functionId !== 'sales')) throw new OfficeError('INVALID_COMMERCIAL_DRAFT');
+  const required = [...base, ...(decision ? ['approvalId', 'revision', 'digest'] : []), ...(['chat', 'revise'].includes(body.action) ? ['text'] : []), ...(commercial ? commercialKeys : [])];
+  const allowed = [...required, ...(body.action === 'draft' && !commercial ? ['text'] : [])];
   for (const key of Reflect.ownKeys(body)) {
     const descriptor = Object.getOwnPropertyDescriptor(body, key);
     if (typeof key !== 'string' || !allowed.includes(key) || !descriptor?.enumerable || !('value' in descriptor)) throw new OfficeError('UNKNOWN_FIELD');
@@ -63,6 +67,7 @@ export function parseOfficeCommand(body: unknown): OfficeCommand {
   if (!FUNCTION_IDS.includes(body.functionId as FunctionId)) throw new OfficeError('UNKNOWN_FUNCTION');
   if (body.text !== undefined && (typeof body.text !== 'string' || body.text.trim().length === 0 || body.text.length > 2000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(body.text))) throw new OfficeError('INVALID_TEXT');
   if (decision && (!validId(body.approvalId) || !Number.isSafeInteger(body.revision) || (body.revision as number) < 1 || (body.revision as number) > 1_000_000 || typeof body.digest !== 'string' || !/^[a-f0-9]{64}$/.test(body.digest))) throw new OfficeError('INVALID_DECISION');
+  if (commercial && (!validId(body.commercialThreadId) || !Number.isSafeInteger(body.commercialThreadRevision) || (body.commercialThreadRevision as number) < 1 || (body.commercialThreadRevision as number) > 1_000_000 || typeof body.commercialThreadDigest !== 'string' || !/^[a-f0-9]{64}$/.test(body.commercialThreadDigest))) throw new OfficeError('INVALID_COMMERCIAL_BINDING');
   return structuredClone(body) as OfficeCommand;
 }
 export function assertOfficeState(state: OfficeState): void {
@@ -75,6 +80,10 @@ export function assertOfficeState(state: OfficeState): void {
   for (const row of [...Object.values(state.office.approvals), ...Object.values(state.office.jobs), ...Object.values(state.office.history)]) {
     if (!CASE_IDS.includes(row.caseId) || !FUNCTION_IDS.includes(row.functionId)) throw new OfficeError('OFFICE_STATE_INVALID', 503);
     assertEvidence(row.evidence, row.caseId);
+  }
+  for (const link of Object.values(state.office.approvals)) if (link.commercialContext !== undefined) {
+    assertCommercialContext(state, link.commercialContext, link.caseId);
+    if (link.functionId !== 'sales' || link.recipient !== link.commercialContext.recipient) throw new OfficeError('INVALID_COMMERCIAL_CONTEXT', 503);
   }
 }
 export function assertEvidence(ev: Evidence, caseId: DemoCaseId) {
@@ -95,9 +104,10 @@ export function projectOfficeSnapshot(state: OfficeState, nowMs: number): Office
     note: 'DEMOSTRACIÓN · PostgreSQL local. Funciones lógicas, venta humana y chat guionado. Sin LLM, conectores, envíos ni cobros reales. Toda aprobación continúa siendo simulada.',
     outboundEffects: 0, mondayWrites: 0,
     cases: CASE_IDS.map(id => ({ ...state.office.cases[id],
+      commercialThreads: createCommercialThreads(id, state.office.initializedAtMs),
       results: bounded([...state.office.cases[id].results]).map(currentArea), messages: bounded([...state.office.cases[id].messages]).map(currentArea),
       tasks: bounded(Object.values(state.office.jobs).filter(row => row.caseId === id)).map(({ caseId: _caseId, approvalId: _approvalId, revision: _revision, ...job }) => ({ ...currentArea(job), status: job.status === 'waiting_approval' ? 'awaiting_approval' : job.status })),
-      approvals: bounded(Object.values(state.office.approvals).filter(row => row.caseId === id), true).map(row => ({ id: row.id, area: FUNCTION_AREAS[row.functionId], functionId: row.functionId, title: row.title, body: state.drafts[row.coreDraftId]?.revisions[row.revision]?.text ?? '', recipient: row.recipient, account: row.account, attachments: row.attachments, channel: row.channel, revision: row.revision, digest: row.digest, status: row.status, evidence: row.evidence })),
+      approvals: bounded(Object.values(state.office.approvals).filter(row => row.caseId === id), true).map(row => ({ id: row.id, area: FUNCTION_AREAS[row.functionId], functionId: row.functionId, title: row.title, body: state.drafts[row.coreDraftId]?.revisions[row.revision]?.text ?? '', recipient: row.recipient, account: row.account, attachments: row.attachments, channel: row.channel, revision: row.revision, digest: row.digest, status: row.status, evidence: row.evidence, ...(row.commercialContext !== undefined ? { commercialContext: row.commercialContext } : {}) })),
       history: bounded(Object.values(state.office.history).filter(row => row.caseId === id)).map(({ caseId: _caseId, commandKey: _commandKey, ...row }) => row).sort((a, b) => a.evidence.at.localeCompare(b.evidence.at) || a.id.localeCompare(b.id)),
     })),
   } as OfficeSnapshot;

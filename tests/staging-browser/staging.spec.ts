@@ -182,6 +182,8 @@ test('default viewer reads dashboard and history while every write stays blocked
   await expect(page.getByText('Sólo lectura · DEMO', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Caso de demostración')).toBeEnabled();
   await page.getByLabel('Caso de demostración').selectOption('demo-aurora');
+  await expect(page.getByLabel('Hilo comercial simulado')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Preparar respuesta interna', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Propuestas', exact: true }).click();
   await expect(page.getByLabel('Contenido del borrador')).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Preparar borrador', exact: false })).toBeDisabled();

@@ -19,7 +19,7 @@ const paymentCore = require('../../operations/payments.mjs') as {
 export { paymentCore };
 export function computeApprovalDigest(state: OfficeState, link: ApprovalLink) {
   const reviewed = draftCore.reviewMessageDraft(state, { draftId: link.coreDraftId, revision: link.revision });
-  return sha256({ account: link.account, channel: link.channel, recipient: link.recipient, content: reviewed.text, attachments: link.attachments, revision: link.revision, coreReviewDigest: reviewed.reviewDigest });
+  return sha256({ account: link.account, channel: link.channel, recipient: link.recipient, content: reviewed.text, attachments: link.attachments, revision: link.revision, coreReviewDigest: reviewed.reviewDigest, ...(link.commercialContext !== undefined ? { commercialContext: link.commercialContext } : {}) });
 }
 export const officePilotPolicy = {
   teamId: 'T_OFFICE_DEMO', acceptanceTimeoutMs: 10_000, maxCapacity: 1,

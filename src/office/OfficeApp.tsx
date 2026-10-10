@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent, ReactNode } from 'react';
 import { endDemoSession, executeDemoCommand, loadDemoSession, loadDemoSnapshot, OfficeReadError, startDemoSession } from './adapter';
 import type { DemoSession } from './adapter';
-import type { AreaId, Evidence, FunctionId, OfficeApproval, OfficeCase, OfficeCommand, OfficeSnapshot, WorkStatus } from './contracts';
+import type { AreaId, CommercialThread, Evidence, FunctionId, OfficeApproval, OfficeCase, OfficeCommand, OfficeSnapshot, WorkStatus } from './contracts';
 import { STATUS_LABELS } from './contracts';
 import { AREAS, areaById } from './areas';
 import { FUNCTIONS, functionById } from './functions';
@@ -25,7 +25,8 @@ function readPendingCommand(): OfficeCommand | null {
     const value: unknown = JSON.parse(raw);
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const item = value as Record<string, unknown>;
-    const allowed = ['idempotencyKey', 'caseId', 'functionId', 'action', 'text', 'approvalId', 'revision', 'digest'];
+    const threadFields = ['commercialThreadId', 'commercialThreadRevision', 'commercialThreadDigest'];
+    const allowed = ['idempotencyKey', 'caseId', 'functionId', 'action', 'text', 'approvalId', 'revision', 'digest', ...threadFields];
     if (Object.keys(item).some(key => !allowed.includes(key))) return null;
     if (typeof item.idempotencyKey !== 'string' || !/^office-[0-9a-f-]{36}$/.test(item.idempotencyKey)) return null;
     if (!['demo-aurora', 'demo-cedar', 'demo-harbor'].includes(item.caseId as string) || !FUNCTIONS.some(fn => fn.id === item.functionId)) return null;
@@ -33,6 +34,7 @@ function readPendingCommand(): OfficeCommand | null {
     if (item.text !== undefined && (typeof item.text !== 'string' || !item.text.trim() || item.text.length > 2000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(item.text))) return null;
     if (['chat', 'revise'].includes(item.action as string) && item.text === undefined) return null;
     if (['approve', 'reject', 'cancel', 'revise'].includes(item.action as string) && (typeof item.approvalId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(item.approvalId) || !Number.isSafeInteger(item.revision) || (item.revision as number) < 1 || typeof item.digest !== 'string' || !/^[a-f0-9]{64}$/.test(item.digest))) return null;
+    if (threadFields.some(key => Object.hasOwn(item, key)) && (item.action !== 'draft' || item.functionId !== 'sales' || ['text', 'approvalId', 'revision', 'digest'].some(key => Object.hasOwn(item, key)) || threadFields.some(key => !Object.hasOwn(item, key)) || typeof item.commercialThreadId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(item.commercialThreadId) || ['prototype', 'constructor'].includes(item.commercialThreadId) || !Number.isSafeInteger(item.commercialThreadRevision) || (item.commercialThreadRevision as number) < 1 || (item.commercialThreadRevision as number) > 1_000_000 || typeof item.commercialThreadDigest !== 'string' || !/^[a-f0-9]{64}$/.test(item.commercialThreadDigest))) return null;
     return item as OfficeCommand;
   } catch { return null; }
 }
@@ -44,6 +46,19 @@ function EvidenceDetails({ evidence }: { evidence: Evidence }) {
   return <details className="evidence"><summary>Ver procedencia <span aria-hidden="true">↗</span></summary><dl><dt>Origen</dt><dd>{evidence.source}</dd><dt>Referencia</dt><dd className="reference">{evidence.reference}</dd><dt>Registro</dt><dd>{time(evidence.at)} UTC</dd><dt>Tipo</dt><dd>{evidence.simulated ? 'Evidencia sintética · DEMO' : 'Evidencia observada'}</dd></dl></details>;
 }
 function Empty({ title, children }: { title: string; children: ReactNode }) { return <div className="empty-state"><span aria-hidden="true">◇</span><h3>{title}</h3><p>{children}</p></div>; }
+
+function CommercialReferences({ references }: { references: CommercialThread['references'] }) {
+  const labels = { fixture: 'Fixture DEMO', gmail: 'Gmail', monday: 'Monday' };
+  return <div aria-label="Fuentes del hilo">{references.map(reference => <article className="result-card" key={reference.id}><div className="card-title-row"><h4>{reference.label}</h4><span className="tiny-tag">{labels[reference.source]} · {reference.status === 'simulated' ? 'SIMULADA' : 'FALTANTE'}</span></div><p>{reference.detail}</p>{reference.evidence && <EvidenceDetails evidence={reference.evidence} />}</article>)}</div>;
+}
+
+function CommercialMessages({ messages }: { messages: CommercialThread['messages'] }) {
+  return <div aria-label="Mensajes capturados del hilo">{messages.map(item => <article className="message" key={item.id}><p className="message-author">{item.author} · {time(item.at)} UTC<span>SIMULADO</span></p><p>{item.text}</p></article>)}</div>;
+}
+
+function CommercialContext({ thread }: { thread: CommercialThread }) {
+  return <details className="evidence" data-testid="approval-commercial-context"><summary>Contexto comercial vinculado · revisión {thread.revision}</summary><dl><dt>Hilo</dt><dd className="reference">{thread.id}</dd><dt>Asunto</dt><dd>{thread.subject}</dd><dt>Destinatario</dt><dd>{thread.recipient}</dd><dt>Huella del hilo</dt><dd className="reference">{thread.digest}</dd></dl><CommercialMessages messages={thread.messages} /><CommercialReferences references={thread.references} /><EvidenceDetails evidence={thread.evidence} /></details>;
+}
 
 function ApprovalCard({ approval, caseId, canWrite, busy, submit }: { approval: OfficeApproval; caseId: string; canWrite: boolean; busy: boolean; submit: (input: CommandInput) => Promise<boolean> }) {
   const [editing, setEditing] = useState<{ revision: number; digest: string; text: string } | null>(null);
@@ -59,6 +74,7 @@ function ApprovalCard({ approval, caseId, canWrite, busy, submit }: { approval: 
     <div className="card-title-row"><div><p className="eyebrow">REVISIÓN {approval.revision} · DEMO</p><h3>{approval.title}</h3></div><span className={`decision-tag decision-${approval.status}`}>{DECISIONS[approval.status]}</span></div>
     <dl className="approval-target"><div><dt>Cuenta</dt><dd>{approval.account}</dd></div><div><dt>Destinatario</dt><dd>{approval.recipient}</dd></div><div><dt>Canal</dt><dd>{approval.channel} · envío bloqueado</dd></div><div><dt>Adjuntos</dt><dd>{approval.attachments.length ? approval.attachments.join(' · ') : 'Sin adjuntos'}</dd></div></dl>
     <p className="approval-body">{approval.body}</p>
+    {approval.commercialContext && <><p className="approval-policy">Borrador interno · sin enviar. Conserva el contexto de esta revisión del hilo; las fuentes faltantes siguen sin verificar.</p><CommercialContext thread={approval.commercialContext} /></>}
     <div className="digest"><span>Huella de esta revisión</span><code>{approval.digest}</code></div>
     <EvidenceDetails evidence={approval.evidence} />
     <p className="approval-policy">La decisión queda vinculada a este contenido, cuenta, destinatario y adjuntos. Aprobar DEMO registra una decisión; no envía ni confirma pago o proveedor.</p>
@@ -110,6 +126,7 @@ export function OfficeApp() {
   const [notice, setNotice] = useState('');
   const [draftText, setDraftText] = useState('');
   const [chatText, setChatText] = useState('');
+  const [commercialSelection, setCommercialSelection] = useState<{ caseId: string; threadId: string } | null>(null);
   const [pendingCommand, setPendingCommand] = useState<OfficeCommand | null>(readPendingCommand);
   const [now, setNow] = useState(Date.now());
   const mounted = useRef(true);
@@ -118,6 +135,8 @@ export function OfficeApp() {
   const request = useRef<AbortController | null>(null);
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
   const current = snapshot?.cases.find(item => item.id === caseId) ?? snapshot?.cases[0] ?? null;
+  const commercialThreads = current?.commercialThreads?.filter(thread => thread.caseId === current.id) ?? [];
+  const commercialThread = commercialThreads.find(thread => commercialSelection && commercialSelection.caseId === current?.id && thread.id === commercialSelection.threadId) ?? commercialThreads[0] ?? null;
   const activeFunction = functionById(functionId);
   const activeArea = areaById(activeFunction.area);
   const expired = !!session && Date.parse(session.expiresAt) <= now;
@@ -148,6 +167,7 @@ export function OfficeApp() {
     return () => { mounted.current = false; controller.abort(); window.clearInterval(timer); };
   }, []);
   useEffect(() => { setDraftText(''); setChatText(''); }, [caseId, functionId]);
+  useEffect(() => { setCommercialSelection(null); }, [caseId]);
   async function run<T>(kind: 'session' | 'refresh' | 'command', work: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
     if (operation.current) return undefined;
     operation.current = true;
@@ -198,6 +218,10 @@ export function OfficeApp() {
   }
   async function retryPending() { if (pendingCommand && canRetry && !operation.current) await confirmCommand(pendingCommand); }
   async function prepareDraft(event: FormEvent) { event.preventDefault(); if (!current || supplierBlocked) return; if (await submit({ action: 'draft', caseId: current.id, functionId, ...(draftText.trim() ? { text: draftText.trim() } : {}) })) setDraftText(''); }
+  async function prepareCommercialReply() {
+    if (!current || !commercialThread || commercialThread.caseId !== current.id || functionId !== 'sales') return;
+    await submit({ action: 'draft', caseId: current.id, functionId: 'sales', commercialThreadId: commercialThread.id, commercialThreadRevision: commercialThread.revision, commercialThreadDigest: commercialThread.digest });
+  }
   async function sendChat(event: FormEvent) { event.preventDefault(); if (!current || !chatText.trim()) return; if (await submit({ action: 'chat', caseId: current.id, functionId, text: chatText.trim() })) setChatText(''); }
   function selectArea(area: AreaId) { const selected = FUNCTIONS.find(item => item.area === area); if (selected) setFunctionId(selected.id); }
   function tabKeys(event: KeyboardEvent<HTMLButtonElement>, index: number) {
@@ -224,6 +248,7 @@ export function OfficeApp() {
       <section className="work-panel" aria-labelledby="function-title"><div className="function-heading"><p className="eyebrow">{activeArea.name.toUpperCase()} · FUNCIÓN VIRTUAL</p><h2 id="function-title">{activeFunction.name}</h2><p className="function-role">{activeFunction.role}</p><p>{activeFunction.description}</p><div className="function-facts"><span><strong>Se activa con</strong>{activeFunction.trigger}</span><span><strong>Fuentes necesarias</strong>{activeFunction.sources.join(' · ')}</span></div>{functionId === 'proposals' && <p className="pages-note">Páginas se integra en Propuestas. Puedes revisar contenido sintético con este flujo; falta una plantilla autorizada para generar la página. No hay página ni URL publicada.</p>}<span className="connection-label"><i aria-hidden="true" />Sin agente ni fuentes reales conectados</span></div>
         {!current ? <Empty title="Un caso, antes de empezar">Abre una sesión de desarrollo. Las tareas, conversaciones y revisiones se cargarán desde la API.</Empty> : <>
           <section className="work-section" aria-label={`Tareas de ${activeFunction.name}`}><div className="section-heading"><h3>Tareas y resultados</h3><span className="tiny-tag">DEMO</span></div>{tasks.map(task => <article className="task-card" key={task.id}><div className="card-title-row"><h4>{task.title}</h4><Status status={task.status} /></div><p>{task.detail}</p><EvidenceDetails evidence={task.evidence} /></article>)}{results.map(result => <article className="result-card" key={result.id}><p className="eyebrow">RESULTADO · DEMO</p><h4>{result.title}</h4><p>{result.detail}</p><EvidenceDetails evidence={result.evidence} /></article>)}{!tasks.length && !results.length && <p className="form-hint">No hay tareas ni resultados confirmados para esta función.</p>}</section>
+          {functionId === 'sales' && <section className="work-section" aria-labelledby="commercial-title" data-testid="commercial-inbox"><div className="section-heading"><h3 id="commercial-title">Entrada comercial</h3><span className="tiny-tag">SIMULADA</span></div><p>Mensajes inventados para revisión interna. Gmail y Monday están desconectados; sus fuentes figuran como faltantes.</p>{commercialThread ? <><label htmlFor="commercial-thread">Hilo comercial simulado</label><select id="commercial-thread" value={commercialThread.id} disabled={busy !== null} onChange={event => setCommercialSelection({ caseId: current.id, threadId: event.target.value })}>{commercialThreads.map(thread => <option key={thread.id} value={thread.id}>{thread.subject}</option>)}</select><article className="task-card" data-testid="commercial-thread-context"><div className="card-title-row"><h4>{commercialThread.subject}</h4><span className="tiny-tag">REVISIÓN {commercialThread.revision} · DEMO</span></div><p>Destinatario sintético: {commercialThread.recipient}</p><CommercialMessages messages={commercialThread.messages} /><EvidenceDetails evidence={commercialThread.evidence} /></article><CommercialReferences references={commercialThread.references} /><p className="form-hint">La respuesta se prepara con esta revisión exacta del hilo y sus referencias. Se guarda como borrador interno; no se envía.</p><button className="button button-primary" disabled={!canWrite || busy !== null} onClick={() => void prepareCommercialReply()}>Preparar respuesta interna</button></> : <p className="form-hint">No hay hilos comerciales simulados en esta lectura confirmada.</p>}</section>}
           <section className="work-section draft-section" aria-labelledby="draft-title"><div className="section-heading"><h3 id="draft-title">Prepara un borrador.</h3><span className="tiny-tag">REVISIÓN HUMANA</span></div><p>Usa sólo datos inventados. Puedes escribir el contenido o preparar el guion local de esta función.</p>{supplierBlocked && <p className="inline-alert">Buscar chef requiere una venta humana cerrada. Este caso sigue abierto; la preparación de proveedor está bloqueada.</p>}{session?.role === 'viewer' && <p className="inline-alert">Esta sesión tiene permiso de consulta. Registrar decisiones requiere un permiso de operador autorizado por el servidor.</p>}<form onSubmit={prepareDraft}><label htmlFor="draft-content">Contenido del borrador</label><textarea id="draft-content" rows={4} maxLength={2000} value={draftText} disabled={!canWrite || busy !== null || supplierBlocked} placeholder="Ej. Preparar un brief inventado para una cena de equipo…" onChange={event => setDraftText(event.target.value)} /><div className="form-actions"><small>{draftText.length}/2000 · {draftText.trim() ? 'contenido sintético' : 'vacío: se usará el guion local'}</small><button className="button button-primary" disabled={!canWrite || busy !== null || supplierBlocked}>Preparar borrador <span aria-hidden="true">↗</span></button></div></form></section>
           <section className="work-section approvals-section" aria-labelledby="approvals-title"><div className="section-heading"><h3 id="approvals-title">Revisiones y decisiones</h3><span className="count-badge">{approvals.filter(item => item.status === 'pending').length} pendientes</span></div>{approvals.length ? [...approvals].reverse().map(approval => <ApprovalCard key={`${current.id}:${approval.id}`} approval={approval} caseId={current.id} canWrite={canWrite && !supplierBlocked} busy={busy !== null} submit={submit} />) : <p className="form-hint">Aún no hay borradores para revisar en esta función.</p>}</section>
           <section className="work-section chat-section" aria-labelledby="chat-title"><div className="section-heading"><div><h3 id="chat-title">Conversación contextual</h3><p className="form-hint">{current.title} · {activeFunction.name}</p></div><span className="tiny-tag">GUION LOCAL</span></div><p className="chat-disclosure">Sin LLM conectado. La respuesta guionada usa el caso y la función seleccionados; no consulta fuentes externas.</p><div className="message-list" role="log" aria-label={`Conversación de ${activeFunction.name}`} aria-live="polite">{messages.length ? messages.map(item => <article className={`message ${item.author.startsWith('Operador') ? 'message-human' : ''}`} key={item.id}><p className="message-author">{item.author}<span>DEMO</span></p><p>{item.text}</p><EvidenceDetails evidence={item.evidence} /></article>) : <p className="form-hint">No hay conversación confirmada en esta función.</p>}</div><form onSubmit={sendChat}><label htmlFor="chat-message">Mensaje contextual</label><textarea id="chat-message" rows={3} maxLength={2000} required disabled={!canWrite || busy !== null} value={chatText} onChange={event => setChatText(event.target.value)} placeholder="Escribe una pregunta con datos inventados…" /><div className="form-actions"><small>{chatText.length}/2000 · sólo DEMO</small><button className="button button-primary" disabled={!canWrite || busy !== null || !chatText.trim()}>Guardar pregunta <span aria-hidden="true">↗</span></button></div></form></section>

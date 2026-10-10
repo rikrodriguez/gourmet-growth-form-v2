@@ -71,4 +71,31 @@ describe('office real PostgreSQL durability (requires office:db start)', () => {
       assert.equal(replay.statusCode, 200); assert.equal(replay.json().replayed, true);
     } finally { await restarted.close(); }
   });
+
+  it('persists the exact commercial context and history binding across a new pool without duplicating replay', async () => {
+    const thread = projectOfficeSnapshot(await store.snapshot(), AT + 20).cases[0].commercialThreads![0];
+    const command = { idempotencyKey: 'pg-commercial-context', caseId: thread.caseId, functionId: 'sales', action: 'draft', commercialThreadId: thread.id, commercialThreadRevision: thread.revision, commercialThreadDigest: thread.digest };
+    await executeOfficeCommand(store, command, () => AT + 20);
+    const before = await store.snapshot();
+    const link = Object.values(before.office.approvals).find(row => row.commercialContext?.id === thread.id)!;
+    assert.deepEqual(link.commercialContext, thread);
+    const independent = new PostgresOfficeStore({ stateId });
+    try {
+      await independent.initialize(AT + 30);
+      assert.equal(canonical(await independent.snapshot()), canonical(before));
+      const persisted = (await independent.snapshot()).office.approvals[link.id];
+      assert.deepEqual(persisted.commercialContext, thread);
+      await executeOfficeCommand(independent, { idempotencyKey: 'pg-commercial-approve', caseId: link.caseId, functionId: link.functionId, action: 'approve', approvalId: link.id, revision: link.revision, digest: link.digest }, () => AT + 31);
+      const replay = await executeOfficeCommand(independent, command, () => AT + 32);
+      assert.equal(replay.replayed, true);
+      const current = replay.snapshot.cases[0].approvals.find(row => row.id === link.id)!;
+      assert.equal(current.status, 'approved_demo'); assert.deepEqual(current.commercialContext, thread);
+      const history = await independent.pool.query<{ record: { commandKey: string; detail: string } }>('SELECT record FROM office_demo.history_events WHERE state_id=$1 AND record->>\'commandKey\' = ANY($2::text[])', [stateId, ['pg-commercial-context', 'pg-commercial-approve']]);
+      assert.equal(history.rowCount, 2);
+      for (const row of history.rows) for (const binding of [thread.id, thread.digest, thread.evidence.reference]) assert(row.record.detail.includes(binding));
+      const count = await independent.pool.query('SELECT count(*)::int AS count FROM office_demo.command_events WHERE state_id=$1 AND command_key=$2', [stateId, command.idempotencyKey]);
+      assert.equal(count.rows[0].count, 1);
+      assert.equal(replay.snapshot.outboundEffects, 0); assert.equal(replay.snapshot.mondayWrites, 0);
+    } finally { await independent.close(); }
+  });
 });

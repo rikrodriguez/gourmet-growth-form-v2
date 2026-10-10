@@ -2,6 +2,7 @@ import type { FunctionId, OfficeCommand } from '../contracts';
 import { computeApprovalDigest, draftCore, runPilotCommand } from './pilot-core';
 import { DEMO_ACTOR, FUNCTION_AREAS, FUNCTION_NAMES, OfficeError, assertOfficeState, currentTime, evidence, parseOfficeCommand, projectOfficeSnapshot, sha256 } from './state';
 import type { OfficeState, OfficeStore, DemoCaseId, ApprovalLink } from './state';
+import { commercialHistoryBinding, commercialScriptedDraft, resolveCommercialThread } from './commercial-fixtures';
 
 function demoText(text: string) { return text.startsWith('DEMO — ') ? text : `DEMO — ${text}`; }
 
@@ -56,16 +57,18 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
     } else if (command.action === 'draft') {
       const id = `approval-${token}`;
       const coreDraftId = `draft-${token}`;
-      const text = demoText(command.text ?? scriptedResponse(state, caseId, command.functionId));
+      const commercialContext = command.commercialThreadId !== undefined ? resolveCommercialThread(state, command) : undefined;
+      const text = commercialContext ? commercialScriptedDraft(commercialContext) : demoText(command.text ?? scriptedResponse(state, caseId, command.functionId));
+      const recipient = commercialContext?.recipient ?? 'cliente-demo@invalid.test';
       const refs = command.functionId === 'proposals' ? [{ draftId: `quote-${caseId}-fixture`, revision: 1 }] : [];
-      await runPilotCommand(state, caseId, 'message', { draftId: coreDraftId, channel: 'email', recipient: 'cliente-demo@invalid.test', text, artifactRefs: refs }, `${token}-draft`, atMs);
+      await runPilotCommand(state, caseId, 'message', { draftId: coreDraftId, channel: 'email', recipient, text, artifactRefs: refs }, `${token}-draft`, atMs);
       const ev = evidence(caseId, `${id}-revision-1`, atMs);
       const jobId = `job-${token}`;
-      const link: ApprovalLink = { id, caseId, functionId: command.functionId, coreDraftId, title: `${FUNCTION_NAMES[command.functionId]} · borrador DEMO`, account: 'Gourmet · cuenta de demostración', channel: 'email', recipient: 'cliente-demo@invalid.test', attachments: refs.length ? [`Cotización DEMO ${caseId} · revisión 1`] : [], revision: 1, digest: '', status: 'pending', evidence: ev, jobId };
+      const link: ApprovalLink = { id, caseId, functionId: command.functionId, coreDraftId, title: `${FUNCTION_NAMES[command.functionId]} · ${commercialContext ? 'respuesta contextual' : 'borrador'} DEMO`, account: 'Gourmet · cuenta de demostración', channel: 'email', recipient, attachments: refs.length ? [`Cotización DEMO ${caseId} · revisión 1`] : [], revision: 1, digest: '', status: 'pending', evidence: ev, jobId, ...(commercialContext ? { commercialContext: structuredClone(commercialContext) } : {}) };
       link.digest = computeApprovalDigest(state, link);
       state.office.approvals[id] = link;
       state.office.jobs[jobId] = { id: jobId, caseId, functionId: command.functionId, area: FUNCTION_AREAS[command.functionId], title: link.title, detail: 'DEMO — Requiere decisión humana. No hay envío ni ejecución externa.', status: 'waiting_approval', evidence: ev, approvalId: id, revision: 1 };
-      recordHistory(state, command, atMs, 'Borrador preparado · DEMO', 'Contenido exacto, cuenta, destinatario y adjuntos quedan vinculados a la revisión. No se envió.', 'awaiting_approval');
+      recordHistory(state, command, atMs, commercialContext ? 'Respuesta comercial preparada · DEMO' : 'Borrador preparado · DEMO', `Contenido exacto, cuenta, destinatario y adjuntos quedan vinculados a la revisión. No se envió.${commercialHistoryBinding(commercialContext)}`, 'awaiting_approval');
     } else {
       const link = checkedApproval(state, command);
       if (command.action !== 'revise' && link.status !== 'pending') throw new OfficeError('APPROVAL_TERMINAL', 409);
@@ -84,7 +87,7 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
         const jobId = `job-${token}-revision-${link.revision}`;
         link.jobId = jobId;
         state.office.jobs[jobId] = { id: jobId, caseId, functionId: link.functionId, area: FUNCTION_AREAS[link.functionId], title: `${link.title} · revisión ${link.revision}`, detail: 'DEMO — Nueva revisión; requiere nueva decisión exacta. Sin ejecución externa.', status: 'waiting_approval', evidence: link.evidence, approvalId: link.id, revision: link.revision };
-        recordHistory(state, command, atMs, 'Nueva revisión · DEMO', 'La revisión anterior y cualquier aprobación dependiente quedaron desactualizadas. Se abrió una nueva revisión pendiente.', 'awaiting_approval');
+        recordHistory(state, command, atMs, 'Nueva revisión · DEMO', `La revisión anterior y cualquier aprobación dependiente quedaron desactualizadas. Se abrió una nueva revisión pendiente.${commercialHistoryBinding(link.commercialContext)}`, 'awaiting_approval');
       } else {
         const job = state.office.jobs[link.jobId]!;
         if (command.action === 'approve') {
@@ -99,7 +102,7 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
         }
         link.evidence = evidence(caseId, `${link.id}-${command.action}-revision-${link.revision}`, atMs);
         job.evidence = link.evidence;
-        recordHistory(state, command, atMs, command.action === 'approve' ? 'Aprobación registrada · DEMO' : command.action === 'reject' ? 'Borrador rechazado · DEMO' : 'Borrador cancelado · DEMO', job.detail, command.action === 'approve' ? 'blocked' : 'completed');
+        recordHistory(state, command, atMs, command.action === 'approve' ? 'Aprobación registrada · DEMO' : command.action === 'reject' ? 'Borrador rechazado · DEMO' : 'Borrador cancelado · DEMO', `${job.detail}${commercialHistoryBinding(link.commercialContext)}`, command.action === 'approve' ? 'blocked' : 'completed');
         item.results.push({ id: `result-${token}`, area: FUNCTION_AREAS[command.functionId], functionId: command.functionId, title: command.action === 'approve' ? 'Aprobado DEMO · ejecución bloqueada' : command.action === 'reject' ? 'Rechazo DEMO registrado' : 'Cancelación DEMO registrada', detail: job.detail, evidence: link.evidence });
       }
     }
