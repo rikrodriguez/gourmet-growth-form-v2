@@ -45,14 +45,18 @@ h1,h2{font-family:inherit;font-weight:700}button:focus-visible,a:focus-visible,s
 }
 .office-sidebar { background: #fefdfc; }
 .office-chat { background: #fefefe; }
-.new-task-button { background: #cffa66; }
+.shell-brand { color: #050505; }
+.new-task-button { background: #cffa66; color: #071105; }
+.sidebar-views > button { color: #303852; }
 .sidebar-views > button[aria-selected="true"] { background: #f1fae1; }
+.sidebar-views > button[aria-selected="true"] { color: #091109; }
+.sidebar-section > nav > button { color: #2c334e; }
 .shell-switch { background: #f2efed; }
 .shell-switch button { color: #606a7e; }
 .shell-title h1 { letter-spacing: 0; }
 .office-session-menu > summary { background: #fcecd8; color: #9f5500; }
 .chat-welcome { background: #f3f4f9; }
-.suggested-task button { background: #e5edf4; }
+.suggested-task button { background: #e5edf4; color: #03061f; }
 .office-activity-bar { background: #fefdfd; }
 .shell-brand small, .shell-title > p, .sidebar-section h2,
 .team-person small, .office-chat-header p, .chat-welcome small,
@@ -64,6 +68,18 @@ h1,h2{font-family:inherit;font-weight:700}button:focus-visible,a:focus-visible,s
 .office-chat-header > .icon-button { min-width: 24px; min-height: 30px; }
 .office-chat-composer textarea { font-size: 12px; }
 .office-chat-composer small { font-size: 10px; }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+.sidebar-team-heading { display: flex; align-items: center; justify-content: space-between; min-height: 44px; margin-bottom: 6px; }
+.sidebar-team-heading > h2 { font-size: 13px; font-weight: 600; color: #656e82; margin: 0 0 0 14px; }
+.sidebar-history-tab { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex-shrink: 0; border-radius: 13px; background: transparent; color: #697286; }
+.sidebar-history-tab:hover { background: #f6f8fb; }
+.sidebar-history-tab[aria-selected="true"] { background: #f1fae1; color: #202916; }
+.office-chat-body { overscroll-behavior: contain; scroll-padding-block: 16px; }
+.office-chat-body:focus-visible { outline: 3px solid #be7844; outline-offset: -4px; }
+.office-chat-body > .office-chat-composer { padding: 10px 0 6px; }
 @media (min-width: 1051px) {
   .shell-brand { font-size: 30.5px; font-weight: 600; letter-spacing: -.9px; margin-bottom: 22px; gap: 11px; }
   .shell-brand > svg { transform: translate(-2px, -7px); }
@@ -72,20 +88,31 @@ h1,h2{font-family:inherit;font-weight:700}button:focus-visible,a:focus-visible,s
   .shell-title > p { font-weight: 500; transform: translateY(-1px); }
   .new-task-button { margin-left: 1px; width: calc(100% - 1px); }
   .sidebar-views { margin-left: 1px; gap: 9px; }
-  .sidebar-views > button { letter-spacing: -.3px; gap: 19px; }
-  .sidebar-section h2 { font-size: 14.5px; margin-left: 16px; }
-  .sidebar-section > nav > button { padding-left: 19px; }
+  .sidebar-views > button { letter-spacing: 0; gap: 19px; }
+  .sidebar-views > #tab-approvals { margin-top: -4px; }
+  .sidebar-section h2 { font-size: 14.5px; margin-left: 14px; }
+  .sidebar-team-heading > h2 { transform: translate(1px, -3px); }
+  .sidebar-section > nav > button { padding-left: 19px; letter-spacing: -.15px; }
+  .sidebar-team { margin-top: 22px; }
+  .office-sidebar { padding-bottom: 8px; }
+  .team-person { min-height: 62px; gap: 20px; }
+  .team-person img, .human-avatar { width: 54px; height: 54px; }
+  .team-person strong { font-size: 16px; overflow-wrap: anywhere; }
+  .team-person small { font-size: 12px; }
   .office-department-button { font-size: 15px; font-weight: 600; }
-  .office-chat-header { padding-top: 19px; padding-bottom: 19px; gap: 8px; }
+  .office-chat-header { padding: 19px 7px 19px 22px; gap: 8px; }
+  .office-chat-header > div { margin-left: 6px; }
+  .office-chat-header > .icon-button { align-self: flex-start; margin-top: 2px; }
   .office-chat-body { padding: 6px 18px 15px 26px; }
   .chat-welcome { max-width: 213px; margin-left: -6px; padding: 13px 17px; margin-bottom: 27px; }
   .chat-welcome > p { letter-spacing: -.35px; }
-  .chat-introduction { padding-left: 3px; margin-bottom: 23px; }
-  .chat-shortcuts { margin-bottom: 34px; }
-  .chat-shortcuts > button { font-size: 15px; letter-spacing: -.5px; padding-left: 20px; gap: 15px; }
+  .chat-introduction { padding-left: 3px; min-height: 102.4px; margin-bottom: 23px; }
+  .chat-shortcuts { margin-bottom: 36px; }
+  .chat-shortcuts > button { font-size: 15px; letter-spacing: -.5px; min-height: 51px; padding: 12.5px 17px 12.5px 20px; gap: 15px; }
   .suggested-task { margin-right: -7px; }
-  .suggested-task h3 { font-size: 13px; }
-  .suggested-task > article { gap: 17px; padding-left: 17px; padding-right: 12px; }
+  .suggested-task h3 { font-size: 14px; }
+  .suggested-task > article { gap: 17px; padding: 17px 12px 11px 17px; }
+  .suggested-task p { min-height: 61.2px; }
   .suggested-task button { min-height: 48px; font-size: 14.5px; padding: 12px 16px 12px 30px; }
   .office-chat-composer { padding: 5px 18px 6px 26px; }
   .office-chat-composer label {
@@ -113,9 +140,11 @@ h1,h2{font-family:inherit;font-weight:700}button:focus-visible,a:focus-visible,s
   .office-chat-header h2 { white-space: normal; overflow-wrap: anywhere; }
   .office-chat-composer textarea { min-height: 44px; }
   .office-chat-composer .icon-button { min-width: 44px; min-height: 44px; }
+  .suggested-task button { min-height: 44px; }
   .office-scene-caption { font-size: 10px; }
   .office-chat-composer small { font-size: 11px; }
   .office-department-button { min-height: 44px; }
+  .sidebar-views > button > span:not(.sidebar-pending-count) { max-width: 100%; overflow-wrap: anywhere; white-space: normal; text-align: center; }
 }
 
 .office-scene-caption { font-size: 10px; }

@@ -242,6 +242,34 @@ test('department controls select real contextual functions without creating work
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
+test('all office views remain reachable by keyboard and history keeps focus across sidebar layouts', async ({ page }) => {
+  await boot(page);
+  const home = page.getByRole('tab', { name: 'Mi oficina', exact: true });
+  await home.focus();
+  for (const name of ['Dashboard', /^Aprobaciones/, 'Historial', 'Mi oficina']) {
+    await page.keyboard.press('ArrowRight');
+    const tab = page.getByRole('tab', { name, exact: typeof name === 'string' });
+    await expect(tab).toBeFocused();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
+  }
+  await page.keyboard.press('End');
+  const history = page.getByRole('tab', { name: 'Historial', exact: true });
+  await expect(history).toBeFocused();
+  await expect(page.getByRole('tabpanel', { name: 'Historial', exact: true })).toBeVisible();
+  const initialViewport = page.viewportSize()!;
+  await page.setViewportSize({ width: initialViewport.width <= 760 ? 1586 : 320, height: 720 });
+  if (initialViewport.width <= 760) await expect(history).toHaveClass(/sidebar-history-tab/);
+  else await expect(history).not.toHaveClass(/sidebar-history-tab/);
+  await expect(history).toBeFocused();
+  await page.setViewportSize(initialViewport);
+  if (initialViewport.width <= 760) await expect(history).not.toHaveClass(/sidebar-history-tab/);
+  else await expect(history).toHaveClass(/sidebar-history-tab/);
+  await expect(history).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(home).toBeFocused();
+  await expect(home).toHaveAttribute('aria-selected', 'true');
+});
+
 test('Nueva tarea supports keyboard, close, Back and preserved unsubmitted content', async ({ page }) => {
   await boot(page);
   const before = (await snapshot(page.request)).cases;
