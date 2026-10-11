@@ -33,3 +33,8 @@
 **/node_modules
 **/test-results
 **/playwright-report
+# Approved source artwork only; screenshots and other images stay excluded.
+!src/office/assets/approved-office-scene.png
+!src/office/assets/portrait-coordination.png
+!src/office/assets/portrait-sales.png
+!src/office/assets/portrait-quality.png

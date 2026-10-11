@@ -64,10 +64,10 @@ jobs:
       - name: Check baseline Chromium desktop and mobile (8 cases)
         run: npm run test:e2e
 
-      - name: Check office Chromium desktop and mobile (26 cases)
+      - name: Check office Chromium desktop and mobile
         run: npm run test:office:e2e
 
-      - name: Check compiled staging authentication with isolated fixtures (8 cases)
+      - name: Check compiled staging authentication with isolated fixtures
         run: npm run test:staging:e2e
 
       - name: Build the local staging runtime image without publishing
