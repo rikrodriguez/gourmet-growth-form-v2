@@ -2,7 +2,7 @@
 
 ## Estado del piloto
 
-El piloto dispone de código para OAuth, almacenamiento cifrado, gestión del propietario y lectura acotada. Permanece desactivado con `MONDAY_OAUTH_ENABLED=false`. La preparación del código no acredita una aplicación configurada en Monday, consentimiento efectivo, identidad comprobada con un token real ni acceso OAuth a los tableros. La publicación en staging debe conservar el flag apagado hasta que Ricardo complete la configuración manual y consienta la conexión.
+El piloto dispone de código para OAuth, almacenamiento cifrado, gestión del propietario y lectura acotada. El flag `MONDAY_OAUTH_ENABLED` está desactivado por defecto; habilitarlo exige una configuración válida. La preparación del código no acredita consentimiento efectivo, identidad comprobada con un token real ni acceso OAuth a los tableros. El 11 de octubre de 2026 Ricardo completó la configuración manual y autorizó habilitar staging, pero el runtime siguió indisponible después del despliegue. El diagnóstico de arranque descrito abajo permite identificar el primer campo rechazado sin revelar su contenido.
 
 **Validación con fixtures:** las 16 pruebas HTTP pasan sobre las fuentes finales, incluido el callback HTTPS, el retorno sin Basic sólo para ese GET, host/TLS/peer, state, nonce y PKCE `S256`. Usan respuestas simuladas de OAuth y del lector; no acreditan consentimiento ni un recorrido OAuth remoto real en staging.
 
@@ -52,7 +52,7 @@ La credencial manual del propietario concede una capacidad de gestión: no verif
 
 ## Mapeo comercial conservador
 
-Los IDs y tipos de columna de este bloque proceden de lecturas directas de `get_board_info`. Es la configuración conservadora autorizada; documentarla no habilita un conector real ni acredita una lectura OAuth del runtime. Se mantienen el flag apagado y las mismas fronteras de identidad y alcance.
+Los IDs y tipos de columna de este bloque proceden de lecturas directas de `get_board_info`. Es la configuración conservadora autorizada; documentarla no habilita un conector real ni acredita una lectura OAuth del runtime. Se mantienen las mismas fronteras de identidad y alcance.
 
 ```json
 {
@@ -97,6 +97,24 @@ Una sesión ordinary viewer u operator DEMO, el selector de funciones y Basic po
 
 Sólo el `GET` del callback exacto puede prescindir de Basic cuando la integración está habilitada y configurada. Mantiene los controles globales de host, TLS y origen, y exige state más nonce OAuth. Su cookie de nonce tiene `SameSite=Lax` para el retorno del proveedor, expiración de 5 minutos y ruta limitada al callback. El retorno termina con un redirect fijo al portal; no refleja códigos de autorización ni errores del proveedor. Con el flag apagado permanece protegida la frontera Basic. **Este comportamiento pasa las pruebas HTTP con fixtures; el retorno remoto real sigue pendiente del consentimiento.**
 
+## Diagnóstico privado de arranque
+
+[monday-diagnostics.ts](../src/office/backend/monday-diagnostics.ts) permite que el arranque registre una sola línea JSON cuando Monday está desactivado o su configuración resulta inválida. La salida contiene exclusivamente códigos fijos y nombres de campos de una lista cerrada: `code`, `field` y, cuando procede, `reason`. El primer fallo de validación determina el campo; corregirlo puede dejar al descubierto otro fallo en el siguiente arranque. No se registran valores, longitudes, hashes, fragmentos, mensajes de excepción ni stacks.
+
+| Situación | Diagnóstico |
+| --- | --- |
+| Flag ausente o vacío | `{"code":"disabled","field":"MONDAY_OAUTH_ENABLED","reason":"missing"}` |
+| Flag desactivado | `{"code":"disabled","field":"MONDAY_OAUTH_ENABLED"}` |
+| Campo requerido ausente | `configuration_invalid`, nombre del campo y `missing`. |
+| Formato rechazado | `configuration_invalid`, nombre del campo y `invalid_format`. |
+| Credencial del propietario compartida con Basic | `configuration_invalid`, nombre del campo y `not_separate`. |
+| Origen o identidad configurada fuera de la política | `configuration_invalid`, nombre del campo y `policy_mismatch`. |
+| Excepción sin diagnóstico interno reconocido | `{"code":"configuration_invalid"}`. |
+
+La metadata se asocia privadamente al error existente y se acepta para formato sólo cuando fue creada por el módulo. Un error ajeno, un objeto inventado o un getter hostil produce el código genérico sin inspeccionar su contenido. El flag apagado se diagnostica sin leer credenciales. Una configuración válida no genera una línea adicional ni realiza llamadas al proveedor o a la base de datos durante su construcción.
+
+La línea se emite en el proceso de staging; no existe una ruta nueva para consultarla. Las respuestas HTTP conservan sus códigos y campos anteriores, incluidos Basic, la sesión separada del propietario y los controles de OAuth. Revisar únicamente esa línea en la administración privada permite corregir el campo señalado sin solicitar credenciales en chat. Publicar este cambio requiere un despliegue posterior autorizado; los fixtures no determinan qué campo falla en el proceso ya desplegado.
+
 ## Caducidad, errores y lectura limitada
 
 El flujo usa los endpoints del nuevo OAuth para canje, refresh y revoke. El `exp` del JWT de acceso devuelto por el endpoint se utiliza exclusivamente para limitar la caducidad; no se usa un claim de cuenta como prueba de identidad o instalación, ni se afirma verificación de firma JWT. No se presupone una duración fija de acceso o refresh. La identidad y el acceso proceden de consultas autenticadas al proveedor. [Nuevo flujo OAuth](https://developer.monday.com/apps/docs/migrating-to-the-new-oauth-flow).
@@ -113,4 +131,4 @@ El portal muestra únicamente la proyección filtrada, sin tokens, cursors, cuer
 
 La documentación oficial de OAuth, nuevo flujo, `me` y `account` fue consultada el 11 de octubre de 2026; esa revisión acreditó el contrato público, no una instalación o grant reales. El código fija la URL de callback y las fronteras descritas arriba. Las 16 pruebas HTTP sobre las fuentes finales pasan con fixtures y proveedor simulado, sin llamadas a Monday. El resultado de publicación, CI y despliegue se entrega con evidencia de la revisión exacta; este documento no acredita una conexión real ni un callback remoto probado.
 
-Para completar la puesta en marcha quedan la configuración manual de la aplicación y secretos, introducir el JSON conservador y el consentimiento de Ricardo con Info. Los IDs y tipos del JSON ya están comprobados; el runtime permanece desactivado y sin conector real establecido. La lectura comercial sin configurar sigue bloqueada. La cuenta sin acreditar por OAuth se informa con honestidad y no añade permisos ni una condición adicional al piloto de identidad más acceso a cinco tableros.
+La configuración manual y el JSON conservador ya se guardaron en staging. Quedan identificar el motivo de indisponibilidad del runtime y, una vez resuelto, el consentimiento de Ricardo con Info. Los fixtures del diagnóstico acreditan sanitización y validación, sin leer esa configuración privada ni probar una conexión OAuth remota. La lectura comercial sin configurar sigue bloqueada. La cuenta sin acreditar por OAuth se informa con honestidad y no añade permisos ni una condición adicional al piloto de identidad más acceso a cinco tableros.

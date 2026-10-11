@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { MondayStore, MondayStoredRecord, MondayVault } from './monday-store';
 import { MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS, MONDAY_READ_SCOPES, type MondayBoardId, type MondayReadClient, type MondayReadItem, type MondayReadResult, type MondayUpdateItem } from './monday-read';
+import { withMondayConfigurationDiagnostic, type MondayConfigurationField, type MondayConfigurationReason } from './monday-diagnostics';
 
 export const MONDAY_OWNER_ID = 'ricardo' as const;
 // This release authorizes one pilot identity. The account ID is corroborated
@@ -93,19 +94,39 @@ function equal(left: string, right: string): boolean {
 }
 
 export function parseMondayConfiguration(env: Readonly<Record<string, string | undefined>>, origin: string): MondayConfiguration {
+  const invalid = (field: MondayConfigurationField, reason: MondayConfigurationReason, status = 503) =>
+    withMondayConfigurationDiagnostic(new MondayOAuthError('configuration_invalid', status), field, reason);
+  const configured = <T>(field: MondayConfigurationField, validate: (value: unknown) => T): T => {
+    let descriptor: PropertyDescriptor | undefined;
+    try { descriptor = Object.getOwnPropertyDescriptor(env, field); }
+    catch { throw invalid(field, 'invalid_format'); }
+    if (descriptor && !('value' in descriptor)) throw invalid(field, 'invalid_format');
+    const value: unknown = descriptor?.value;
+    try { return validate(value); }
+    catch (error) {
+      // The validators below emit fixed MondayOAuthError instances. Preserve
+      // their existing codes/statuses and attach metadata without new fields.
+      throw withMondayConfigurationDiagnostic(error as MondayOAuthError, field, value === undefined || value === '' ? 'missing' : 'invalid_format');
+    }
+  };
   // Deliberately return before touching any credential-bearing property.
-  const enabled = env.MONDAY_OAUTH_ENABLED;
+  let enabled: string | undefined;
+  try { enabled = env.MONDAY_OAUTH_ENABLED; }
+  catch { throw invalid('MONDAY_OAUTH_ENABLED', 'invalid_format'); }
   if (enabled === undefined || enabled === '' || enabled === 'false') return { enabled: false };
-  if (enabled !== 'true' || origin !== MONDAY_OAUTH_ORIGIN) fail('configuration_invalid', 503);
-  const clientId = printable(env.MONDAY_CLIENT_ID, 200, 'configuration_invalid');
-  const clientSecret = printable(env.MONDAY_CLIENT_SECRET, 4096, 'configuration_invalid');
-  const encoded = printable(env.MONDAY_TOKEN_ENCRYPTION_KEY, 44, 'configuration_invalid');
+  if (enabled !== 'true') throw invalid('MONDAY_OAUTH_ENABLED', 'invalid_format');
+  if (origin !== MONDAY_OAUTH_ORIGIN) throw invalid('OFFICE_STAGING_ORIGIN', 'policy_mismatch');
+  const clientId = configured('MONDAY_CLIENT_ID', value => printable(value, 200, 'configuration_invalid'));
+  const clientSecret = configured('MONDAY_CLIENT_SECRET', value => printable(value, 4096, 'configuration_invalid'));
+  const encoded = configured('MONDAY_TOKEN_ENCRYPTION_KEY', value => printable(value, 44, 'configuration_invalid'));
   const tokenEncryptionKey = Buffer.from(encoded, 'base64');
-  if (tokenEncryptionKey.length !== 32 || tokenEncryptionKey.toString('base64') !== encoded) fail('configuration_invalid', 503);
-  const expectedAccountEmail = email(env.MONDAY_EXPECTED_ACCOUNT_EMAIL, 'configuration_invalid');
-  const expectedUserId = identifier(env.MONDAY_EXPECTED_USER_ID, 'configuration_invalid');
-  const expectedAccountId = identifier(env.MONDAY_EXPECTED_ACCOUNT_ID, 'configuration_invalid');
-  if (expectedAccountEmail !== MONDAY_AUTHORIZED_USER_EMAIL || expectedUserId !== MONDAY_AUTHORIZED_USER_ID || expectedAccountId !== MONDAY_CONFIGURED_ACCOUNT_ID) fail('configuration_invalid', 503);
+  if (tokenEncryptionKey.length !== 32 || tokenEncryptionKey.toString('base64') !== encoded) throw invalid('MONDAY_TOKEN_ENCRYPTION_KEY', 'invalid_format');
+  const expectedAccountEmail = configured('MONDAY_EXPECTED_ACCOUNT_EMAIL', value => email(value, 'configuration_invalid'));
+  const expectedUserId = configured('MONDAY_EXPECTED_USER_ID', value => identifier(value, 'configuration_invalid'));
+  const expectedAccountId = configured('MONDAY_EXPECTED_ACCOUNT_ID', value => identifier(value, 'configuration_invalid'));
+  if (expectedAccountEmail !== MONDAY_AUTHORIZED_USER_EMAIL) throw invalid('MONDAY_EXPECTED_ACCOUNT_EMAIL', 'policy_mismatch');
+  if (expectedUserId !== MONDAY_AUTHORIZED_USER_ID) throw invalid('MONDAY_EXPECTED_USER_ID', 'policy_mismatch');
+  if (expectedAccountId !== MONDAY_CONFIGURED_ACCOUNT_ID) throw invalid('MONDAY_EXPECTED_ACCOUNT_ID', 'policy_mismatch');
   return {
     enabled: true, clientId, clientSecret, tokenEncryptionKey, expectedAccountEmail, expectedUserId, expectedAccountId, redirectUri: MONDAY_OAUTH_CALLBACK,
   };

@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { currentTime, OfficeError } from './state';
+import { withMondayConfigurationDiagnostic, type MondayConfigurationField, type MondayConfigurationReason } from './monday-diagnostics';
 
 // Internal identifier for the manually configured owner capability. Possession
 // of its separate credential does not verify Ricardo's real identity or the
@@ -36,18 +37,25 @@ const nonce = () => randomBytes(32).toString('hex');
 // Only the four named fields of the passed backend configuration are inspected.
 // No process.env fallback, credential generation or credential value is exposed.
 export function parseMondayOwnerConfiguration(env: Record<string, string | undefined>): MondayOwnerConfiguration {
-  const invalid = () => new OfficeError('INVALID_MONDAY_OWNER_CONFIGURATION', 503);
-  const field = (name: string): string | undefined => {
-    const descriptor = Object.getOwnPropertyDescriptor(env, name);
+  const invalid = (name: MondayConfigurationField, reason: MondayConfigurationReason) =>
+    withMondayConfigurationDiagnostic(new OfficeError('INVALID_MONDAY_OWNER_CONFIGURATION', 503), name, reason);
+  const field = (name: string, diagnosticField: MondayConfigurationField): string | undefined => {
+    let descriptor: PropertyDescriptor | undefined;
+    try { descriptor = Object.getOwnPropertyDescriptor(env, name); }
+    catch { throw invalid(diagnosticField, 'invalid_format'); }
     if (!descriptor) return undefined;
-    if (!('value' in descriptor) || descriptor.value !== undefined && typeof descriptor.value !== 'string') throw invalid();
+    if (!('value' in descriptor) || descriptor.value !== undefined && typeof descriptor.value !== 'string') throw invalid(diagnosticField, 'invalid_format');
     return descriptor.value;
   };
-  const username = field('MONDAY_OWNER_USERNAME');
-  const password = field('MONDAY_OWNER_PASSWORD');
+  const username = field('MONDAY_OWNER_USERNAME', 'MONDAY_OWNER_USERNAME');
+  const password = field('MONDAY_OWNER_PASSWORD', 'MONDAY_OWNER_PASSWORD');
   if (username === undefined && password === undefined) return Object.freeze({ available: false });
-  if (!username || !USERNAME.test(username) || !password || !PASSWORD.test(password)) throw invalid();
-  if (username === field('OFFICE_STAGING_USERNAME') || password === field('OFFICE_STAGING_PASSWORD')) throw invalid();
+  if (!username) throw invalid('MONDAY_OWNER_USERNAME', 'missing');
+  if (!USERNAME.test(username)) throw invalid('MONDAY_OWNER_USERNAME', 'invalid_format');
+  if (!password) throw invalid('MONDAY_OWNER_PASSWORD', 'missing');
+  if (!PASSWORD.test(password)) throw invalid('MONDAY_OWNER_PASSWORD', 'invalid_format');
+  if (username === field('OFFICE_STAGING_USERNAME', 'MONDAY_OWNER_USERNAME')) throw invalid('MONDAY_OWNER_USERNAME', 'not_separate');
+  if (password === field('OFFICE_STAGING_PASSWORD', 'MONDAY_OWNER_PASSWORD')) throw invalid('MONDAY_OWNER_PASSWORD', 'not_separate');
   const expected = hash(`${username}:${password}`);
   return Object.freeze({ available: true, authenticated: (inputUsername: unknown, inputPassword: unknown) => {
     const valid = typeof inputUsername === 'string' && USERNAME.test(inputUsername)

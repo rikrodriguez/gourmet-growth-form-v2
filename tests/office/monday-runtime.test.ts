@@ -104,7 +104,7 @@ describe('optional Monday runtime with synthetic manual configuration', () => {
     ]) unavailable(createMondayRuntime(fixture({ MONDAY_BOARD_COLUMNS_JSON: value }), MONDAY_OAUTH_ORIGIN, forbiddenPool), true);
   });
 
-  it('keeps authenticated DEMO health available when optional Monday configuration fails', async t => {
+  it('keeps configuration diagnostics private and DEMO available when optional Monday configuration fails', async t => {
     let fetches = 0; t.mock.method(globalThis, 'fetch', async () => { fetches++; throw new Error('synthetic unexpected request'); });
     const env = {
       ...fixture({ MONDAY_CLIENT_SECRET: undefined }), OFFICE_RUNTIME_MODE: 'staging', OFFICE_STAGING_ORIGIN: MONDAY_OAUTH_ORIGIN,
@@ -119,10 +119,25 @@ describe('optional Monday runtime with synthetic manual configuration', () => {
     const staging = parseOfficeStagingEnvironment(env);
     const app = createStagingOfficeApp(staging, store, { staticRoot: directory, monday: runtime });
     t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
-    const response = await app.inject({ url: '/office-api/health', remoteAddress: '127.0.0.1', headers: {
+    const headers = {
       host: staging.access.host, 'x-forwarded-proto': 'https', origin: staging.access.origin,
       authorization: `Basic ${Buffer.from(`${env.OFFICE_STAGING_USERNAME}:${env.OFFICE_STAGING_PASSWORD}`).toString('base64')}`,
-    } });
+    };
+    const response = await app.inject({ url: '/office-api/health', remoteAddress: '127.0.0.1', headers });
     assert.equal(response.statusCode, 200); assert.equal(response.json().mode, 'demo'); assert.equal(response.json().outboundEffects, 0); assert.equal(fetches, 0);
+    const session = await app.inject({ url: '/office-api/monday/owner/session', remoteAddress: '127.0.0.1', headers });
+    assert.equal(session.statusCode, 200); assert.deepEqual(session.json(), { available: false, authenticated: false });
+    const login = await app.inject({ url: '/office-api/monday/owner/login', remoteAddress: '127.0.0.1', headers });
+    assert.equal(login.statusCode, 503); assert.deepEqual(login.json(), { error: 'MONDAY_OWNER_UNAVAILABLE' });
+    const callback = await app.inject({ url: '/office-api/monday/oauth/callback', remoteAddress: '127.0.0.1', headers: {
+      host: staging.access.host, 'x-forwarded-proto': 'https',
+    } });
+    assert.equal(callback.statusCode, 401); assert.deepEqual(callback.json(), { error: 'STAGING_AUTHENTICATION_REQUIRED' });
+    for (const result of [response, session, login, callback]) {
+      assert(!result.body.includes('MONDAY_CLIENT_SECRET'));
+      assert(!result.body.includes('configuration_invalid'));
+      assert(!result.body.includes('SYNTHETIC_ONLY'));
+    }
+    assert.equal(fetches, 0);
   });
 });

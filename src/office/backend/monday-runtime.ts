@@ -6,6 +6,7 @@ import { MondayOwnerSessions, parseMondayOwnerConfiguration } from './monday-own
 import { createMondayReadClient, MONDAY_READ_BOARD_IDS } from './monday-read';
 import type { MondayColumnAllowlist } from './monday-read';
 import { MondayVault, PostgresMondayStore } from './monday-store';
+import { createMondayDisabledDiagnostic, getMondayConfigurationDiagnostic, withMondayConfigurationDiagnostic, type MondayConfigurationDiagnostic, type MondayConfigurationField, type MondayConfigurationReason } from './monday-diagnostics';
 
 export type MondayRuntime = Readonly<{
   enabled: boolean;
@@ -13,6 +14,7 @@ export type MondayRuntime = Readonly<{
   ownerSessions: MondayOwnerSessions;
   oauthService?: MondayOAuthService;
   configurationFailure?: 'configuration_invalid';
+  startupDiagnostic?: MondayConfigurationDiagnostic;
 }>;
 
 const MAX_COLUMNS_JSON_BYTES = 32 * 1024;
@@ -37,26 +39,37 @@ function columns(raw: unknown): { columnAllowlist?: MondayColumnAllowlist; mappi
 // No credentials are read and no store, vault or provider client is constructed
 // while the flag is off. Invalid optional configuration never blocks DEMO boot.
 export function createMondayRuntime(env: Readonly<Record<string, string | undefined>>, stagingOrigin: string, pool: Pool): MondayRuntime {
-  const unavailable = (invalid = false): MondayRuntime => Object.freeze({
+  const invalid = (field: MondayConfigurationField, reason: MondayConfigurationReason) =>
+    withMondayConfigurationDiagnostic(new Error(), field, reason);
+  const unavailable = (diagnostic: MondayConfigurationDiagnostic): MondayRuntime => Object.freeze({
     enabled: false, configured: false, ownerSessions: new MondayOwnerSessions(),
-    ...(invalid ? { configurationFailure: 'configuration_invalid' as const } : {}),
+    ...(diagnostic.code === 'configuration_invalid' ? { configurationFailure: 'configuration_invalid' as const } : {}),
+    startupDiagnostic: diagnostic,
   });
   try {
-    const flag = env.MONDAY_OAUTH_ENABLED;
-    if (flag === undefined || flag === '' || flag === 'false') return unavailable();
-    if (flag !== 'true' || stagingOrigin !== MONDAY_OAUTH_ORIGIN) return unavailable(true);
+    let flag: string | undefined;
+    try { flag = env.MONDAY_OAUTH_ENABLED; }
+    catch { throw invalid('MONDAY_OAUTH_ENABLED', 'invalid_format'); }
+    if (flag === undefined || flag === '' || flag === 'false') return unavailable(createMondayDisabledDiagnostic(flag !== 'false'));
+    if (flag !== 'true') throw invalid('MONDAY_OAUTH_ENABLED', 'invalid_format');
+    if (stagingOrigin !== MONDAY_OAUTH_ORIGIN) throw invalid('OFFICE_STAGING_ORIGIN', 'policy_mismatch');
     const ownerConfiguration = parseMondayOwnerConfiguration(env);
-    if (!ownerConfiguration.available) return unavailable(true);
+    if (!ownerConfiguration.available) throw invalid('MONDAY_OWNER_USERNAME', 'missing');
     const configuration = parseMondayConfiguration(env, stagingOrigin);
-    if (!configuration.enabled) return unavailable(true);
-    const readClient = createMondayReadClient({ enabled: true, ...columns(env.MONDAY_BOARD_COLUMNS_JSON) });
+    if (!configuration.enabled) throw invalid('MONDAY_OAUTH_ENABLED', 'invalid_format');
+    let readClient: ReturnType<typeof createMondayReadClient>;
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(env, 'MONDAY_BOARD_COLUMNS_JSON');
+      if (descriptor && !('value' in descriptor)) throw new Error();
+      readClient = createMondayReadClient({ enabled: true, ...columns(descriptor?.value) });
+    } catch { throw invalid('MONDAY_BOARD_COLUMNS_JSON', 'invalid_format'); }
     const oauthService = createMondayOAuthService({
       configuration, store: new PostgresMondayStore(pool),
       vault: new MondayVault(configuration.tokenEncryptionKey), readClient,
     });
     return Object.freeze({ enabled: true, configured: true, ownerSessions: new MondayOwnerSessions(ownerConfiguration), oauthService });
-  } catch {
+  } catch (error) {
     // No raw error, field value, client configuration or credential is exposed.
-    return unavailable(true);
+    return unavailable(getMondayConfigurationDiagnostic(error) ?? Object.freeze({ code: 'configuration_invalid' }));
   }
 }
