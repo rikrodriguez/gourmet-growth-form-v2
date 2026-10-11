@@ -282,6 +282,41 @@ test('Nueva tarea supports keyboard, close, Back and preserved unsubmitted conte
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
+test('closing and reopening contextual chat restores focus and unsubmitted text', async ({ page }) => {
+  await boot(page);
+  const before = (await snapshot(page.request)).cases;
+  const text = syntheticText('unsubmitted-chat');
+  await page.getByLabel('Mensaje contextual').fill(text);
+  const close = page.getByRole('button', { name: 'Cerrar conversación', exact: true });
+  await close.focus();
+  await page.keyboard.press('Enter');
+  const reopen = page.getByRole('button', { name: 'Abrir conversación', exact: true });
+  await expect(reopen).toBeFocused();
+  await expect(page.getByLabel('Mensaje contextual')).toHaveCount(0);
+  await page.keyboard.press('Enter');
+  await expect(close).toBeFocused();
+  await expect(page.getByLabel('Mensaje contextual')).toHaveValue(text);
+  expect((await snapshot(page.request)).cases).toEqual(before);
+});
+
+test('a drawer opened by Ricardo restores visible Nueva tarea after resizing to mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await boot(page);
+  const before = (await snapshot(page.request)).cases;
+  const human = page.getByRole('button', { name: /^Ricardo Humano/ });
+  await human.focus();
+  await page.keyboard.press('Enter');
+  await expect(workspace(page)).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.keyboard.press('Escape');
+  await expect(workspace(page)).not.toBeVisible();
+  await page.waitForFunction(() => window.history.state?.officeDrawer !== true);
+  const fallback = page.getByRole('button', { name: 'Nueva tarea', exact: true });
+  await expect(fallback).toBeVisible();
+  await expect(fallback).toBeFocused();
+  expect((await snapshot(page.request)).cases).toEqual(before);
+});
+
 test('all nine functions save a contextual chat and a human-review draft', async ({ page }) => {
   await boot(page);
   for (const item of functions) {

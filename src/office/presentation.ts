@@ -12,12 +12,12 @@ export type OfficeDepartment = {
 };
 
 export const DEPARTMENTS: readonly OfficeDepartment[] = [
-  { id: 'sales', name: 'Ventas', color: '#ff4c79', functionIds: ['sales', 'proposals'], primaryFunctionId: 'sales' },
-  { id: 'marketing', name: 'Marketing', color: '#54b7ff', functionIds: ['marketing'], primaryFunctionId: 'marketing' },
-  { id: 'operations', name: 'Operaciones', color: '#ffb400', functionIds: ['coordination', 'logistics'], primaryFunctionId: 'coordination' },
-  { id: 'suppliers', name: 'Proveedores', color: '#3ebd81', functionIds: ['suppliers'], primaryFunctionId: 'suppliers' },
-  { id: 'finance', name: 'Finanzas', color: '#9661ff', functionIds: ['finance'], primaryFunctionId: 'finance' },
-  { id: 'quality', name: 'Calidad', color: '#20b4c0', functionIds: ['quality'], primaryFunctionId: 'quality' },
+  { id: 'sales', name: 'Ventas', color: '#fd5976', functionIds: ['sales', 'proposals'], primaryFunctionId: 'sales' },
+  { id: 'marketing', name: 'Marketing', color: '#64b7fc', functionIds: ['marketing'], primaryFunctionId: 'marketing' },
+  { id: 'operations', name: 'Operaciones', color: '#fdb409', functionIds: ['coordination', 'logistics'], primaryFunctionId: 'coordination' },
+  { id: 'suppliers', name: 'Proveedores', color: '#4fba7c', functionIds: ['suppliers'], primaryFunctionId: 'suppliers' },
+  { id: 'finance', name: 'Finanzas', color: '#9260f8', functionIds: ['finance'], primaryFunctionId: 'finance' },
+  { id: 'quality', name: 'Calidad', color: '#48a9b9', functionIds: ['quality'], primaryFunctionId: 'quality' },
   { id: 'talent', name: 'Talento', color: '#c17fc7', functionIds: ['talent'], primaryFunctionId: 'talent' },
 ];
 

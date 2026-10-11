@@ -4,11 +4,22 @@ import { OfficeIcon } from './OfficeIcon';
 
 export function OfficeDrawer({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const element = dialog.current;
     if (!element) return;
-    if (open && !element.open) element.showModal();
-    if (!open && element.open) element.close();
+    if (open && !element.open) {
+      opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      element.showModal();
+    }
+    if (!open && element.open) {
+      element.close();
+      const trigger = opener.current;
+      opener.current = null;
+      const visible = trigger && trigger !== document.body && trigger.isConnected && !trigger.matches(':disabled') && !trigger.closest('[inert]') && trigger.getClientRects().length > 0 && getComputedStyle(trigger).visibility === 'visible';
+      const target = visible ? trigger : document.querySelector<HTMLButtonElement>('.new-task-button');
+      target?.focus({ preventScroll: true });
+    }
   }, [open]);
   function trapFocus(event: KeyboardEvent<HTMLDialogElement>) {
     if (event.key !== 'Tab') return;
