@@ -126,6 +126,37 @@ async function assertNoPageOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'No horizontal page overflow at the configured viewport').toBe(true);
 }
 
+function workspace(page: Page) {
+  return page.getByRole('dialog', { name: 'Espacio de trabajo', exact: true });
+}
+
+async function closeWorkspace(page: Page) {
+  if (!await workspace(page).isVisible()) return;
+  await workspace(page).getByRole('button', { name: 'Cerrar espacio de trabajo', exact: true }).click();
+  await expect(workspace(page)).not.toBeVisible();
+  await page.waitForFunction(() => window.history.state?.officeDrawer !== true);
+}
+
+async function selectCase(page: Page, id: string) {
+  await closeWorkspace(page);
+  const menu = page.locator('details.office-session-menu');
+  if (!await menu.evaluate(element => (element as HTMLDetailsElement).open)) {
+    await menu.locator('summary').first().click();
+  }
+  await page.getByLabel('Caso de demostración').selectOption(id);
+  await menu.locator('summary').first().click();
+}
+
+async function openFunction(page: Page, name: string) {
+  if (!await workspace(page).isVisible()) {
+    await page.getByRole('tab', { name: 'Mi oficina', exact: true }).click();
+    await page.getByRole('button', { name: 'Nueva tarea', exact: true }).click();
+  }
+  const button = workspace(page).getByRole('navigation', { name: 'Funciones de la oficina', exact: true }).getByRole('button', { name, exact: true });
+  await button.click();
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
+}
+
 function assertSynthetic(snapshot: OfficeSnapshot) {
   expect(snapshot).toMatchObject({ mode: 'demo', outboundEffects: 0, mondayWrites: 0 });
   expect(snapshot.cases).toHaveLength(3);
@@ -153,7 +184,7 @@ test.describe('private authentication boundary', () => {
     const session = await browserJson(page, '/office-api/session', 'POST', { role: 'operator' });
     expect(session).toEqual({ status: 401, body: { error: 'STAGING_AUTHENTICATION_REQUIRED' } });
     expect(canonical(gateway.store.state)).toBe(before);
-    await expect(page.getByRole('heading', { name: 'La oficina, con criterio humano.' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Mi oficina', exact: true })).toHaveCount(0);
   });
 
   test('invalid authentication cannot open UI or create an operator session', async ({ page, context, gateway }) => {
@@ -167,6 +198,49 @@ test.describe('private authentication boundary', () => {
   });
 });
 
+test('compiled office loads approved art and isolates the task drawer at desktop and 320px', async ({ page }, testInfo) => {
+  const desktop = !testInfo.project.name.includes('mobile');
+  if (desktop) await page.setViewportSize({ width: 1586, height: 992 });
+  const response = await page.goto('/office/');
+  expect(response?.status()).toBe(200);
+  await expect(page.getByRole('heading', { name: 'Mi oficina', exact: true })).toBeVisible();
+  await expect(workspace(page)).not.toBeVisible();
+  await expect(page.getByLabel('Contenido del borrador')).toHaveCount(0);
+  const art = page.locator('img.office-scene-art');
+  await expect(art).toBeVisible();
+  await expect.poll(() => art.evaluate(image => {
+    const element = image as HTMLImageElement;
+    return { loaded: element.complete, width: element.naturalWidth, height: element.naturalHeight };
+  })).toEqual({ loaded: true, width: 959, height: 799 });
+  const chat = page.getByRole('region', { name: 'Coordinación', exact: true });
+  await expect(chat).toBeVisible();
+  await expect(page.getByLabel('Mensaje contextual')).toBeVisible();
+  await expect(page.getByLabel('Mensaje contextual')).toBeDisabled();
+  await assertNoPageOverflow(page);
+  if (desktop) {
+    expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight), 'The approved desktop Office fits one page').toBe(true);
+    const artBounds = await art.boundingBox();
+    const chatBounds = await chat.boundingBox();
+    expect(artBounds).not.toBeNull();
+    expect(chatBounds).not.toBeNull();
+    expect(artBounds!.width).toBeGreaterThan(850);
+    expect(artBounds!.height).toBeGreaterThan(650);
+    expect(chatBounds!.x).toBeGreaterThanOrEqual(artBounds!.x + artBounds!.width);
+    expect(Math.abs(chatBounds!.y - artBounds!.y)).toBeLessThan(8);
+    expect(Math.abs(chatBounds!.height - artBounds!.height)).toBeLessThan(8);
+  }
+  await page.screenshot({ path: testInfo.outputPath(`compiled-office-${desktop ? '1586x992' : '320px'}.png`), fullPage: true });
+  const trigger = page.getByRole('button', { name: 'Nueva tarea', exact: true });
+  await trigger.click();
+  await expect(workspace(page)).toBeVisible();
+  await expect(workspace(page).getByRole('navigation', { name: 'Funciones de la oficina', exact: true }).getByRole('button')).toHaveCount(9);
+  await expect(workspace(page).getByRole('heading', { name: 'Un caso, antes de empezar', exact: true })).toBeVisible();
+  await assertNoPageOverflow(page);
+  await page.keyboard.press('Escape');
+  await expect(workspace(page)).not.toBeVisible();
+  await expect(trigger).toBeFocused();
+});
+
 test('default viewer reads dashboard and history while every write stays blocked', async ({ page, gateway }) => {
   const before = canonical(gateway.store.state);
   const response = await page.goto('/office/');
@@ -175,24 +249,27 @@ test('default viewer reads dashboard and history while every write stays blocked
   const escalation = await browserJson(page, '/office-api/session', 'POST', { role: 'operator' });
   expect(escalation).toEqual({ status: 403, body: { error: 'FORBIDDEN_STAGING_ROLE' } });
   const opened = page.waitForResponse(response => response.url().endsWith('/office-api/session') && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Abrir sesión de desarrollo', exact: true }).click();
+  await page.getByRole('button', { name: 'Abrir sesión DEMO', exact: true }).click();
   const session = await opened;
   expect(session.status()).toBe(200);
   expect(await session.json()).toMatchObject({ mode: 'demo', actorId: 'OFFICE_DEMO_OPERATOR', role: 'viewer', outboundEffects: 0 });
   await expect(page.getByText('Sólo lectura · DEMO', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Caso de demostración')).toBeEnabled();
-  await page.getByLabel('Caso de demostración').selectOption('demo-aurora');
+  await selectCase(page, 'demo-aurora');
+  await openFunction(page, 'Ventas');
   await expect(page.getByLabel('Hilo comercial simulado')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Preparar respuesta interna', exact: true })).toBeDisabled();
-  await page.getByRole('button', { name: 'Propuestas', exact: true }).click();
+  await openFunction(page, 'Propuestas');
   await expect(page.getByLabel('Contenido del borrador')).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Preparar borrador', exact: false })).toBeDisabled();
-  await expect(page.getByLabel('Mensaje contextual')).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Guardar pregunta', exact: false })).toBeDisabled();
-  const card = page.getByTestId('office-approval-approval-demo-aurora-proposals-fixture');
+  const card = workspace(page).getByTestId('office-approval-approval-demo-aurora-proposals-fixture');
   for (const name of ['Aprobar revisión 1', 'Rechazar revisión 1', 'Cancelar revisión 1', 'Editar revisión 1']) {
     await expect(card.getByRole('button', { name, exact: false })).toBeDisabled();
   }
+  await assertNoPageOverflow(page);
+  await closeWorkspace(page);
+  await expect(page.getByLabel('Mensaje contextual')).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Guardar pregunta', exact: true })).toBeDisabled();
   await page.getByRole('tab', { name: 'Dashboard', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Una lectura con cobertura.' })).toBeVisible();
   await expect(page.getByText('Métricas derivadas de 3 casos confirmados por la API.', { exact: false })).toBeVisible();
@@ -201,6 +278,13 @@ test('default viewer reads dashboard and history while every write stays blocked
   await expect(page.getByRole('heading', { name: 'Cada decisión deja contexto.' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Lead sintético registrado', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Cierre humano · fixture DEMO', exact: true })).toBeVisible();
+  await assertNoPageOverflow(page);
+  await page.getByRole('tab', { name: /^Aprobaciones(?: \d+)?$/ }).click();
+  const pendingReview = page.getByRole('tabpanel', { name: /^Aprobaciones(?: \d+)?$/ }).getByTestId('office-approval-approval-demo-aurora-proposals-fixture');
+  await expect(pendingReview).toBeVisible();
+  for (const name of ['Aprobar revisión 1', 'Rechazar revisión 1', 'Cancelar revisión 1', 'Editar revisión 1']) {
+    await expect(pendingReview.getByRole('button', { name, exact: true })).toBeDisabled();
+  }
   await assertNoPageOverflow(page);
   const denied = await browserJson(page, '/office-api/commands', 'POST', { idempotencyKey: 'test-only-viewer-write', caseId: 'demo-aurora', functionId: 'proposals', action: 'draft', text: 'TEST_ONLY borrador sintético' });
   expect(denied).toEqual({ status: 403, body: { error: 'FORBIDDEN_SCOPE' } });
@@ -218,18 +302,18 @@ test.describe('explicit operator capability', () => {
     expect(response?.status()).toBe(200);
     await expect(page.getByLabel('Permiso de sesión')).toBeVisible();
     await page.getByLabel('Permiso de sesión').selectOption('operator');
-    await page.getByRole('button', { name: 'Abrir sesión de desarrollo', exact: true }).click();
+    await page.getByRole('button', { name: 'Abrir sesión DEMO', exact: true }).click();
     await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible();
     await expect(page.getByLabel('Caso de demostración')).toBeEnabled();
     const session = await browserJson(page, '/office-api/session');
     expect(session.status).toBe(200);
     expect(session.body).toMatchObject({ mode: 'demo', actorId: 'OFFICE_DEMO_OPERATOR', role: 'operator', outboundEffects: 0 });
-    await page.getByLabel('Caso de demostración').selectOption('demo-aurora');
-    await page.getByRole('button', { name: 'Propuestas', exact: true }).click();
+    await selectCase(page, 'demo-aurora');
+    await openFunction(page, 'Propuestas');
     const text = 'TEST_ONLY — propuesta sintética para revisar en staging privado.';
     await page.getByLabel('Contenido del borrador').fill(text);
     await page.getByRole('button', { name: 'Preparar borrador', exact: false }).click();
-    const card = page.locator('article[data-testid^="office-approval-"]').filter({ hasText: text });
+    const card = workspace(page).locator('article[data-testid^="office-approval-"]').filter({ hasText: text });
     await expect(card).toHaveCount(1);
     await expect(card).toContainText('cliente-demo@invalid.test');
     await expect(card.locator('.digest code')).toHaveText(/^[a-f0-9]{64}$/);
