@@ -94,6 +94,24 @@ async function expectNoPersistedPassword(page: Page, syntheticPassword: string) 
   expect(persisted, 'The owner password never enters browser storage').toBe(false);
 }
 
+async function submitSyntheticOwner(page: Page, password: string) {
+  await expect(page.getByRole('button', { name: 'Entrar como propietario', exact: true })).toBeEnabled();
+  await page.getByLabel('Usuario del propietario', { exact: true }).fill('synthetic_owner_fixture');
+  await page.getByLabel('Contraseña del propietario', { exact: true }).fill(password);
+  const response = page.waitForResponse(item => new URL(item.url()).pathname === `${api}/owner/login` && item.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Entrar como propietario', exact: true }).click();
+  return response;
+}
+
+async function expectOnePrivateLogin(page: Page, monday: MondayHarness, password: string) {
+  expect(monday.calls.filter(call => call.method === 'POST')).toEqual([{ method: 'POST', path: `${api}/owner/login` }]);
+  await expect(page.getByLabel('Contraseña del propietario', { exact: true })).toHaveValue('');
+  await expect(page.locator('body')).not.toContainText(password);
+  await expect(page.locator('body')).not.toContainText(csrfToken);
+  await expectNoPersistedPassword(page, password);
+  await expectFits(page);
+}
+
 test('disabled Monday exposes no owner password or real-data requests', async ({ page, monday }) => {
   monday.respond('GET', `${api}/owner/session`, { body: { available: false, authenticated: false } });
   await page.goto('/office/monday');
@@ -132,6 +150,7 @@ test('an unauthenticated owner gate rejects another user and clears its transien
   await page.getByRole('button', { name: 'Entrar como propietario', exact: true }).click();
   expect((await response).status()).toBe(403);
   await expect(page.getByRole('alert')).toHaveText('No se pudo confirmar el acceso del propietario. Vuelve a intentarlo.');
+  await expect(page.getByTestId('monday-owner-login-diagnostic')).toHaveText('post=unconfirmed | stage=owner_login | http=403 | code=MONDAY_OWNER_UNAUTHORIZED');
   await expect(password).toHaveValue('');
   await expect(page.getByRole('button', { name: 'Entrar como propietario', exact: true })).toBeVisible();
   await expect(page.getByTestId('monday-connection-state')).toHaveCount(0);
@@ -152,10 +171,69 @@ test('an owner CSRF rejection stays forbidden without retrying login or refreshi
   await page.getByLabel('Contraseña del propietario', { exact: true }).fill('SYNTHETIC_OWNER_PASSWORD_FOR_CSRF_TEST');
   await page.getByRole('button', { name: 'Entrar como propietario', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveText('El acceso del propietario o la acción fueron rechazados.');
+  await expect(page.getByTestId('monday-owner-login-diagnostic')).toHaveText('post=unconfirmed | stage=owner_login | http=403 | code=MONDAY_OWNER_CSRF_REQUIRED');
   await expect(page.getByLabel('Contraseña del propietario', { exact: true })).toHaveValue('');
   await expect(page.getByTestId('monday-connection-state')).toHaveCount(0);
   expect(monday.calls.filter(call => call.method === 'POST')).toEqual([{ method: 'POST', path: `${api}/owner/login` }]);
   expect(monday.calls.filter(call => call.method === 'GET' && call.path === `${api}/owner/login`)).toHaveLength(1);
+});
+
+test('an accepted owner POST identifies an unconfirmed owner session instead of silently showing the form', async ({ page, monday }) => {
+  const password = 'SYNTHETIC_ACCEPTED_OWNER_PASSWORD_ONLY';
+  monday.respond('GET', `${api}/owner/session`, { body: { available: true, authenticated: false } });
+  monday.respond('GET', `${api}/owner/login`, { body: { csrfToken, expiresAt } });
+  monday.respond('POST', `${api}/owner/login`, route => {
+    expectOwnerCsrf(route);
+    return { body: { principal: 'ricardo', csrfToken, expiresAt } };
+  });
+  await page.goto('/office/monday');
+  expect((await submitSyntheticOwner(page, password)).status()).toBe(200);
+  await expect(page.getByTestId('monday-owner-login-diagnostic')).toHaveText('post=accepted | stage=owner_session | http=200 | code=OWNER_SESSION_NOT_CONFIRMED');
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Entrar como propietario', exact: true })).toBeEnabled();
+  await expect(page.getByTestId('monday-connection-state')).toHaveCount(0);
+  expect(monday.calls.every(call => call.path.startsWith(`${api}/owner/`))).toBe(true);
+  await expectOnePrivateLogin(page, monday, password);
+});
+
+test('an accepted owner POST identifies a later status rejection while restoring the owner form', async ({ page, monday }) => {
+  const password = 'SYNTHETIC_STATUS_REJECTION_PASSWORD_ONLY';
+  let accepted = false; let statusRejected = false;
+  monday.respond('GET', `${api}/owner/session`, () => ({ body: accepted && !statusRejected ? ownerSession : { available: true, authenticated: false } }));
+  monday.respond('GET', `${api}/owner/login`, { body: { csrfToken, expiresAt } });
+  monday.respond('POST', `${api}/owner/login`, route => {
+    expectOwnerCsrf(route); accepted = true;
+    return { body: { principal: 'ricardo', csrfToken, expiresAt } };
+  });
+  monday.respond('GET', `${api}/status`, () => {
+    statusRejected = true;
+    return { status: 403, body: { error: 'MONDAY_OWNER_UNAUTHORIZED' } };
+  });
+  await page.goto('/office/monday');
+  expect((await submitSyntheticOwner(page, password)).status()).toBe(200);
+  await expect(page.getByTestId('monday-owner-login-diagnostic')).toHaveText('post=accepted | stage=monday_status | http=403 | code=MONDAY_OWNER_UNAUTHORIZED');
+  await expect(page.getByRole('alert')).toHaveText('No se pudo confirmar el acceso del propietario. Vuelve a intentarlo.');
+  await expect(page.getByRole('button', { name: 'Entrar como propietario', exact: true })).toBeEnabled();
+  await expect(page.getByTestId('monday-connection-state')).toHaveCount(0);
+  expect(monday.calls.filter(call => call.method === 'GET' && call.path === `${api}/status`)).toHaveLength(1);
+  await expectOnePrivateLogin(page, monday, password);
+});
+
+for (const malformed of [false, true]) test(`owner diagnostics discard ${malformed ? 'extra private response fields' : 'unknown response codes'}`, async ({ page, monday }) => {
+  const password = 'SYNTHETIC_PRIVATE_DIAGNOSTIC_PASSWORD_ONLY';
+  const marker = 'SYNTHETIC_PRIVATE_RESPONSE_MUST_NOT_APPEAR';
+  monday.respond('GET', `${api}/owner/session`, { body: { available: true, authenticated: false } });
+  monday.respond('GET', `${api}/owner/login`, { body: { csrfToken, expiresAt } });
+  monday.respond('POST', `${api}/owner/login`, { status: 403, body: malformed
+    ? { error: 'MONDAY_OWNER_UNAUTHORIZED', value: marker, cookie: marker, password: marker }
+    : { error: marker } });
+  await page.goto('/office/monday');
+  expect((await submitSyntheticOwner(page, password)).status()).toBe(403);
+  await expect(page.getByTestId('monday-owner-login-diagnostic')).toHaveText('post=unconfirmed | stage=owner_login | http=403 | code=HTTP_FORBIDDEN');
+  await expect(page.getByRole('alert')).toHaveText('El acceso del propietario o la acción fueron rechazados.');
+  await expect(page.locator('body')).not.toContainText(marker);
+  await expect(page.getByTestId('monday-connection-state')).toHaveCount(0);
+  await expectOnePrivateLogin(page, monday, password);
 });
 
 test('the authorized Info integration shows only confirmed state and bounded readings', async ({ page, monday }, testInfo) => {

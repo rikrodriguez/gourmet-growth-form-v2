@@ -13,6 +13,12 @@ type MondayStatus = {
 };
 type Reading = { kind: 'board'; result: MondayReadResult<MondayReadItem> } | { kind: 'updates'; result: MondayReadResult<MondayUpdateItem> };
 type Row = Record<string, unknown>;
+type LoginStage = 'local_challenge' | 'challenge' | 'owner_login' | 'owner_session' | 'monday_status';
+type LoginAttempt = { postAccepted: boolean; stage: LoginStage; httpStatus: number | null };
+const ACCESS_ERROR_CODES = ['MONDAY_OWNER_UNAUTHORIZED', 'MONDAY_OWNER_LOGIN_CHALLENGE_REQUIRED', 'MONDAY_OWNER_CSRF_REQUIRED', 'MONDAY_OWNER_UNAVAILABLE', 'MONDAY_OWNER_LOGIN_RATE_LIMIT', 'MONDAY_OWNER_CHALLENGE_LIMIT', 'MONDAY_OWNER_SESSION_LIMIT', 'INVALID_MONDAY_OWNER_LOGIN', 'STAGING_AUTHENTICATION_REQUIRED', 'FORBIDDEN_ORIGIN', 'FORBIDDEN_STAGING_HOST', 'UNTRUSTED_STAGING_PROXY', 'HTTPS_PROXY_REQUIRED', 'JSON_REQUIRED'] as const;
+type AccessErrorCode = typeof ACCESS_ERROR_CODES[number];
+type LoginDiagnosticCode = AccessErrorCode | 'LOCAL_CHALLENGE_MISSING' | 'OWNER_SESSION_NOT_CONFIRMED' | 'HTTP_UNAUTHORIZED' | 'HTTP_FORBIDDEN' | 'HTTP_UNAVAILABLE' | 'HTTP_ERROR' | 'REQUEST_FAILED' | 'INVALID_RESPONSE' | 'UNCLASSIFIED_ACCESS_FAILURE';
+type LoginDiagnostic = LoginAttempt & { code: LoginDiagnosticCode };
 const API = '/office-api/monday';
 const SCOPES = ['boards:read', 'updates:read', 'me:read'];
 const BOARD_IDS = ['18403945258', '18411103560', '18398057136', '18396813878', '18377848804'];
@@ -29,8 +35,8 @@ const ERROR_TEXT = {
   forbidden: 'El acceso del propietario o la acción fueron rechazados.',
   unavailable: 'Monday no está disponible para esta acción. La configuración o el consentimiento siguen pendientes.',
 };
-class MondayPageError extends Error { constructor(readonly code: keyof typeof ERROR_TEXT) { super(ERROR_TEXT[code]); } }
-function bad(): never { throw new MondayPageError('incompatible'); }
+class MondayPageError extends Error { constructor(readonly code: keyof typeof ERROR_TEXT, readonly accessCode: LoginDiagnosticCode = 'UNCLASSIFIED_ACCESS_FAILURE') { super(ERROR_TEXT[code]); } }
+function bad(): never { throw new MondayPageError('incompatible', 'INVALID_RESPONSE'); }
 function row(value: unknown): Row { if (!value || typeof value !== 'object' || Array.isArray(value)) bad(); return value as Row; }
 function keys(value: Row, required: string[], optional: string[] = []) { if (required.some(key => !Object.hasOwn(value, key)) || Object.keys(value).some(key => ![...required, ...optional].includes(key))) bad(); }
 function text(value: unknown, maximum = 160): string { if (typeof value !== 'string' || value.length > maximum || /[\u0000-\u001f\u007f]/u.test(value)) bad(); return value; }
@@ -99,7 +105,12 @@ function readResult(value: unknown, kind: Reading['kind'], boardId: string): Rea
   if (new Set(items.map(item => item.id)).size !== items.length) bad();
   return kind === 'board' ? { kind, result: { ...common, items: items as MondayReadItem[] } } : { kind, result: { ...common, items: items as MondayUpdateItem[] } };
 }
-async function request(path: string, options: { csrfToken?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<unknown> {
+async function request(path: string, options: { csrfToken?: string; body?: unknown; signal?: AbortSignal; loginAttempt?: LoginAttempt } = {}): Promise<unknown> {
+  if (options.loginAttempt) {
+    // Track only fixed stages and HTTP metadata, never request/response data.
+    options.loginAttempt.stage = path === '/owner/login' ? options.body === undefined ? 'challenge' : 'owner_login' : path === '/owner/session' ? 'owner_session' : 'monday_status';
+    options.loginAttempt.httpStatus = null;
+  }
   let response: Response;
   try {
     response = await fetch(`${API}${path}`, {
@@ -107,13 +118,19 @@ async function request(path: string, options: { csrfToken?: string; body?: unkno
       headers: { Accept: 'application/json', ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(options.csrfToken ? { 'x-monday-owner-csrf': options.csrfToken } : {}) },
       ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
     });
-  } catch { throw new MondayPageError('offline'); }
-  if (response.status === 403 && response.headers.get('content-type')?.includes('application/json')) {
-    const failure: unknown = await response.json().catch(() => null);
-    if (failure && typeof failure === 'object' && !Array.isArray(failure) && Object.keys(failure).length === 1
-      && 'error' in failure && failure.error === 'MONDAY_OWNER_UNAUTHORIZED') throw new MondayPageError('unauthorized');
+  } catch { throw new MondayPageError('offline', 'REQUEST_FAILED'); }
+  if (options.loginAttempt) options.loginAttempt.httpStatus = response.status;
+  if (!response.ok) {
+    let accessCode: AccessErrorCode | undefined;
+    if (response.headers.get('content-type')?.includes('application/json')) {
+      const failure: unknown = await response.json().catch(() => null);
+      if (failure && typeof failure === 'object' && !Array.isArray(failure) && Object.keys(failure).length === 1
+        && 'error' in failure && typeof failure.error === 'string' && ACCESS_ERROR_CODES.includes(failure.error as AccessErrorCode)) accessCode = failure.error as AccessErrorCode;
+    }
+    if (response.status === 403 && accessCode === 'MONDAY_OWNER_UNAUTHORIZED') throw new MondayPageError('unauthorized', accessCode);
+    throw new MondayPageError(response.status === 401 ? 'unauthorized' : response.status === 403 ? 'forbidden' : response.status === 503 ? 'unavailable' : 'incompatible',
+      accessCode ?? (response.status === 401 ? 'HTTP_UNAUTHORIZED' : response.status === 403 ? 'HTTP_FORBIDDEN' : response.status === 503 ? 'HTTP_UNAVAILABLE' : 'HTTP_ERROR'));
   }
-  if (!response.ok) throw new MondayPageError(response.status === 401 ? 'unauthorized' : response.status === 403 ? 'forbidden' : response.status === 503 ? 'unavailable' : 'incompatible');
   if (response.status === 204) return null;
   try { if (!response.headers.get('content-type')?.includes('application/json')) bad(); return await response.json(); } catch { bad(); }
 }
@@ -133,14 +150,16 @@ export function MondayOwnerPage() {
   const [reading, setReading] = useState<Reading | null>(null);
   const [busy, setBusy] = useState<string | null>('initial');
   const [error, setError] = useState<string | null>(null);
+  const [loginDiagnostic, setLoginDiagnostic] = useState<LoginDiagnostic | null>(null);
   const csrfToken = useRef<string | null>(null);
   const operation = useRef(false);
   const loginForm = useRef<HTMLFormElement>(null);
-  async function loadOwner(signal?: AbortSignal) {
-    const current = ownerSession(await request('/owner/session', { signal }));
+  async function loadOwner(signal?: AbortSignal, loginAttempt?: LoginAttempt) {
+    const current = ownerSession(await request('/owner/session', { signal, loginAttempt }));
+    if (loginAttempt?.postAccepted && !current.authenticated) throw new MondayPageError('unauthorized', 'OWNER_SESSION_NOT_CONFIRMED');
     let token: string | null = null, confirmed: MondayStatus | null = null;
-    if (current.authenticated) { token = current.csrfToken; confirmed = status(await request('/status', { signal })); }
-    else if (current.available) token = login(await request('/owner/login', { signal })).csrfToken;
+    if (current.authenticated) { token = current.csrfToken; confirmed = status(await request('/status', { signal, loginAttempt })); }
+    else if (current.available) token = login(await request('/owner/login', { signal, loginAttempt })).csrfToken;
     if (signal?.aborted) return;
     csrfToken.current = token; setSession(current); setConnection(confirmed); setReading(null);
     setBoardId(confirmed?.allowedBoards[0] ?? '');
@@ -150,11 +169,15 @@ export function MondayOwnerPage() {
     void loadOwner(controller.signal).catch(error => { if (!controller.signal.aborted) setError(error instanceof MondayPageError ? error.message : ERROR_TEXT.offline); }).finally(() => { if (!controller.signal.aborted) setBusy(null); });
     return () => { controller.abort(); loginForm.current?.reset(); csrfToken.current = null; };
   }, []);
-  async function run(name: string, action: () => Promise<void>) {
+  async function run(name: string, action: () => Promise<void>, loginAttempt?: LoginAttempt) {
     if (operation.current) return;
-    operation.current = true; setBusy(name); setError(null);
+    operation.current = true; setBusy(name); setError(null); setLoginDiagnostic(null);
     try { await action(); }
     catch (error) {
+      if (name === 'login' && loginAttempt) {
+        // Snapshot the original failure before untracked recovery GETs.
+        setLoginDiagnostic({ ...loginAttempt, code: error instanceof MondayPageError ? error.accessCode : 'UNCLASSIFIED_ACCESS_FAILURE' });
+      }
       if (error instanceof MondayPageError && error.code === 'unauthorized') {
         setConnection(null); setReading(null); csrfToken.current = null; loginForm.current?.reset();
         try { await loadOwner(); } catch { setSession(null); }
@@ -168,11 +191,13 @@ export function MondayOwnerPage() {
     const form = event.currentTarget, data = new FormData(form);
     const username = String(data.get('username') ?? ''), password = String(data.get('password') ?? '');
     form.reset();
+    const loginAttempt: LoginAttempt = { postAccepted: false, stage: 'local_challenge', httpStatus: null };
     await run('login', async () => {
-      if (!csrfToken.current) throw new MondayPageError('unauthorized');
-      login(await request('/owner/login', { csrfToken: csrfToken.current, body: { username, password } }), true);
-      await loadOwner();
-    });
+      if (!csrfToken.current) throw new MondayPageError('unauthorized', 'LOCAL_CHALLENGE_MISSING');
+      login(await request('/owner/login', { csrfToken: csrfToken.current, body: { username, password }, loginAttempt }), true);
+      loginAttempt.postAccepted = true;
+      await loadOwner(undefined, loginAttempt);
+    }, loginAttempt);
   }
   function change(path: '/refresh' | '/disconnect' | '/owner/logout') {
     void run(path, async () => {
@@ -204,6 +229,7 @@ export function MondayOwnerPage() {
   return <main className="office-main" style={{ maxWidth: 1000, padding: '24px 16px' }}>
     <header className="panel-heading"><div><p className="eyebrow">GOURMET AI OFFICE · INTEGRACIÓN</p><h1>Monday · acceso del propietario</h1><p>Acceso de integración autorizado por Ricardo · identidad Info.</p></div></header>
     {error && <p className="inline-alert" role="alert">{error}</p>}
+    {loginDiagnostic && <p data-testid="monday-owner-login-diagnostic" style={{ overflowWrap: 'anywhere' }}><code>post={loginDiagnostic.postAccepted ? 'accepted' : 'unconfirmed'} | stage={loginDiagnostic.stage} | http={loginDiagnostic.httpStatus ?? 'none'} | code={loginDiagnostic.code}</code></p>}
     {busy === 'initial' && <p role="status">Comprobando acceso del propietario…</p>}
     {!session && busy !== 'initial' && <button className="button button-secondary" disabled={disabled} onClick={() => void run('access', () => loadOwner())}>Actualizar acceso</button>}
     {session && !session.available && <section className="wide-panel"><h2>Monday desactivado</h2><p>Monday desactivado. La configuración y el consentimiento están pendientes.</p></section>}
