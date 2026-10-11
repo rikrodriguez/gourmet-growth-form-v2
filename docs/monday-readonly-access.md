@@ -1,115 +1,99 @@
 # Acceso mínimo de lectura a Monday
 
-## Estado actual: OAuth inactivo y preparación autorizada
+## Estado del piloto
 
-El usuario autorizó el piloto de lectura de tableros, comentarios e identidad propia mediante OAuth para los tableros llamados **Leads, Deals, Funnel, Form y Quotes**. El alcance autorizado comprende `boards:read`, `updates:read` y `me:read`; el futuro backend deberá aplicar la lista de tableros y campos permitidos. Esta autorización no acredita que una aplicación OAuth esté creada, que existan credenciales configuradas o que se hayan comprobado permisos efectivos en Monday.
+El piloto dispone de código para OAuth, almacenamiento cifrado, gestión del propietario y lectura acotada. Permanece desactivado con `MONDAY_OAUTH_ENABLED=false`. La preparación del código no acredita una aplicación configurada en Monday, consentimiento efectivo, identidad comprobada con un token real ni acceso OAuth a los tableros. La publicación en staging debe conservar el flag apagado hasta que Ricardo complete la configuración manual y consienta la conexión.
 
-El usuario confirmó en la sesión el email de la cuenta Monday elegida y el plugin confirmó los IDs de cuenta y usuario indicados abajo. El email no se publica aquí ni se fijará en código, fixtures o ejemplos de entorno: llegará mediante la política de configuración del servidor. Quedan pendientes workspace, los cinco IDs de tablero y el mapeo de columnas. La identidad comprobada por el plugin no acredita un token OAuth del runtime ni sus permisos. Esta revisión documental no crea aplicaciones, configura credenciales o consulta cuentas; tampoco ejecuta modelos o servicios facturables. El alcance autorizado de ese piloto sigue separado del trabajo actual de Proveedores/Compras en DEMO. Este tramo de Proveedores/Abastecimiento y su publicación en staging no incluye implementar ni activar OAuth. La integración queda para una fase posterior, con configuración y handoff pendientes.
+**Validación con fixtures:** las 15 pruebas HTTP pasan sobre las fuentes finales, incluido el callback HTTPS, el retorno sin Basic sólo para ese GET, host/TLS/peer, state, nonce y PKCE `S256`. Usan respuestas simuladas de OAuth y del lector; no acreditan consentimiento ni un recorrido OAuth remoto real en staging.
 
-La primera comprobación futura leerá **un único tablero seleccionado de la lista autorizada**, con campos comerciales mínimos. Incorporar los otros cuatro requiere resolver sus IDs y mapeos y validar cada lectura. Los nombres sirven para identificar el objetivo con el usuario; el adaptador deberá fijar IDs comprobados y no buscar por nombre en cada solicitud.
+La autorización comprende exclusivamente `boards:read`, `updates:read` y `me:read` para los cinco IDs de tablero fijados abajo. La identidad elegida es **Info**, usuario `78158865`, email `info@gourmet-corp.com`. El plugin corroboró esos metadatos y la cuenta `29907909`; esa corroboración no es una conexión OAuth del runtime.
 
-## Lo que existe en el repositorio
+Los cinco IDs están fijados en el servidor: `18403945258`, `18411103560`, `18398057136`, `18396813878` y `18377848804`. El servidor comprueba el acceso efectivo del token a los cinco IDs antes de admitir la conexión y rechaza cualquier tablero ajeno. Los IDs no se resuelven por nombre ni se usan para inferir columnas.
 
-| Fuente existente | Comportamiento comprobado en código | Límite para Monday real |
-| --- | --- | --- |
-| [`contracts.ts`](../src/office/contracts.ts) y [`adapter.ts`](../src/office/adapter.ts) | `CommercialThread` versión 1 admite referencias `fixture`, `gmail` y `monday`; las referencias faltantes tienen evidencia nula. El validador de hilos exige contexto DEMO. | Los datos reales necesitan una nueva versión de contrato y validación de procedencia, permisos e identidad. |
-| [`commercial-fixtures.ts`](../src/office/backend/commercial-fixtures.ts) | Monday figura como `missing`, sin tablero conectado ni evidencia real. | Un borrador o aprobación DEMO no constituye evidencia externa. |
-| `loadLiveSnapshot` en [`adapter.ts`](../src/office/adapter.ts) | La proyección dormida consulta autenticación staff y leads internos. Admite campos de entrada como `monday_item_url`, `monday_synced_at` y `crm_status`, pero conserva pago y proveedor desconocidos. | No consulta Monday ni verifica una relación entre un ítem y un caso. Un enlace o fecha de sincronización no acredita hechos operativos. |
-| [`model.ts`](../src/office/model.ts) y contratos | La ejecución requiere cierre, pago y aceptación del proveedor con evidencia compatible con el caso; el snapshot exige `mondayWrites: 0`. | Una etiqueta editable de Monday no acredita pago, cierre humano o aceptación del proveedor. |
+## Identidad y alcance
 
-El runtime no dispone de un cliente OAuth Monday ni de un adaptador de lectura de sus tableros. La frontera prevista está descrita en [commercial-flow.md](commercial-flow.md). Los datos reales no deben introducirse en los casos sintéticos ni convertir una aprobación DEMO en permiso de escritura.
+El servidor solicita explícitamente los tres scopes y exige que el grant contenga exactamente ese conjunto, sin duplicados ni permisos adicionales. Consulta `me { id email }` y compara ambos valores con la política esperada. Después verifica los cinco IDs con una consulta fija de acceso a tableros. Estas dos comprobaciones, junto con la lista de campos y el aislamiento del propietario, constituyen la política de acceso del piloto. [OAuth y scopes](https://developer.monday.com/apps/docs/oauth), [Identidad propia](https://developer.monday.com/api-reference/reference/me).
 
-## Scopes y permisos efectivos
+La cuenta `29907909` se conserva como metadata configurada. El estado muestra `configuredAccountId`, `accountId: null` y `accountVerified: false`: no presenta la cuenta como acreditada por OAuth. No se requiere una prueba adicional de cuenta para este piloto. Consultar `account`, incluso dentro de `me`, requeriría `account:read`, que queda fuera del alcance autorizado. Tampoco se solicitan permisos de escritura, directorio o workspaces. [Cuenta](https://developer.monday.com/api-reference/reference/account).
 
-| Scope | Alcance del piloto | Comprobación pendiente |
-| --- | --- | --- |
-| `boards:read` | Autorizado para leer metadatos e ítems de los tableros aprobados. | Grant de la aplicación y acceso efectivo del actor al primer ID fijado. |
-| `updates:read` | Autorizado para comentarios comerciales mínimos de ítems aprobados. | Qué comentarios se necesitan y cómo excluir contenido personal o sensible antes de proyectarlo. |
-| `me:read` | Autorizado para `me { id email }`, identidad propia del actor. | Concordancia del token del runtime con el email y el ID de usuario confirmados en la sesión. |
-| `account:read` | Fuera del mínimo propuesto; consultar `account`, incluso dentro de `me`, lo requiere. | Añadirlo solo si se decide y autoriza comprobar la cuenta con esa consulta. |
-| `workspaces:read` | No necesario para obtener el ID de workspace desde un tablero autorizado. | No listar workspaces; consultar su objeto completo exigiría ampliar alcance. |
-| `users:read` | Fuera del mínimo: no consultar perfiles ni directorio de personal. | No ampliar por conveniencia para resolver autores o contactos. |
+## Configuración manual
 
-Estos requisitos proceden de la API, no de un grant comprobado en la cuenta: [Boards](https://developer.monday.com/api-reference/reference/boards), [Updates](https://developer.monday.com/api-reference/reference/updates), [Me](https://developer.monday.com/api-reference/reference/me), [Account](https://developer.monday.com/api-reference/reference/account), [Workspaces](https://developer.monday.com/api-reference/reference/workspaces) y [Users](https://developer.monday.com/api-reference/reference/users).
+Ricardo debe completar estos pasos en la aplicación y en la configuración privada del servidor. No se incluyen valores de credenciales ni comandos que los generen.
 
-Los scopes no restringen por ID de tablero. La lista de cinco tableros y sus columnas debe aplicarse en el servidor a todas las consultas, cursores y respuestas; se rechazará cualquier ID externo a ella. Para comentarios se consultarán `updates` dentro del tablero o ítem autorizado, sin utilizar una consulta raíz que recorra comentarios de la cuenta. [OAuth y permisos](https://developer.monday.com/apps/docs/oauth), [Updates](https://developer.monday.com/api-reference/reference/updates).
+1. Crear o preparar la aplicación Monday para **Active For Me** y activar **New OAuth Flow** en la versión utilizada. Configurar únicamente `boards:read`, `updates:read` y `me:read`. El nuevo flujo utiliza PKCE con `S256`; la activación corresponde a cada versión de la aplicación. [Nuevo flujo OAuth](https://developer.monday.com/apps/docs/migrating-to-the-new-oauth-flow).
+2. Registrar exactamente esta URL de callback, comprobada con fixtures HTTP, sin cambiar esquema, host, ruta o barra final:
 
-Un token personal hereda todos los scopes y los permisos de interfaz de su usuario: no es una credencial técnicamente limitada a lectura. La opción autorizada es OAuth con scopes de lectura explícitos. Aun con OAuth, el actor necesita acceso real al tablero; los tableros privados y compartibles mantienen sus reglas de pertenencia. No se ha comprobado esa pertenencia. [Autenticación](https://developer.monday.com/api-reference/docs/authentication), [Tableros privados](https://support.monday.com/hc/en-us/articles/115005310185-Private-Boards), [Tableros compartibles](https://support.monday.com/hc/en-us/articles/115005309925-Shareable-Boards).
+   ```text
+   https://office-staging.gourmet-corporation.com/office-api/monday/oauth/callback
+   ```
 
-## Identidad y mapeos pendientes
+   El servidor reutiliza esa misma URL en autorización y canje. La ruta está comprobada con fixtures; el registro externo y el retorno real aún no están verificados. [OAuth](https://developer.monday.com/apps/docs/oauth).
+3. Introducir manualmente las variables siguientes mediante la configuración privada del servidor. Mantener `MONDAY_OAUTH_ENABLED=false` durante la preparación y publicación. Los secretos no deben aparecer en chat, repositorio, documentos, logs o capturas.
 
-Los IDs son datos de configuración del destino, no credenciales. Se completarán mediante el handoff autorizado; no se inventan ni se infieren de nombres parecidos.
+   | Variable | Configuración requerida |
+   | --- | --- |
+   | `MONDAY_CLIENT_ID` | Client ID de la aplicación autorizada. |
+   | `MONDAY_CLIENT_SECRET` | Client Secret de esa aplicación; secreto sólo del servidor. |
+   | `MONDAY_TOKEN_ENCRYPTION_KEY` | Clave creada y custodiada manualmente: 32 bytes aleatorios, codificados en base64 canónico de 44 caracteres. |
+   | `MONDAY_OWNER_USERNAME` | Usuario manual del portal del propietario, separado del usuario Basic de staging; 3–64 caracteres alfanuméricos, punto, guion o guion bajo. |
+   | `MONDAY_OWNER_PASSWORD` | Contraseña manual separada de la contraseña Basic de staging; 24–256 caracteres ASCII imprimibles sin espacios. |
+   | `MONDAY_EXPECTED_ACCOUNT_EMAIL` | `info@gourmet-corp.com`. |
+   | `MONDAY_EXPECTED_USER_ID` | `78158865`. |
+   | `MONDAY_EXPECTED_ACCOUNT_ID` | `29907909`, metadata configurada sin verificación OAuth de cuenta. |
+   | `MONDAY_BOARD_COLUMNS_JSON` | Mapeo manual de las columnas permitidas descrito abajo; puede quedar ausente mientras se configura OAuth. |
+   | `MONDAY_OAUTH_ENABLED` | `false` durante la preparación y publicación; tras configurar, `true` permite iniciar el consentimiento únicamente en el origen de staging fijado. |
 
-| Identificador | Valor |
+4. Confirmar los IDs y tipos reales de las columnas comerciales, su significado y su correspondencia con los campos permitidos. No inventar columnas ni asociar ítems reales a los casos DEMO. Si se proporciona el JSON, debe incluir exactamente los cinco IDs de tablero como claves, cada uno con un array de objetos `{id, type, field}`. Una configuración mal formada mantiene la integración indisponible sin impedir el arranque DEMO.
+5. Después de publicar staging con el flag apagado y completar la configuración manual, Ricardo podrá habilitar el flag, entrar en `/office/monday` con Basic de staging y después con la credencial separada del propietario, seleccionar **Conectar Monday** y consentir con la identidad Info. El servidor sólo declarará la conexión tras validar scopes, identidad y acceso a los cinco IDs. Comprobar en el portal las fechas de lectura, caducidad y alcance; una lectura parcial o bloqueada conserva ese estado explícito.
+
+La credencial manual del propietario concede una capacidad de gestión: no verifica por sí sola la identidad personal de Ricardo. El principal interno `ricardo` es una etiqueta de esa capacidad. La identidad Monday seleccionada se comprueba por separado en el servidor mediante `me`.
+
+## Columnas comerciales pendientes
+
+El mapeo admite como máximo 20 columnas por tablero, con IDs y campos únicos. Cada objeto debe tener únicamente `id`, `type` y `field`; no se admiten campos libres, contactos, archivos ni enlaces. Estos son los campos y tipos compatibles:
+
+| `field` | `type` permitido |
 | --- | --- |
-| Email de la cuenta Monday elegida | Confirmado por el usuario en la sesión; valor reservado a la configuración del servidor, sin OAuth del runtime establecido |
-| `account_id` | `29907909`, confirmado por el plugin en la sesión; pendiente de vinculación comprobada con la instalación OAuth del runtime |
-| `actor_user_id` | `78158865`, confirmado por el plugin en la sesión; pendiente de concordancia mediante `me { id email }` con el token del runtime |
-| `workspace_id` o IDs si los tableros están en varios workspaces | TODO: pendiente de metadatos del tablero autorizado |
-| Primer tablero del piloto | TODO: seleccionar uno de los cinco nombres autorizados |
+| `stage` | `status` o `dropdown` |
+| `event_type` | `status` o `dropdown` |
+| `guest_count` | `numbers` |
+| `event_date` | `date` |
+| `service_style` | `status` o `dropdown` |
+| `amount` | `numbers` |
+| `quote_status` | `status` o `dropdown` |
 
-| Nombre autorizado | `board_id` | `workspace_id` | Columna de unión con el caso | Columnas permitidas y tipos | Etiquetas y significado comercial |
-| --- | --- | --- | --- | --- | --- |
-| Leads | TODO | TODO | TODO | TODO | TODO |
-| Deals | TODO | TODO | TODO | TODO | TODO |
-| Funnel | TODO | TODO | TODO | TODO | TODO |
-| Form | TODO | TODO | TODO | TODO | TODO |
-| Quotes | TODO | TODO | TODO | TODO | TODO |
+Los IDs reales y el significado comercial de las etiquetas siguen pendientes de configuración humana. Sin mapeo, la lectura comercial de ítems devuelve `columns_unconfigured`; esto no impide conectar OAuth ni verificar identidad y acceso a los cinco tableros. Los valores incompatibles se rechazan y las etiquetas que parecen contactos, enlaces, credenciales o marcado se ocultan.
 
-Para cada tablero hay que registrar los IDs reales de columna, sus tipos y, cuando corresponda, el significado comprobado de las etiquetas. No se asignan roles a esos tableros por su nombre ni se presupone una columna `status`, un importe, una relación entre ítems o un identificador de cliente. La unión deberá ser explícita y única; los IDs `demo-*` no identifican clientes reales.
+Las actualizaciones se leen sólo como metadata: IDs y fechas de creación, actualización y lectura. No se solicita ni expone el cuerpo de comentarios, autores o perfiles. Una etiqueta comercial no acredita pago, aceptación de un proveedor o cierre de venta.
 
-| Dato del modelo actual | Mapeo futuro necesario | Regla de interpretación |
-| --- | --- | --- |
-| `OfficeCase.id` | Clave de caso aprobada y relación con cuenta/tablero/ítem | No unir por título, email, enlace o coincidencia aproximada. |
-| `title` / `subtitle` | Columnas comerciales concretas, aún TODO | Publicar solo el contenido necesario para la función autorizada. |
-| Brief comercial | IDs de columnas para datos del evento que se aprueben, aún TODO | Fecha, zona, asistentes o restricciones siguen pendientes si la fuente no los confirma. |
-| Referencias y `Evidence` | Identidad de fuente/ítem, fecha de fuente, fecha de lectura y actor, mediante contrato futuro | Distinguir lectura observada de confirmación operativa; una fecha de importación no es fecha del hecho. |
-| `CommercialThread.references` y comentarios | Contrato futuro de contexto real; selección y filtrado comercial, aún TODO | No insertar comentarios reales en versión 1 DEMO ni enviar texto bruto al navegador. |
-| Pago, proveedor, cierre y llamadas | Evidencia específica de cada hecho, fuera de un simple mapeo de etiquetas | Conservar desconocido cuando falte una fuente fiable y compatible con el caso. |
+## Frontera del servidor
 
-## Lectura acotada y tratamiento de datos
+| Componente | Comportamiento |
+| --- | --- |
+| [monday-runtime.ts](../src/office/backend/monday-runtime.ts) | Flag desactivado por defecto; no lee credenciales ni construye cliente, vault o store mientras está apagado. Una configuración inválida mantiene Monday indisponible y DEMO operativo. |
+| [monday-owner.ts](../src/office/backend/monday-owner.ts) y [monday-http.ts](../src/office/backend/monday-http.ts) | Portal del propietario con capacidad separada de Basic, roles y scopes DEMO. Sesión de 15 minutos y desafío de login de 5 minutos; cookies `HttpOnly`, `Secure`, `SameSite=Strict`, control CSRF y límites de intentos. |
+| [monday-oauth.ts](../src/office/backend/monday-oauth.ts) | PKCE `S256`, state de un uso de 5 minutos y nonce ligado al navegador. Canje, renovación y desconexión reservados de forma persistente antes de enviar solicitudes externas. |
+| [monday-store.ts](../src/office/backend/monday-store.ts) y [003_monday_oauth.sql](../migrations/office/003_monday_oauth.sql) | Registros privados en `office_demo.monday_private_records`, separados del agregado DEMO; contenido cifrado AES-256-GCM con binding autenticado. Compare-and-set con revisiones globalmente crecientes evita carreras y reutilización de revisiones tras borrar y recrear. |
+| [monday-read.ts](../src/office/backend/monday-read.ts) | Consultas GraphQL fijas de lectura, cinco tableros permitidos, columnas admitidas y API `2026-07`. No acepta consultas arbitrarias ni mutaciones. |
 
-La futura implementación comprobará primero identidad y un tablero fijo. Leerá únicamente metadatos necesarios de ese tablero y de las columnas seleccionadas; no listará cuentas, todos los workspaces, usuarios, equipos, propietarios o vistas. La selección de ítems se acotará a casos aprobados. Subítems, descripciones, adjuntos y otros tableros quedarán fuera hasta tener una necesidad y mapeo autorizados.
+Una sesión ordinary viewer u operator DEMO, el selector de funciones y Basic por sí solos no autorizan gestionar ni leer Monday. Las rutas privadas exigen sesión del propietario; su ausencia produce `401` y una comprobación CSRF inválida produce `403`. La tabla privada y sus tokens nunca forman parte de snapshots DEMO, respuestas para viewers o historiales comerciales.
 
-La primera página se diseñará con un límite de 25 ítems. En GraphQL, `boards(ids: ...) { items_page }` y `next_items_page` admiten hasta 500; el cursor caduca 60 minutos desde la primera solicitud y `null` indica final. `query_params` y cursor no se combinan. `items_page` cubre ítems activos; una lectura no acredita inexistencia de ítems archivados. [Items page](https://developer.monday.com/api-reference/reference/items-page), [Next items page](https://developer.monday.com/api-reference/reference/next-items-page).
+Sólo el `GET` del callback exacto puede prescindir de Basic cuando la integración está habilitada y configurada. Mantiene los controles globales de host, TLS y origen, y exige state más nonce OAuth. Su cookie de nonce tiene `SameSite=Lax` para el retorno del proveedor, expiración de 5 minutos y ruta limitada al callback. El retorno termina con un redirect fijo al portal; no refleja códigos de autorización ni errores del proveedor. Con el flag apagado permanece protegida la frontera Basic. **Este comportamiento pasa las pruebas HTTP con fixtures; el retorno remoto real sigue pendiente del consentimiento.**
 
-El adaptador fijará topes de páginas, tiempo y volumen. Vinculará cada cursor con actor, cuenta, tablero, filtros, columnas y versión de API; no reutilizará cursores entre destinos. Una expiración, límite, cambio de esquema o página fallida producirá estado parcial explícito, sin presentar un snapshot completo. Se fijará una versión soportada de `API-Version` y se verificará la utilizada; los límites de complejidad y las esperas de reintento se tratarán según la respuesta real. [Versionado](https://developer.monday.com/api-reference/docs/api-versioning), [Complejidad](https://developer.monday.com/api-reference/reference/complexity), [Límites](https://developer.monday.com/api-reference/docs/rate-limits).
+## Caducidad, errores y lectura limitada
 
-El HTTP 200 no basta para declarar éxito: deben validarse `errors`, estructura, IDs esperados y datos devueltos. Un error de permisos o un resultado parcial no equivale a ausencia de casos ni a autorización acreditada. [Errores de la API](https://developer.monday.com/api-reference/docs/error-handling).
+El flujo usa los endpoints del nuevo OAuth para canje, refresh y revoke. El `exp` del JWT de acceso devuelto por el endpoint se utiliza exclusivamente para limitar la caducidad; no se usa un claim de cuenta como prueba de identidad o instalación, ni se afirma verificación de firma JWT. No se presupone una duración fija de acceso o refresh. La identidad y el acceso proceden de consultas autenticadas al proveedor. [Nuevo flujo OAuth](https://developer.monday.com/apps/docs/migrating-to-the-new-oauth-flow).
 
-La proyección inicial excluirá contactos personales y datos sensibles: teléfonos, emails de clientes, perfiles de personal, detalles privados de Talento, información financiera ajena al brief y enlaces a archivos con acceso o tokens. Los comentarios también pueden contener esos datos: el mapeo y filtrado deberán estar definidos antes de habilitar su importación. Solo se expondrá contexto comercial mínimo, con permisos por usuario, función y caso. Los logs y recibos contendrán estados, códigos e identidades mínimas necesarias, sin cuerpos de comentarios, respuestas completas o credenciales.
+La renovación requiere tokens nuevos, comprueba de nuevo identidad y cinco tableros, y retira los anteriores. No hay llamadas externas dentro de transacciones SQL. Un resultado incierto de canje, refresh o revocación queda explícito como `code_exchange_uncertain`, `refresh_uncertain` o `revoke_uncertain`; no se repite automáticamente una operación OAuth cuyo resultado se desconoce. Tras reinicio tampoco se vuelve a enviar una operación pendiente.
 
-## Autenticación futura y herramientas de Codex
+**Desconectar Monday** retira las credenciales locales antes de pedir la revocación OAuth al proveedor, incluso si éste no confirma el resultado. La renovación y revocación sólo administran la conexión; no escriben tableros, ítems o comentarios. No existe un ejecutor de mutaciones de negocio de Monday.
 
-La identidad solicitada por email y los IDs de cuenta/usuario están resueltos en la sesión; Developer Apps y el handoff seguro no están verificados. No se crearon OAuth ni permisos. El navegador cloud no dispone de una sesión utilizable y su continuación quedó limitada por `insufficient_credits`; este encargo no compra créditos ni usa el Mac. La creación y conexión OAuth siguen pendientes de configuración y vinculación comprobada de esa identidad al runtime. El nuevo flujo de Monday exige PKCE con `S256`, comprobación de `state` y renovación con rotación del refresh token; el backend debe conservar el token nuevo y retirar el anterior. Estos son requisitos para una implementación futura, no capacidades configuradas hoy. [Migración al nuevo OAuth](https://developer.monday.com/apps/docs/migrating-to-the-new-oauth-flow), [OAuth y state](https://developer.monday.com/apps/docs/oauth).
+Las lecturas usan páginas de 25 ítems, como máximo 4 páginas por solicitud, cursors internos de 5 minutos ligados a actor, tablero y versión del mapeo, timeout de 15 segundos y respuesta máxima de 256 KiB. Las actualizaciones se limitan a 20 por ítem; alcanzar ese límite se informa como parcial. El servidor valida estructura, IDs, tipos y errores GraphQL aunque el HTTP sea `200`, y conserva `complete`, `partial` o `blocked` junto con el motivo y, cuando procede, el tiempo de espera recomendado. No reintenta automáticamente las lecturas. [Límites de API](https://developer.monday.com/api-reference/docs/rate-limits).
 
-Las credenciales se gestionarán fuera del navegador, repositorio, documentos y chat mediante el mecanismo seguro elegido para la integración. No se generan credenciales en este encargo ni se reutilizan los secretos de Coolify para otro destino.
+El portal muestra únicamente la proyección filtrada, sin tokens, cursors, cuerpos de comentarios ni respuestas brutas del proveedor. Distingue `sourceUpdatedAt` de `readAt` y una lectura parcial de una completa dentro del límite consultado. Los datos no se incorporan a casos, aprobaciones o recibos DEMO; los casos sintéticos y su estado `mondayWrites: 0` mantienen su significado. La conexión no activa modelos ni envíos comerciales.
 
-En este entorno hay metadatos de herramientas Monday para consultas GraphQL de lectura, esquema, tipos, tablero e ítems. `mcp__codex_apps__monday_com_all_api_read` declara rechazo de mutaciones; las herramientas de páginas exigen conocer primero las columnas y los filtros aplicables. Su disponibilidad no acredita cuenta conectada, scopes concedidos, acceso a los cinco tableros o un conector dentro del runtime de Office. No se invocó ninguna herramienta Monday durante esta revisión. Los límites anunciados por un wrapper tampoco sustituyen los límites de GraphQL descritos arriba.
+## Evidencia y pendientes
 
-Para habilitar el piloto deberán quedar registrados: cuenta y actor comprobados; primer tablero y columnas fijados; grant efectivo con los tres scopes de lectura; permisos del actor; lectura mínima completa o parcial claramente señalada; filtrado del contexto comercial; y ausencia de operaciones de escritura. Los cinco IDs y mapeos permanecen TODO hasta contar con evidencia. La implementación y activación externas requieren la tarea correspondiente y el handoff seguro; la autorización del alcance ya existe.
+La documentación oficial de OAuth, nuevo flujo, `me` y `account` fue consultada el 11 de octubre de 2026; esa revisión acreditó el contrato público, no una instalación o grant reales. El código fija la URL de callback y las fronteras descritas arriba. Las 15 pruebas HTTP sobre las fuentes finales pasan con fixtures y proveedor simulado, sin llamadas a Monday. El resultado de publicación, CI y despliegue se entrega con evidencia de la revisión exacta; este documento no acredita una conexión real ni un callback remoto probado.
 
-## Preparación pendiente; sin rutas de integración implementadas
-
-No existe un adaptador OAuth Monday del runtime, un callback implementado y probado ni rutas funcionales de esta integración. Este encargo no ha registrado una URL de callback ni dispone de un registro externo verificado. Su dirección y contrato se documentarán únicamente cuando exista código probado; este documento no ofrece una URL propuesta para registrar.
-
-Antes de una activación posterior quedan pendientes:
-
-- Configurar y verificar la aplicación privada, su versión, el nuevo flujo OAuth y el handoff seguro. La autorización de alcance existe, pero el grant efectivo de los tres scopes y las credenciales del runtime no están comprobados.
-- Definir un principal verificable con permiso separado de gestión y lectura por caso/función, con denegación por defecto. El actor compartido y el selector de funciones DEMO no acreditan un administrador humano de la cuenta externa.
-- Contrastar la identidad del token del runtime mediante `me { id email }` y comprobar por separado la vinculación con la cuenta e instalación esperadas. Los IDs confirmados por el plugin sirven de política esperada; no son prueba de esa vinculación OAuth. Consultar `account` requiere `account:read`, fuera del alcance autorizado; no se amplían scopes ni se suponen claims de cuenta de un JWT. [Identidad propia](https://developer.monday.com/api-reference/reference/me), [Account](https://developer.monday.com/api-reference/reference/account).
-- Diseñar almacenamiento privado cifrado, caducidad verificada, consumo de state de un uso y renovación rotatoria sin llamadas externas dentro de transacciones. Un resultado de renovación incierto requerirá un estado explícito y no una repetición automática.
-- Fijar los IDs de tablero, columnas, uniones con casos y filtrado comercial. Hasta tener esos mapeos y permisos, la lectura real permanecerá bloqueada.
-- Evaluar la autenticación del futuro retorno HTTPS y demostrarla con pruebas. El servidor actual exige Basic Auth global y usa una cookie DEMO `SameSite=Strict`; no se introdujo ninguna excepción en este tramo. [http.ts](../src/office/backend/http.ts), [session.ts](../src/office/backend/session.ts).
-
-### Nombres previstos para la política de identidad
-
-Son nombres de preparación, sin lector ni valores configurados en el runtime. Los valores esperados llegarán por configuración segura; no se fijarán en código, fixtures o ejemplos de entorno.
-
-```text
-MONDAY_EXPECTED_ACCOUNT_EMAIL
-MONDAY_EXPECTED_USER_ID
-MONDAY_EXPECTED_ACCOUNT_ID
-```
-
-OAuth permanece inactivo. Este cambio solo ajusta documentación: no crea rutas, migraciones, credenciales, permisos o conexiones, ni acredita pruebas de un callback.
+Para completar la puesta en marcha quedan la configuración manual de la aplicación y secretos, el mapeo de columnas y el consentimiento de Ricardo con Info. El mapeo pendiente bloquea únicamente la lectura comercial sin configurar. La cuenta sin acreditar por OAuth se informa con honestidad y no añade permisos ni una condición adicional al piloto de identidad más acceso a cinco tableros.

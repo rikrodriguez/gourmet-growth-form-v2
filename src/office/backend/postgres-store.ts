@@ -53,7 +53,7 @@ export class PostgresOfficeStore implements OfficeStore {
   readonly stateId: string;
 
   async initialize(nowMs = Date.now()): Promise<void> {
-    const migrations = await Promise.all(['001_office_demo.sql', '002_append_only_history.sql'].map(async name => {
+    const migrations = await Promise.all(['001_office_demo.sql', '002_append_only_history.sql', '003_monday_oauth.sql'].map(async name => {
       const sql = await readFile(new URL(`../../../migrations/office/${name}`, import.meta.url), 'utf8');
       return { name, sql, checksum: createHash('sha256').update(sql).digest('hex') };
     }));

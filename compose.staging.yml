@@ -28,6 +28,18 @@ services:
       OFFICE_STAGING_DB_USER: office_stage
       OFFICE_STAGING_DB_NAME: gourmet_office_stage_demo
       OFFICE_STAGING_DB_PASSWORD: ${OFFICE_STAGING_DB_PASSWORD:-}
+      # Optional OAuth preparation only; manual backend configuration is needed
+      # before activation. These values never become build args or UI variables.
+      MONDAY_OAUTH_ENABLED: ${MONDAY_OAUTH_ENABLED:-false}
+      MONDAY_OWNER_USERNAME: ${MONDAY_OWNER_USERNAME:-}
+      MONDAY_OWNER_PASSWORD: ${MONDAY_OWNER_PASSWORD:-}
+      MONDAY_CLIENT_ID: ${MONDAY_CLIENT_ID:-}
+      MONDAY_CLIENT_SECRET: ${MONDAY_CLIENT_SECRET:-}
+      MONDAY_TOKEN_ENCRYPTION_KEY: ${MONDAY_TOKEN_ENCRYPTION_KEY:-}
+      MONDAY_EXPECTED_ACCOUNT_EMAIL: ${MONDAY_EXPECTED_ACCOUNT_EMAIL:-}
+      MONDAY_EXPECTED_USER_ID: ${MONDAY_EXPECTED_USER_ID:-}
+      MONDAY_EXPECTED_ACCOUNT_ID: ${MONDAY_EXPECTED_ACCOUNT_ID:-}
+      MONDAY_BOARD_COLUMNS_JSON: ${MONDAY_BOARD_COLUMNS_JSON:-}
     expose:
       - "4180"
     depends_on:

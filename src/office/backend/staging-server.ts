@@ -3,6 +3,7 @@ import { createStagingOfficeApp } from './staging-app';
 import { PostgresOfficeStore } from './postgres-store';
 import { closeStagingResources, stagingStartupDiagnostic } from './staging-diagnostics';
 import type { StagingStartupStage } from './staging-diagnostics';
+import { createMondayRuntime } from './monday-runtime';
 
 let store: PostgresOfficeStore | undefined;
 let app: ReturnType<typeof createStagingOfficeApp> | undefined;
@@ -12,14 +13,17 @@ try {
   stage = 'database-construction';
   store = new PostgresOfficeStore({ mode: 'staging', database: runtime.database });
   stage = 'ui-build';
-  app = createStagingOfficeApp(runtime, store);
+  const monday = createMondayRuntime(process.env, runtime.access.origin, store.pool);
+  app = createStagingOfficeApp(runtime, store, { monday });
   stage = 'app-ready';
   await app.ready();
   stage = 'database-initialize';
   await store.initialize();
   stage = 'listen';
   await app.listen({ host: '0.0.0.0', port: 4180 });
-  process.stdout.write('Gourmet Office synthetic staging: authentication required; no outbound effects.\n');
+  process.stdout.write(monday.enabled
+    ? 'Gourmet Office staging: authentication required; DEMO active; optional Monday OAuth configured.\n'
+    : 'Gourmet Office synthetic staging: authentication required; no outbound effects.\n');
 } catch (error) {
   process.stderr.write(stagingStartupDiagnostic(stage, error) + '\n');
   await stop();

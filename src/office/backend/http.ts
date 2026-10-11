@@ -7,10 +7,14 @@ import type { OfficeStore } from './state';
 import { DevelopmentSessions, SESSION_COOKIE, SESSION_TTL_MS, authorizeCommand, scopeSnapshot } from './session';
 import type { StagingAccess } from './staging';
 import type { SalesFlowOptions } from './sales-flow';
+import { isEnabledMondayCallback, registerMondayRoutes } from './monday-http';
+import { MondayOAuthError } from './monday-oauth';
+import { MondayReadError } from './monday-read';
+import type { MondayRuntime } from './monday-runtime';
 
 const ORIGINS = new Set(['http://127.0.0.1:4175', 'http://localhost:4175', 'http://127.0.0.1:4180', 'http://localhost:4180']);
 const HOSTS = new Set([...ORIGINS].map(origin => new URL(origin).host));
-export function createOfficeApi(store: OfficeStore, options: { clock?: () => number; staging?: StagingAccess; staticRoot?: string } & SalesFlowOptions = {}) {
+export function createOfficeApi(store: OfficeStore, options: { clock?: () => number; staging?: StagingAccess; staticRoot?: string; monday?: MondayRuntime } & SalesFlowOptions = {}) {
   const clock = options.clock ?? Date.now;
   const sessions = new DevelopmentSessions(clock);
   const app = Fastify({ logger: false, bodyLimit: 16_384, trustProxy: false });
@@ -19,7 +23,7 @@ export function createOfficeApi(store: OfficeStore, options: { clock?: () => num
     const staging = options.staging;
     if (staging) {
       reply.header('Strict-Transport-Security', 'max-age=31536000').header('X-Frame-Options', 'DENY').header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'");
-      if (!staging.authenticated(request.headers.authorization)) {
+      if (!isEnabledMondayCallback(request, options.monday) && !staging.authenticated(request.headers.authorization)) {
         reply.header('WWW-Authenticate', 'Basic realm="Gourmet synthetic staging", charset="UTF-8"');
         throw new OfficeError('STAGING_AUTHENTICATION_REQUIRED', 401);
       }
@@ -37,6 +41,11 @@ export function createOfficeApi(store: OfficeStore, options: { clock?: () => num
   });
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof OfficeError) return reply.code(error.statusCode).send({ error: error.code });
+    if (error instanceof MondayOAuthError) return reply.code(error.httpStatus).send({ error: error.code });
+    if (error instanceof MondayReadError) {
+      const status = error.code === 'rate_limited' ? 429 : ['unauthorized', 'expired'].includes(error.code) ? 401 : ['forbidden', 'forbidden_board'].includes(error.code) ? 403 : error.code === 'invalid_request' ? 400 : 502;
+      return reply.code(status).send({ error: error.code, ...(error.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: error.retryAfterSeconds }) });
+    }
     const statusCode = error && typeof error === 'object' && 'statusCode' in error ? error.statusCode : undefined;
     if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) return reply.code(statusCode).send({ error: 'INVALID_REQUEST' });
     // Never reflect PostgreSQL, raw request or dependency error messages.
@@ -73,6 +82,7 @@ export function createOfficeApi(store: OfficeStore, options: { clock?: () => num
   };
   app.post('/office-api/commands', command);
   app.post('/office-api/command', command);
+  registerMondayRoutes(app, options.monday);
   if (options.staticRoot) {
     app.register(fastifyStatic, { root: options.staticRoot, prefix: '/office/', index: false, dotfiles: 'deny', cacheControl: false });
     app.get('/', (_request, reply) => reply.redirect('/office/'));
