@@ -58,7 +58,7 @@ jobs:
       - name: Start the isolated candidate PostgreSQL database
         run: npm run office:db -- start
 
-      - name: Check office, durable PostgreSQL and staging boundaries (49 cases)
+      - name: Check office, durable PostgreSQL and staging boundaries
         run: npm run test:office
 
       - name: Check baseline Chromium desktop and mobile (8 cases)

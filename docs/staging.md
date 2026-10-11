@@ -31,7 +31,10 @@ only in the staging resource's runtime secret settings. Do not make them build
 arguments, Vite variables, labels, source files, screenshots or log content.
 Do not inherit development `OFFICE_DATABASE_URL` or `PG*` overrides into staging.
 Missing/invalid settings prevent staging startup. Empty placeholder values are
-not usable credentials.
+not usable credentials. Compose permits empty runtime settings during the image
+build because Coolify loads runtime-only secrets after that phase. The staging
+entrypoint still validates every required setting before serving or connecting
+to PostgreSQL; permitting build interpolation does not permit an empty runtime.
 
 The staging entrypoint is `src/office/backend/staging-server.ts`. It binds port
 4180 on the container interface and serves `/office/`, its compiled assets and
@@ -74,16 +77,47 @@ application's database password; the authenticated API health check does.
 
 After code publication and deployment have separate authorization, choose the
 reviewed branch/commit as the Git source, the Docker Compose build strategy,
-base directory `/` and Compose location `/compose.staging.yml`. Use normal
-managed Compose mode so Coolify supplies domain proxy integration. Route only
-the `office-web` service's internal port 4180 from a dedicated HTTPS domain.
-The origin configured in the app is the public HTTPS origin without the internal
-port suffix used in Coolify's domain routing field.
+base directory `/` and Compose location `/compose.staging.yml`. Enable **Raw
+Compose Deployment** for this resource on Coolify v4.4.6. Its managed parser 5
+adds every declared network to every service, which would attach PostgreSQL to
+the frontend and resource networks even with `connect_to_docker_network=false`.
+Raw mode preserves the source's DB-only internal network.
 
-Review the rendered services and networks before deployment: the database must
-remain solely internal and must have no domain or host port. Avoid attaching all
-services to a shared predefined network. Configure the exact proxy allowlist from
-the reviewed staging topology; no permissive catch-all CIDR is acceptable. The
+The frontend uses the existing external `coolify` network, inspected on the
+staging VPS with Traefik attached. Only `office-web` joins it; PostgreSQL stays
+on the internal database network. Coolify supplies `COOLIFY_RESOURCE_UUID` to
+the standard Compose commands for unique router/service identifiers. The source
+includes resource-scoped Traefik labels
+for `office-staging.gourmet-corporation.com`: HTTP redirects to HTTPS, TLS uses
+Coolify's `https` entrypoint and `letsencrypt` resolver, and the backend is port
+4180 with the original Host preserved. The application's authentication remains
+mandatory. PostgreSQL explicitly disables Traefik and publishes no ports. No
+manual global proxy configuration change is required. Coolify v4.4.6 still
+attempts to create its UUID network and attach the proxy automatically before
+Compose startup, even in raw mode; neither application service uses that extra
+network. Inspect actual attachments after deployment. Keep custom Compose build/start commands empty
+so Coolify's resource variable remains in effect.
+
+The runtime origin is `https://office-staging.gourmet-corporation.com` without
+the internal port. Raw routing uses the source labels, not the application's
+managed domain-port override. A different domain requires reviewing those
+labels and the runtime origin together. This integration follows Coolify's
+[deployment job](https://github.com/coollabsio/coolify/blob/v4.4.6/app/Jobs/ApplicationDeploymentJob.php#L938)
+and [proxy defaults](https://github.com/coollabsio/coolify/blob/v4.4.6/bootstrap/helpers/proxy.php#L767),
+with network preservation by the
+[raw parser](https://github.com/coollabsio/coolify/blob/v4.4.6/app/Models/Application.php#L2102).
+
+Run the Compose contract checks before deployment; they resolve the effective
+services, networks and labels without inheriting credentials or loading an env
+file. Confirm raw mode on the resource: the database must remain solely internal
+and have no domain or host port. Avoid attaching all services to a shared
+predefined network. The VPS inspection on 2026-10-11 found Traefik at
+`172.16.1.2` on `coolify`, so `172.16.1.2/32` is the expected runtime proxy
+allowlist for this Compose. This is a topology-based expectation, not an
+observation from a running staging container. Verify the actual peer and
+network attachments after the first deployment, and recheck the allowlist if
+the proxy address changes. An existing staging container is not a preflight
+requirement. No permissive catch-all CIDR is acceptable. The
 proxy must preserve the expected Host, supply its HTTPS protocol header and
 forward the Authorization header. Prevent credentials from entering proxy
 request logs. [Coolify Compose configuration](https://coolify.io/docs/applications/builds/docker-compose).

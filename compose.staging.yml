@@ -16,16 +16,18 @@ services:
     environment:
       NODE_ENV: production
       OFFICE_RUNTIME_MODE: staging
-      OFFICE_STAGING_ORIGIN: ${OFFICE_STAGING_ORIGIN:?An exact HTTPS staging origin is required}
-      OFFICE_STAGING_USERNAME: ${OFFICE_STAGING_USERNAME:?A staging username is required}
-      OFFICE_STAGING_PASSWORD: ${OFFICE_STAGING_PASSWORD:?A staging password is required}
+      # Coolify builds before loading runtime-only variables. The staging
+      # entrypoint rejects empty/invalid settings before serving requests.
+      OFFICE_STAGING_ORIGIN: ${OFFICE_STAGING_ORIGIN:-}
+      OFFICE_STAGING_USERNAME: ${OFFICE_STAGING_USERNAME:-}
+      OFFICE_STAGING_PASSWORD: ${OFFICE_STAGING_PASSWORD:-}
       OFFICE_STAGING_ROLE: ${OFFICE_STAGING_ROLE:-viewer}
-      OFFICE_STAGING_TRUSTED_PROXY_CIDRS: 127.0.0.1/32,${OFFICE_STAGING_TRUSTED_PROXY_CIDRS:?Explicit private proxy CIDRs are required}
+      OFFICE_STAGING_TRUSTED_PROXY_CIDRS: 127.0.0.1/32,${OFFICE_STAGING_TRUSTED_PROXY_CIDRS:-}
       OFFICE_STAGING_DB_HOST: office-db
       OFFICE_STAGING_DB_PORT: "5432"
       OFFICE_STAGING_DB_USER: office_stage
       OFFICE_STAGING_DB_NAME: gourmet_office_stage_demo
-      OFFICE_STAGING_DB_PASSWORD: ${OFFICE_STAGING_DB_PASSWORD:?A synthetic staging database password is required}
+      OFFICE_STAGING_DB_PASSWORD: ${OFFICE_STAGING_DB_PASSWORD:-}
     expose:
       - "4180"
     depends_on:
@@ -40,16 +42,36 @@ services:
     networks:
       - frontend
       - database
+    # Use Coolify Raw Compose for this file. Managed parser 5 adds every
+    # declared network to every service, which would also attach the DB.
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.office-staging-http-${COOLIFY_RESOURCE_UUID:?Coolify resource UUID is required}.rule=Host(`office-staging.gourmet-corporation.com`)
+      - traefik.http.routers.office-staging-http-${COOLIFY_RESOURCE_UUID}.entrypoints=http
+      - traefik.http.routers.office-staging-http-${COOLIFY_RESOURCE_UUID}.middlewares=office-staging-https-${COOLIFY_RESOURCE_UUID}
+      - traefik.http.routers.office-staging-http-${COOLIFY_RESOURCE_UUID}.service=office-staging-web-${COOLIFY_RESOURCE_UUID}
+      - traefik.http.middlewares.office-staging-https-${COOLIFY_RESOURCE_UUID}.redirectscheme.scheme=https
+      - traefik.http.middlewares.office-staging-https-${COOLIFY_RESOURCE_UUID}.redirectscheme.permanent=true
+      - traefik.http.routers.office-staging-https-${COOLIFY_RESOURCE_UUID}.rule=Host(`office-staging.gourmet-corporation.com`)
+      - traefik.http.routers.office-staging-https-${COOLIFY_RESOURCE_UUID}.entrypoints=https
+      - traefik.http.routers.office-staging-https-${COOLIFY_RESOURCE_UUID}.tls=true
+      - traefik.http.routers.office-staging-https-${COOLIFY_RESOURCE_UUID}.tls.certresolver=letsencrypt
+      - traefik.http.routers.office-staging-https-${COOLIFY_RESOURCE_UUID}.service=office-staging-web-${COOLIFY_RESOURCE_UUID}
+      - traefik.http.services.office-staging-web-${COOLIFY_RESOURCE_UUID}.loadbalancer.server.port=4180
+      - traefik.http.services.office-staging-web-${COOLIFY_RESOURCE_UUID}.loadbalancer.passhostheader=true
 
   office-db:
     image: postgres:16-alpine
     restart: unless-stopped
+    labels:
+      - traefik.enable=false
     security_opt:
       - no-new-privileges:true
     environment:
       POSTGRES_USER: office_stage
       POSTGRES_DB: gourmet_office_stage_demo
-      POSTGRES_PASSWORD: ${OFFICE_STAGING_DB_PASSWORD:?A synthetic staging database password is required}
+      POSTGRES_PASSWORD: ${OFFICE_STAGING_DB_PASSWORD:-}
       POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
     command: ["postgres", "-c", "password_encryption=scram-sha-256"]
     volumes:
@@ -68,5 +90,8 @@ volumes:
 
 networks:
   frontend:
+    # Existing proxy network inspected on the staging VPS. Only web joins it.
+    name: coolify
+    external: true
   database:
     internal: true

@@ -110,6 +110,25 @@ describe('explicit synthetic staging configuration', () => {
 });
 
 describe('synthetic staging authentication and request boundaries', () => {
+  it('accepts only the inspected coolify proxy peer while still requiring authentication', async t => {
+    const { api, headers, store } = await fixture(t, {
+      OFFICE_STAGING_ORIGIN: 'https://office-staging.gourmet-corporation.com',
+      OFFICE_STAGING_TRUSTED_PROXY_CIDRS: '127.0.0.1/32,172.16.1.2/32',
+    });
+    // Synthetic injection proves the allowlist contract, not the deployed peer.
+    const request = { url: '/office-api/health', remoteAddress: '172.16.1.2', headers };
+    const health = await api.inject(request);
+    assert.equal(health.statusCode, 200);
+    assert.deepEqual(health.json(), { status: 'ok', mode: 'demo', storage: 'postgres', outboundEffects: 0 });
+    assert.equal((await api.inject({ ...request, headers: { ...headers, authorization: '' } })).statusCode, 401);
+    for (const peer of ['172.16.1.3', '172.16.7.2']) {
+      const response = await api.inject({ ...request, remoteAddress: peer, headers: { ...headers, 'x-forwarded-for': '172.16.1.2' } });
+      assert.equal(response.statusCode, 403);
+      assert.equal(response.json().error, 'UNTRUSTED_STAGING_PROXY');
+    }
+    assert.equal(store.transactions, 0);
+  });
+
   it('protects UI, assets, redirects, deep links, health and API before accessing storage', async t => {
     const { api, store, headers } = await fixture(t);
     const anonymous = { ...headers, authorization: '' };
