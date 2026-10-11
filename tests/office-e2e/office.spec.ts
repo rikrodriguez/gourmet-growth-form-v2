@@ -227,6 +227,17 @@ test('department controls select real contextual functions without creating work
     await expect(page.getByLabel('Mensaje contextual')).toBeVisible();
     await expect(workspace(page)).not.toBeVisible();
   }
+  for (const item of [
+    { shortcut: 'Revisar eventos', function: 'Coordinación / Tastings' },
+    { shortcut: 'Ver seguimientos', function: 'Ventas' },
+    { shortcut: 'Buscar proveedor', function: 'Proveedores' },
+  ]) {
+    const shortcut = page.getByRole('button', { name: item.shortcut, exact: true });
+    await shortcut.click();
+    await expect(workspace(page).getByRole('heading', { name: item.function, exact: true })).toBeVisible();
+    await closeWorkspace(page);
+    await expect(shortcut).toBeFocused();
+  }
   expect((await snapshot(page.request)).cases).toEqual(before);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
@@ -319,10 +330,12 @@ test('a drawer opened by Ricardo restores visible Nueva tarea after resizing to 
 
 test('all nine functions save a contextual chat and a human-review draft', async ({ page }) => {
   await boot(page);
+  const questions = new Map<FunctionId, string>();
   for (const item of functions) {
     await openFunction(page, item.id);
     await closeWorkspace(page);
     const text = syntheticText(`chat-${item.id}`);
+    questions.set(item.id, text);
     await page.getByLabel('Mensaje contextual').fill(text);
     const response = page.waitForResponse(res => /\/office-api\/commands?$/.test(res.url()) && res.request().method() === 'POST');
     await page.getByRole('button', { name: 'Guardar pregunta', exact: true }).click();
@@ -333,7 +346,9 @@ test('all nine functions save a contextual chat and a human-review draft', async
   const state = await snapshot(page.request);
   const selected = state.cases.find(item => item.id === 'demo-aurora')!;
   for (const item of functions) {
-    expect(selected.messages.some(message => message.functionId === item.id && message.text.includes(`chat-${item.id}`))).toBe(true);
+    const question = selected.messages.find(message => message.functionId === item.id && message.text === `DEMO — ${questions.get(item.id)}`)!;
+    expect(question).toBeDefined();
+    expect(selected.messages.find(message => message.evidence.reference === `${question.evidence.reference}:response`)?.text).toMatch(/Respuesta guionada local.*sin LLM/);
     expect(selected.approvals.some(approval => approval.functionId === item.id && approval.body.includes('Escenario sintético QA'))).toBe(true);
   }
 });
@@ -568,6 +583,279 @@ test('API enforces role, case and function scopes and same-origin mutation', asy
   expect(logout.status()).toBe(204);
   expect((await request.get(`${api}/snapshot`)).status()).toBe(401);
 });
+
+for (const action of ['draft', 'chat'] as const) {
+  test('an unconfirmed ' + action + ' retries in place and clears only confirmed text', async ({ page }) => {
+    await boot(page);
+    if (action === 'draft') await openFunction(page, 'quality');
+    const before = (await snapshot(page.request)).cases.find(item => item.id === 'demo-aurora')!;
+    const text = syntheticText('in-place-retry-' + action);
+    const inputs: OfficeCommand[] = [];
+    await page.route(/\/office-api\/commands?$/, async route => {
+      const input = route.request().postDataJSON() as OfficeCommand;
+      inputs.push(input);
+      if (inputs.length === 1) return route.abort('failed');
+      return route.continue();
+    });
+    const field = page.getByLabel(action === 'draft' ? 'Contenido del borrador' : 'Mensaje contextual');
+    await field.fill(text);
+    await page.getByRole('button', { name: action === 'draft' ? 'Preparar borrador' : 'Guardar pregunta', exact: true }).click();
+    const surface = action === 'draft' ? workspace(page) : page;
+    await expect(surface.getByRole('alert')).toContainText('No se han confirmado cambios');
+    const retry = surface.getByRole('button', { name: 'Reintentar operación exacta', exact: true });
+    await expect(retry).toBeEnabled();
+    await retry.focus();
+    await expect(retry).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(surface.getByRole('region', { name: 'Operación sin confirmación', exact: true })).toHaveCount(0);
+    await expect(field).toHaveValue('');
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]).toEqual(inputs[0]);
+    const after = (await snapshot(page.request)).cases.find(item => item.id === before.id)!;
+    expect(after.tasks).toHaveLength(before.tasks.length + 1);
+    expect(after.history).toHaveLength(before.history.length + 1);
+    if (action === 'draft') {
+      expect(after.approvals.filter(item => item.body === 'DEMO — ' + text)).toHaveLength(1);
+      await expect(workspace(page).locator('article[data-testid^="office-approval-"]').filter({ hasText: text })).toHaveCount(1);
+    } else {
+      expect(after.messages.filter(item => item.text === 'DEMO — ' + text)).toHaveLength(1);
+      await expect(page.getByRole('button', { name: 'Guardar pregunta', exact: true })).toBeDisabled();
+    }
+  });
+}
+
+test('suggested draft opens its exact review and cancelling an edit writes nothing', async ({ page }) => {
+  await boot(page);
+  const original = syntheticText('suggested-review');
+  const card = await draft(page, 'talent', original);
+  const id = (await card.getAttribute('data-testid'))!;
+  await closeWorkspace(page);
+  await page.getByRole('button', { name: 'Seleccionar Calidad', exact: true }).click();
+  const before = (await snapshot(page.request)).cases;
+  await page.getByRole('button', { name: 'Ver borrador', exact: true }).click();
+  const target = workspace(page).getByTestId(id);
+  await expect(target).toBeFocused();
+  await expect(target).toBeInViewport();
+  await expect(workspace(page).getByRole('heading', { name: 'Talento', exact: true })).toBeVisible();
+  await target.getByRole('button', { name: 'Editar revisión 1', exact: true }).click();
+  const cancelled = syntheticText('cancelled-edit');
+  await target.getByLabel('Nuevo contenido de la revisión').fill(cancelled);
+  await target.getByRole('button', { name: 'Cancelar edición', exact: true }).click();
+  await expect(target).toContainText(original);
+  await expect(target).not.toContainText(cancelled);
+  expect((await snapshot(page.request)).cases).toEqual(before);
+  await closeWorkspace(page);
+  await page.getByRole('button', { name: 'Ver revisiones', exact: true }).click();
+  await expect(page.getByRole('tabpanel', { name: /^Aprobaciones/ }).getByTestId(id)).toContainText(original);
+});
+
+test('a rapid double click and closing an in-flight drawer create one exact draft', async ({ page }) => {
+  await boot(page);
+  await openFunction(page, 'marketing');
+  const before = (await snapshot(page.request)).cases.find(item => item.id === 'demo-aurora')!;
+  const text = syntheticText('double-click');
+  const inputs: OfficeCommand[] = [];
+  let release!: () => void;
+  let received!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { received = resolve; });
+  await page.route(/\/office-api\/commands?$/, async route => {
+    inputs.push(route.request().postDataJSON() as OfficeCommand);
+    received();
+    await held;
+    return route.continue();
+  });
+  await page.getByLabel('Contenido del borrador').fill(text);
+  try {
+    await page.getByRole('button', { name: 'Preparar borrador', exact: true }).dblclick();
+    await started;
+    await expect(page.getByRole('button', { name: 'Preparar borrador', exact: true })).toBeDisabled();
+    expect(inputs).toHaveLength(1);
+    await closeWorkspace(page);
+  } finally { release(); }
+  await openFunction(page, 'marketing');
+  await expect(workspace(page).locator('article[data-testid^="office-approval-"]').filter({ hasText: text })).toHaveCount(1);
+  expect(inputs).toHaveLength(1);
+  const after = (await snapshot(page.request)).cases.find(item => item.id === before.id)!;
+  expect(after.approvals).toHaveLength(before.approvals.length + 1);
+  expect(after.tasks).toHaveLength(before.tasks.length + 1);
+  expect(after.history).toHaveLength(before.history.length + 1);
+  expect(after.approvals.filter(item => item.body === 'DEMO — ' + text)).toHaveLength(1);
+});
+
+test('revision content is locked during confirmation and saves the exact reviewed text once', async ({ page }) => {
+  await boot(page);
+  const createdCard = await draft(page, 'quality');
+  const id = (await createdCard.getAttribute('data-testid'))!.slice('office-approval-'.length);
+  const card = workspace(page).getByTestId('office-approval-' + id);
+  const original = (await snapshot(page.request)).cases.find(item => item.id === 'demo-aurora')!.approvals.find(item => item.id === id)!;
+  await card.getByRole('button', { name: 'Editar revisión 1', exact: true }).click();
+  const text = syntheticText('locked-revision');
+  const content = card.getByLabel('Nuevo contenido de la revisión');
+  await content.fill(text);
+  const inputs: OfficeCommand[] = [];
+  let release!: () => void;
+  let received!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { received = resolve; });
+  await page.route(/\/office-api\/commands?$/, async route => {
+    inputs.push(route.request().postDataJSON() as OfficeCommand);
+    received();
+    await held;
+    return route.continue();
+  });
+  try {
+    await card.getByRole('button', { name: 'Guardar nueva revisión', exact: true }).click();
+    await started;
+    await expect(content).toBeDisabled();
+    await expect(card.getByRole('button', { name: 'Cancelar edición', exact: true })).toBeDisabled();
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toMatchObject({ action: 'revise', approvalId: id, revision: 1, digest: original.digest, text });
+  } finally { release(); }
+  await expect(content).toHaveCount(0);
+  await expect(card).toContainText('DEMO — ' + text);
+  await expect(card.getByRole('button', { name: 'Aprobar revisión 2', exact: true })).toBeEnabled();
+  const saved = (await snapshot(page.request)).cases.find(item => item.id === 'demo-aurora')!.approvals.find(item => item.id === id)!;
+  expect(saved).toMatchObject({ revision: 2, body: 'DEMO — ' + text, status: 'pending' });
+  expect(saved.digest).not.toBe(original.digest);
+  expect(inputs).toHaveLength(1);
+});
+
+test('failed and empty reads keep evidence honest and recover through refresh', async ({ page }) => {
+  await boot(page);
+  const before = await snapshot(page.request);
+  let read: 'offline' | 'empty' | 'real' = 'offline';
+  await page.route(/\/office-api\/snapshot$/, async route => {
+    if (read === 'offline') return route.fulfill({ status: 503, json: { error: 'QA_SYNTHETIC_UNAVAILABLE' } });
+    if (read === 'empty') return route.fulfill({ status: 200, json: { ...before, cases: [], note: 'DEMO · Lectura QA sintética sin casos.' } });
+    return route.continue();
+  });
+  const menu = await openDemoMenu(page);
+  await page.getByRole('button', { name: 'Actualizar oficina', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Se conserva la última lectura confirmada');
+  await expect(page.getByLabel('Caso de demostración')).toHaveValue('demo-aurora');
+  read = 'empty';
+  await page.getByRole('button', { name: 'Actualizar oficina', exact: true }).click();
+  await expect(page.getByLabel('Caso de demostración')).toBeDisabled();
+  await menu.locator('summary').first().click();
+  await expect(page.getByLabel('Mensaje contextual')).toBeDisabled();
+  await showView(page, 'Dashboard');
+  await expect(page.getByText('Métricas derivadas de 0 casos confirmados por la API. Esta muestra no mide resultados del negocio.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('tabpanel', { name: 'Dashboard', exact: true }).locator('.sla-value')).toContainText('Sin muestra');
+  await showView(page, 'Historial');
+  await expect(page.getByRole('heading', { name: 'No hay registros confirmados', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Nueva tarea', exact: true }).click();
+  await expect(workspace(page).getByRole('heading', { name: 'Sin casos confirmados', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Contenido del borrador')).toHaveCount(0);
+  await closeWorkspace(page);
+  read = 'real';
+  const recoveredMenu = await openDemoMenu(page);
+  await page.getByRole('button', { name: 'Actualizar oficina', exact: true }).click();
+  await expect(page.getByLabel('Caso de demostración')).toBeEnabled();
+  await recoveredMenu.locator('summary').first().click();
+  await openFunction(page, 'finance');
+  await expect(page.getByLabel('Contenido del borrador')).toBeEnabled();
+  expect((await snapshot(page.request)).cases).toEqual(before.cases);
+});
+
+test('UI permissions follow server case and function scopes and expire while idle', async ({ page }) => {
+  const auth = await session(page.request, { role: 'operator', caseIds: ['demo-cedar'], functionIds: ['finance'] });
+  await page.goto('/office/');
+  await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible();
+  const before = (await snapshot(page.request)).cases;
+  const menu = await openDemoMenu(page);
+  expect(await page.getByLabel('Caso de demostración').locator('option').evaluateAll(options => options.map(option => (option as HTMLOptionElement).value))).toEqual(['demo-cedar']);
+  await menu.locator('summary').first().click();
+  await openFunction(page, 'quality');
+  await expect(page.getByLabel('Contenido del borrador')).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Preparar borrador', exact: true })).toBeDisabled();
+  await openFunction(page, 'finance');
+  await expect(page.getByLabel('Contenido del borrador')).toBeEnabled();
+  await closeWorkspace(page);
+  await expect(page.getByLabel('Mensaje contextual')).toBeEnabled();
+  // Clamp only the browser's returned capability expiry; the server scope is real.
+  await page.clock.install();
+  const expiresAt = new Date(Date.now() + 10_000).toISOString();
+  await page.route(/\/office-api\/session$/, route => route.fulfill({ status: 200, json: { ...auth, expiresAt } }));
+  await page.reload();
+  await openFunction(page, 'finance');
+  await closeWorkspace(page);
+  await expect(page.getByLabel('Mensaje contextual')).toBeEnabled();
+  await page.clock.fastForward(31_000);
+  await expect(page.getByText('Sesión DEMO pendiente', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Mensaje contextual')).toBeDisabled();
+  await openFunction(page, 'finance');
+  await expect(page.getByRole('button', { name: 'Preparar borrador', exact: true })).toBeDisabled();
+  expect((await snapshot(page.request)).cases).toEqual(before);
+});
+
+for (const group of [functions.slice(0, 3), functions.slice(3, 6), functions.slice(6, 9)]) {
+  test('local DEMO scripts complete review without external execution: ' + group.map(item => item.id).join(', '), async ({ page }, testInfo) => {
+    // Three complete workflows include four writes each and durable UI reloads.
+    test.setTimeout(75_000);
+    await boot(page);
+    const before = (await snapshot(page.request)).cases.find(item => item.id === 'demo-aurora')!;
+    const approved: Array<{ id: string; functionId: FunctionId; text: string; digest: string; originalReference: string; question: string }> = [];
+    for (const item of group) {
+      await openFunction(page, item.id);
+      await closeWorkspace(page);
+      const question = syntheticText('complete-chat-' + item.id);
+      await page.getByLabel('Mensaje contextual').fill(question);
+      await page.getByRole('button', { name: 'Guardar pregunta', exact: true }).click();
+      await expect(page.getByText('DEMO — ' + question, { exact: true })).toBeVisible();
+      await openFunction(page, item.id);
+      await page.getByLabel('Contenido del borrador').fill('');
+      const createdResponse = page.waitForResponse(res => /\/office-api\/commands?$/.test(res.url()) && res.request().method() === 'POST');
+      await page.getByRole('button', { name: 'Preparar borrador', exact: true }).click();
+      const created = (await (await createdResponse).json()).snapshot as OfficeSnapshot;
+      const saved = created.cases.find(row => row.id === before.id)!.approvals.find(approval => approval.functionId === item.id && !before.approvals.some(old => old.id === approval.id))!;
+      expect(saved.body).toMatch(/^DEMO — Respuesta guionada local.*sin LLM/);
+      expect(saved.status).toBe('pending');
+      const card = workspace(page).getByTestId('office-approval-' + saved.id);
+      await expect(card).toContainText('envío bloqueado');
+      await card.getByRole('button', { name: 'Editar revisión 1', exact: true }).click();
+      const text = syntheticText('complete-revision-' + item.id);
+      await card.getByLabel('Nuevo contenido de la revisión').fill(text);
+      const revisedResponse = page.waitForResponse(res => /\/office-api\/commands?$/.test(res.url()) && res.request().method() === 'POST');
+      await card.getByRole('button', { name: 'Guardar nueva revisión', exact: true }).click();
+      const revisedSnapshot = (await (await revisedResponse).json()).snapshot as OfficeSnapshot;
+      const revised = revisedSnapshot.cases.find(row => row.id === before.id)!.approvals.find(approval => approval.id === saved.id)!;
+      expect(revised).toMatchObject({ status: 'pending', revision: 2, body: 'DEMO — ' + text });
+      expect(revised.digest).not.toBe(saved.digest);
+      await card.getByRole('button', { name: 'Aprobar revisión 2', exact: true }).click();
+      await expect(card).toContainText('Aprobado DEMO');
+      approved.push({ id: saved.id, functionId: item.id, text, digest: revised.digest, originalReference: saved.evidence.reference, question });
+      await page.reload();
+      await openFunction(page, item.id);
+      const persisted = workspace(page).getByTestId('office-approval-' + saved.id);
+      await expect(persisted).toContainText('Aprobado DEMO');
+      await expect(persisted).toContainText(text);
+      await expect(persisted.locator('.digest code')).toHaveText(revised.digest);
+    }
+    await showView(page, 'Historial');
+    await expect(page.getByRole('tabpanel', { name: 'Historial', exact: true }).getByRole('heading', { name: 'Aprobación registrada · DEMO', exact: true }).first()).toBeVisible();
+    const latestHistory = await page.getByRole('tabpanel', { name: 'Historial', exact: true }).locator('.history-list > li').evaluateAll(rows => rows.slice(0, 12).map(row => ({ function: row.querySelector('.eyebrow')?.textContent ?? '', title: row.querySelector('h3')?.textContent ?? '' })));
+    for (const item of group) {
+      for (const title of ['Chat guionado guardado · DEMO', 'Borrador preparado · DEMO', 'Nueva revisión · DEMO', 'Aprobación registrada · DEMO']) {
+        expect(latestHistory.some(row => row.function.startsWith(item.label + ' · ') && row.title === title)).toBe(true);
+      }
+    }
+    const after = (await snapshot(page.request)).cases.find(item => item.id === before.id)!;
+    for (const item of approved) {
+      const saved = after.approvals.find(approval => approval.id === item.id)!;
+      expect(saved).toMatchObject({ functionId: item.functionId, status: 'approved_demo', revision: 2, body: 'DEMO — ' + item.text, digest: item.digest });
+      expect(after.tasks.find(task => task.evidence.reference === saved.evidence.reference)?.status).toBe('blocked');
+      expect(after.tasks.find(task => task.evidence.reference === item.originalReference)?.status).toBe('stale');
+      expect(after.results.find(result => result.evidence.reference === saved.evidence.reference)?.detail).toContain('envío y ejecución externa siguen bloqueados');
+      const question = after.messages.find(message => message.text === 'DEMO — ' + item.question)!;
+      expect(question).toMatchObject({ functionId: item.functionId });
+      expect(after.messages.find(message => message.evidence.reference === question.evidence.reference + ':response')?.text).toMatch(/Respuesta guionada local.*sin LLM/);
+      expect(after.history.filter(row => row.functionId === item.functionId)).toHaveLength(before.history.filter(row => row.functionId === item.functionId).length + 4);
+    }
+    expect(after).toMatchObject({ payment: before.payment, supplier: before.supplier, saleClosed: before.saleClosed, paymentEvidence: before.paymentEvidence, supplierEvidence: before.supplierEvidence });
+    await testInfo.attach('review-workflow-synthetic', { body: JSON.stringify({ approved, outboundEffects: 0, mondayWrites: 0, payment: after.payment, supplier: after.supplier, saleClosed: after.saleClosed }, null, 2), contentType: 'application/json' });
+  });
+}
 
 test('selected commercial thread binds an unsent internal reply through revision and approval', async ({ page }) => {
   await boot(page);
