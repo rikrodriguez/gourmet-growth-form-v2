@@ -170,6 +170,20 @@ test('the exact HTTPS callback completes without shared Basic or owner cookies, 
     assert.ok(!value.includes('synthetic-client-secret')); assert.ok(!value.includes('synthetic-refresh-')); assert.ok(!value.includes('synthetic-code'));
   }
 });
+test('owner cannot read excluded Deals records or update metadata after five-board OAuth access succeeds', async t => {
+  const f = await fixture(t); const flow = await f.complete();
+  const before = (await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders })).json();
+  assert.equal(before.state, 'connected'); assert.equal(before.boardAccessVerified, true);
+  assert.deepEqual(before.allowedBoards, MONDAY_READ_BOARD_IDS);
+  const calls = f.calls.length;
+  for (const path of ['read-board', 'read-updates']) {
+    const response = await f.api.inject({ method: 'POST', url: `/office-api/monday/${path}`, headers: flow.ownerHeaders, payload: { boardId: '18411103560' } });
+    assert.equal(response.statusCode, 403); assert.deepEqual(response.json(), { error: 'FORBIDDEN_MONDAY_BOARD' });
+  }
+  assert.equal(f.calls.length, calls);
+  const after = (await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders })).json();
+  assert.deepEqual(after, before);
+});
 test('callback exception is exact GET only; HEAD, sibling, trailing and encoded paths retain Basic', async t => {
   const f = await fixture(t);
   for (const [method, path] of [['HEAD', MONDAY_CALLBACK_PATH], ['GET', `${MONDAY_CALLBACK_PATH}/`], ['GET', `${MONDAY_CALLBACK_PATH}-other`], ['GET', '/office-api/monday/status'], ['GET', '/office-api/monday/oauth/%63allback']] as const) assert.equal((await f.api.inject({ method, url: path, headers: f.callbackHeaders })).statusCode, 401);

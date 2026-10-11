@@ -4,6 +4,8 @@
 // /reference/me, /reference/items-page, /reference/items, /reference/updates,
 // /reference/column-values-v2 and /docs/rate-limits (developer.monday.com).
 export const MONDAY_READ_BOARD_IDS = Object.freeze(['18403945258', '18411103560', '18398057136', '18396813878', '18377848804'] as const);
+// OAuth proves all five metadata IDs; records and update metadata exclude Deals.
+export const MONDAY_RECORD_BOARD_IDS = Object.freeze(['18403945258', '18398057136', '18396813878', '18377848804'] as const);
 export const MONDAY_READ_SCOPES = Object.freeze(['boards:read', 'updates:read', 'me:read'] as const);
 export const MONDAY_API_VERSION = '2026-07' as const;
 const ENDPOINT = 'https://api.monday.com/v2';
@@ -213,6 +215,7 @@ export function createMondayReadClient(options: MondayReadClientOptions = {}): M
     const input = validateInput(raw);
     const result: MondayReadResult<T> = { status: 'blocked', boardId: input.boardId, mappingVersion, readAt: new Date(now()).toISOString(), pages: 0, items: [] };
     if (!enabled) return { ...result, reason: 'disabled' };
+    if (!(MONDAY_RECORD_BOARD_IDS as readonly string[]).includes(input.boardId)) return { ...result, reason: 'forbidden_board' };
     const columns = mapping[input.boardId];
     if (kind === 'board' && !columns?.length) return { ...result, reason: 'columns_unconfigured' };
     const bound = Object.freeze({ boardId: input.boardId, actorId: input.actorId, mappingVersion, expiresAtMs: Math.min(now() + CURSOR_TTL_MS, input.expiresAtMs) });

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createMondayReadClient, MondayReadError, MONDAY_API_VERSION, MONDAY_READ_BOARD_IDS, MONDAY_READ_SCOPES } from '../../src/office/backend/monday-read';
+import { createMondayReadClient, MondayReadError, MONDAY_API_VERSION, MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS, MONDAY_READ_SCOPES } from '../../src/office/backend/monday-read';
 import type { MondayColumnAllowlist, MondayReadInput } from '../../src/office/backend/monday-read';
 
 const AT = Date.parse('2026-10-11T20:00:00.000Z');
 const BOARD = MONDAY_READ_BOARD_IDS[0];
+const DEALS = '18411103560' as const;
 const TOKEN = 'synthetic-monday-access-token';
 const mapping: MondayColumnAllowlist = { [BOARD]: [{ id: 'synthetic_status', type: 'status', field: 'stage' }, { id: 'synthetic_amount', type: 'numbers', field: 'amount' }] };
 function input(extra: Partial<MondayReadInput> = {}): MondayReadInput { return { boardId: BOARD, actorId: '900001', accessToken: TOKEN, expiresAt: '2026-10-11T21:00:00.000Z', scopes: [...MONDAY_READ_SCOPES], ...extra }; }
@@ -37,6 +38,26 @@ describe('Monday fixed read boundary', () => {
     assert.equal(calls, 0);
   });
 
+  it('blocks Deals record reads before fetching even with an approved column mapping', async () => {
+    for (const columnAllowlist of [{ [DEALS]: mapping[BOARD]! }, {}]) {
+      const { client, requests } = fixture([], { columnAllowlist });
+      const result = await client.readBoard(input({ boardId: DEALS }));
+      assert.equal(result.status, 'blocked'); assert.equal(result.reason, 'forbidden_board');
+      assert.equal(result.boardId, DEALS); assert.equal(result.pages, 0);
+      assert.deepEqual(result.items, []); assert.equal(requests.length, 0);
+    }
+  });
+
+  it('blocks Deals update metadata reads before fetching regardless of column mapping', async () => {
+    for (const columnAllowlist of [{ [DEALS]: mapping[BOARD]! }, {}]) {
+      const { client, requests } = fixture([], { columnAllowlist });
+      const result = await client.readUpdates(input({ boardId: DEALS }));
+      assert.equal(result.status, 'blocked'); assert.equal(result.reason, 'forbidden_board');
+      assert.equal(result.boardId, DEALS); assert.equal(result.pages, 0);
+      assert.deepEqual(result.items, []); assert.equal(requests.length, 0);
+    }
+  });
+
   it('queries only minimal identity using the pinned endpoint/version and returns no credential', async () => {
     const { client, requests } = fixture([json({ data: { me: { id: '900001', email: 'DEMO@invalid.test' } } })]);
     const identity = await client.getIdentity(TOKEN);
@@ -52,6 +73,7 @@ describe('Monday fixed read boundary', () => {
   it('verifies exactly the five allowed board IDs with a fixed query and no account or contents fields', async () => {
     const { client, requests } = fixture([json({ data: { boards: [...MONDAY_READ_BOARD_IDS].reverse().map(id => ({ id })) } })], { columnAllowlist: {} });
     const proof = await client.verifyBoardAccess(TOKEN);
+    assert.deepEqual(proof.boardIds, ['18403945258', '18411103560', '18398057136', '18396813878', '18377848804']);
     assert.deepEqual(proof, { boardIds: [...MONDAY_READ_BOARD_IDS], readAt: new Date(AT).toISOString() });
     assert.equal(requests.length, 1); assert.equal(requests[0].endpoint, 'https://api.monday.com/v2');
     assert.equal(requests[0].body.query, 'query OfficeMondayBoardAccess($boardIds: [ID!]!) { boards(ids: $boardIds) { id } }');
@@ -59,6 +81,8 @@ describe('Monday fixed read boundary', () => {
     assert(!/account|name|item|column|update|user|mutation/.test(requests[0].body.query));
     assert(!JSON.stringify(proof).includes(TOKEN));
     assert(Object.isFrozen(proof.boardIds)); assert(Object.isFrozen(MONDAY_READ_BOARD_IDS)); assert(Object.isFrozen(MONDAY_READ_SCOPES));
+    assert(Object.isFrozen(MONDAY_RECORD_BOARD_IDS));
+    assert.deepEqual(MONDAY_RECORD_BOARD_IDS, ['18403945258', '18398057136', '18396813878', '18377848804']);
     assert.deepEqual(MONDAY_READ_SCOPES, ['boards:read', 'updates:read', 'me:read']);
   });
 

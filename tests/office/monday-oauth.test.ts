@@ -293,10 +293,21 @@ test('bounded response, non-JSON and HTTP rejection never retain provider body o
 });
 test('readBoard and readUpdates receive proven identity, fixed scopes and token internally only', async () => {
   const fixture = setup(); await connect(fixture); fixture.setTime(NOW + 1000);
-  assert.equal((await fixture.service.readBoard(MONDAY_READ_BOARD_IDS[0])).status, 'complete'); assert.equal((await fixture.service.readUpdates(MONDAY_READ_BOARD_IDS[1])).status, 'complete');
+  assert.equal((await fixture.service.readBoard(MONDAY_READ_BOARD_IDS[0])).status, 'complete'); assert.equal((await fixture.service.readUpdates(MONDAY_READ_BOARD_IDS[2])).status, 'complete');
   assert.equal(fixture.reads.length, 2); assert.equal(fixture.reads[0].actorId, MONDAY_AUTHORIZED_USER_ID); assert.deepEqual(fixture.reads[0].scopes, MONDAY_READ_SCOPES);
   assert.equal((await fixture.service.status()).lastReadAt, new Date(NOW + 1000).toISOString()); assert.equal(fixture.calls.length, 1);
   await assert.rejects(fixture.service.readBoard('999' as never), errorCode('read_unavailable')); assert.equal(fixture.reads.length, 2);
+});
+test('excluded Deals cannot read records or update metadata and preserves the five-board OAuth proof', async () => {
+  const fixture = setup(); const connected = await connect(fixture);
+  assert.equal(connected.boardAccessVerified, true); assert.equal(fixture.verificationCalls(), 1);
+  const before = await connectionRecord(fixture); const writes = fixture.store.writes.length;
+  for (const method of ['readBoard', 'readUpdates'] as const) {
+    await assert.rejects(fixture.service[method]('18411103560'), error => error instanceof MondayOAuthError && error.code === 'read_unavailable' && error.httpStatus === 403);
+  }
+  assert.equal(fixture.reads.length, 0); assert.equal(fixture.calls.length, 1);
+  assert.equal(fixture.store.writes.length, writes);
+  const after = await connectionRecord(fixture); assert.deepEqual(after, before);
 });
 test('expiry blocks reads without inventing lifetime or auto-refreshing, while explicit refresh remains allowed', async () => {
   const fixture = setup(); await connect(fixture); fixture.setTime(NOW + 3600_000);

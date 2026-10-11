@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { MondayStore, MondayStoredRecord, MondayVault } from './monday-store';
-import { MONDAY_READ_BOARD_IDS, MONDAY_READ_SCOPES, type MondayBoardId, type MondayReadClient, type MondayReadItem, type MondayReadResult, type MondayUpdateItem } from './monday-read';
+import { MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS, MONDAY_READ_SCOPES, type MondayBoardId, type MondayReadClient, type MondayReadItem, type MondayReadResult, type MondayUpdateItem } from './monday-read';
 
 export const MONDAY_OWNER_ID = 'ricardo' as const;
 // This release authorizes one pilot identity. The account ID is corroborated
@@ -276,7 +276,7 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
     return { actorId: cfg.expectedUserId, identityReadAt, boardProof: { actorId: cfg.expectedUserId, boardIds, readAt, tokenDigest: hash(tokens.accessToken) } };
   }
   async function read<T>(boardId: MondayBoardId, kind: 'readBoard' | 'readUpdates'): Promise<MondayReadResult<T>> {
-    enabled(); if (!(MONDAY_READ_BOARD_IDS as readonly string[]).includes(boardId)) fail('read_unavailable', 403);
+    enabled(); if (!(MONDAY_RECORD_BOARD_IDS as readonly string[]).includes(boardId)) fail('read_unavailable', 403);
     const result = await current(); const previous = result.record;
     if (previous.attempt) fail('operation_in_progress', 409);
     if (!previous.tokens || previous.state !== 'connected') fail('not_connected', 409);

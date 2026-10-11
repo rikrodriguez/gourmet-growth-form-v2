@@ -4,7 +4,7 @@ import { OfficeError } from './state';
 import { MondayOAuthError } from './monday-oauth';
 import type { MondayOAuthCallbackParams, MondayOAuthService } from './monday-oauth';
 import { MONDAY_OWNER_CSRF_HEADER, MONDAY_OWNER_LOGIN_COOKIE, MONDAY_OWNER_COOKIE_PATH } from './monday-owner';
-import { MONDAY_READ_BOARD_IDS } from './monday-read';
+import { MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS } from './monday-read';
 import type { MondayBoardId } from './monday-read';
 import type { MondayRuntime } from './monday-runtime';
 
@@ -41,7 +41,7 @@ function body(request: FastifyRequest, expected: readonly string[]) {
 }
 function board(request: FastifyRequest): MondayBoardId {
   const id = body(request, ['boardId']).boardId;
-  if (typeof id !== 'string' || !(MONDAY_READ_BOARD_IDS as readonly string[]).includes(id)) throw new OfficeError('FORBIDDEN_MONDAY_BOARD', 403);
+  if (typeof id !== 'string' || !(MONDAY_RECORD_BOARD_IDS as readonly string[]).includes(id)) throw new OfficeError('FORBIDDEN_MONDAY_BOARD', 403);
   return id as MondayBoardId;
 }
 function callbackParams(url: string): MondayOAuthCallbackParams {
