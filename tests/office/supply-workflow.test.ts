@@ -47,6 +47,10 @@ function decision(link: ApprovalLink, action: 'approve' | 'reject' | 'cancel', k
 function assertNoEffects(snapshot: OfficeSnapshot) {
   assert.equal(snapshot.mode, 'demo'); assert.equal(snapshot.outboundEffects, 0); assert.equal(snapshot.mondayWrites, 0);
 }
+function assertMoneyText(text: string, amounts: readonly string[]) {
+  for (const amount of amounts) assert.match(text, new RegExp(`(?<![\\d.])${amount.replace('.', '\\.')} USD\\b`, 'u'));
+  assert.doesNotMatch(text, /\b(?:2500|3500|14000|2000|4000|500|400|4900)(?:\.00)?\s*USD\b|\bUSD\s*(?:2500|3500|14000|2000|4000|500|400|4900)(?:\.00)?\b/u);
+}
 function facts(state: OfficeState) {
   return structuredClone({ leads: state.leads, assignments: state.assignments, payments: state.payments, invoices: state.invoices,
     reconciliations: state.reconciliations,
@@ -184,11 +188,16 @@ describe('persistent synthetic supplier workflow', () => {
     current = workflow(store).sourcing!.candidates.find(row => row.id === initial.id)!;
     assert.equal(current.availability.status, 'available'); assert.deepEqual(current.availability.window, workflow(store).event.window); assert.equal(current.terms, null);
     const approved = fixtures.termsFixtures.find(row => row.candidateId === current.id && row.totalCents !== null)!;
-    await run(store, { step: 'approve_terms', candidateId: current.id, revision: current.revision, termsFixtureId: approved.id }, 'supply-separation-terms');
+    const termsResult = await run(store, { step: 'approve_terms', candidateId: current.id, revision: current.revision, termsFixtureId: approved.id }, 'supply-separation-terms');
     current = workflow(store).sourcing!.candidates.find(row => row.id === initial.id)!;
     assert.equal(current.announcedRateCents, 2500); assert.equal(current.terms!.rateCents, 3500); assert.equal(current.terms!.totalCents, 14000);
     assert.equal(current.externalHired, false); assert.equal(store.state.office.cases['demo-aurora'].supplier, 'pending');
     assert.equal(current.revision, initial.revision + 3);
+    const title = 'Condiciones humanas registradas · DEMO';
+    const item = termsResult.snapshot.cases[0];
+    for (const text of [item.tasks.find(row => row.title === title)!.detail, item.results.find(row => row.title === title)!.detail, item.history.find(row => row.title === title)!.detail]) {
+      assertMoneyText(text, ['25.00', '35.00', '140.00']); assert.match(text, /35\.00 USD\/hour/u);
+    }
   });
 
   it('does not select an unreviewed or unavailable candidate and never interprets missing data as zero', async () => {
@@ -214,10 +223,16 @@ describe('persistent synthetic supplier workflow', () => {
     assert.equal(selection.reviewStatus, 'pending'); assert.equal(selection.assignedDemo, false); assert.equal(link.status, 'pending');
     assert.equal(workflow(store).sourcing!.assignments.length, 0);
     assert.equal(link.supplyContext?.kind, 'selection'); assert.equal(link.supplyContext?.digest, selection.digest);
+    const preview = projectOfficeSnapshot(store.state, AT).cases[0].approvals.find(row => row.id === link.id)!;
+    assertMoneyText(preview.body, ['25.00', '35.00', '140.00']);
+    assert.match(preview.body, /35\.00 USD\/hour/u);
     const before = canonical(store.state);
     await assert.rejects(run(store, { step: 'assign_demo', selectionId: selection.id, revision: selection.revision }, 'supply-before-approval'), (failure: unknown) => failure instanceof OfficeError && failure.statusCode === 409);
     assert.equal(canonical(store.state), before);
-    await executeOfficeCommand(store, decision(link, 'approve', 'supply-approve-exact'), () => AT + 1);
+    const approvalResult = await executeOfficeCommand(store, decision(link, 'approve', 'supply-approve-exact'), () => AT + 1);
+    const approvedBody = approvalResult.snapshot.cases[0].approvals.find(row => row.id === link.id)!;
+    assert.equal(approvedBody.body, preview.body); assert.equal(approvedBody.digest, preview.digest);
+    assertMoneyText(approvedBody.body, ['25.00', '35.00', '140.00']);
     let sourcing = workflow(store).sourcing!;
     assert.equal(sourcing.selections[0].reviewStatus, 'approved_demo'); assert.equal(sourcing.assignments.length, 0);
     assert.deepEqual(facts(store.state), unchanged);
@@ -333,7 +348,17 @@ describe('persistent synthetic procurement workflow', () => {
     assert(context?.kind === 'purchase');
     assert.equal(context.digest, option.digest); assert.equal(context.snapshot.list.revision, option.listRevision);
     assert.equal(context.snapshot.menu.revision, option.menuRevision); assert.equal(context.snapshot.option.totalCents, option.totalCents);
-    await executeOfficeCommand(store, decision(link, 'approve', 'supply-buy-approved'), () => AT + 1);
+    const preview = projectOfficeSnapshot(store.state, AT).cases[0].approvals.find(row => row.id === link.id)!;
+    assertMoneyText(preview.body, ['20.00', '40.00', '5.00', '4.00', '49.00']);
+    assert.equal(preview.body.match(/subtotal 20\.00 USD/gu)?.length, 2);
+    assert.equal(preview.body.match(/0\.02 USD\/g/gu)?.length, 2);
+    assert.match(preview.body, /Artículos 40\.00 USD; entrega 5\.00 USD; impuestos 4\.00 USD; total 49\.00 USD/u);
+    const choice = projectOfficeSnapshot(store.state, AT).cases[0];
+    for (const text of [choice.tasks.find(row => row.title === 'Opción de compra elegida · DEMO')!.detail, choice.history.find(row => row.title === 'Opción de compra elegida · DEMO')!.detail]) assertMoneyText(text, ['40.00', '5.00', '4.00', '49.00']);
+    const approvalResult = await executeOfficeCommand(store, decision(link, 'approve', 'supply-buy-approved'), () => AT + 1);
+    const approvedBody = approvalResult.snapshot.cases[0].approvals.find(row => row.id === link.id)!;
+    assert.equal(approvedBody.body, preview.body); assert.equal(approvedBody.digest, preview.digest);
+    assertMoneyText(approvedBody.body, ['20.00', '40.00', '5.00', '4.00', '49.00']);
     const approved = workflow(store).procurement!.options.find(row => row.id === option.id)!;
     assert.equal(approved.reviewStatus, 'approved_demo');
     assert.equal(approved.externalOrdered, false); assert.equal(approved.externalPaid, false); assert.equal(approved.externalReceived, false);

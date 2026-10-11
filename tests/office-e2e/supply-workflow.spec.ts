@@ -128,6 +128,9 @@ test('persists source-to-assignment and validated-menu-to-review, with exact DEM
   await expect(selectionContext).toContainText('25.00 USD / hora');
   await expect(selectionContext).toContainText('140.00 USD');
   await expect(selectionContext).toContainText('Ventana del evento');
+  const selectionBody = selectionReview.locator('.approval-body');
+  await expect(selectionBody).toContainText('total 140.00 USD');
+  await expect(selectionBody).not.toContainText('14000 USD');
   await expect(selectionReview.getByRole('button', { name: /^Editar revisión/ })).toHaveCount(0);
   const selection = sourcing.locator('article[data-testid^="supply-selection-"]');
   await expect(selection.getByRole('button', { name: 'Registrar asignación DEMO', exact: true })).toBeDisabled();
@@ -171,6 +174,11 @@ test('persists source-to-assignment and validated-menu-to-review, with exact DEM
   const purchaseReview = workspace(page).locator('article.approval-card').filter({ hasText: 'Lista y opción de compra · revisión interna DEMO' });
   await expect(purchaseReview.getByTestId('approval-supply-context')).toContainText('49.00 USD');
   await expect(purchaseReview.getByTestId('approval-supply-context')).toContainText('1000 g');
+  const purchaseBody = purchaseReview.locator('.approval-body');
+  await expect(purchaseBody).toContainText('subtotal 20.00 USD');
+  await expect(purchaseBody).toContainText('total 49.00 USD');
+  await expect(purchaseBody).not.toContainText('2000 USD');
+  await expect(purchaseBody).not.toContainText('4900 USD');
   await expect(purchaseReview.getByRole('button', { name: /^Editar revisión/ })).toHaveCount(0);
   await clickCommand(page, purchaseReview.getByRole('button', { name: /^Aprobar revisión/ }));
   state = await supplyApi.store.snapshot();
