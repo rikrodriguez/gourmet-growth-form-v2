@@ -207,6 +207,46 @@ test('approved office composition fits 1586×992 with artwork and persistent cha
   await page.screenshot({ path: testInfo.outputPath('office-approved-composition-1586x992.png') });
 });
 
+test('long DEMO chat stays inside its scroll region and keeps the composer reachable', async ({ page }, testInfo) => {
+  if (!testInfo.project.name.includes('mobile')) await page.setViewportSize({ width: 1586, height: 992 });
+  // A read-only synthetic projection exercises history growth without adding
+  // records to PostgreSQL or changing the session and its server permissions.
+  await page.route('**/office-api/snapshot', async route => {
+    const response = await route.fetch();
+    const state = await response.json() as OfficeSnapshot;
+    const current = state.cases.find(item => item.id === 'demo-aurora')!;
+    current.messages = Array.from({ length: 80 }, (_, index) => ({
+      id: `qa-long-chat-${index}`, area: 'coordination', functionId: 'coordination',
+      author: index % 2 ? 'Operador DEMO' : 'Coordinación / Tastings',
+      text: `Mensaje sintético QA ${index}. Conversación larga para comprobar desplazamiento y acceso al formulario.`,
+      evidence: { source: 'fixture:qa-long-chat', at: state.asOf, simulated: true, reference: `demo:demo-aurora:qa-long-chat-${index}` },
+    }));
+    await route.fulfill({ response, json: state });
+  });
+  await boot(page);
+  await expect(page.getByRole('log', { name: 'Conversación de Coordinación / Tastings', exact: true }).locator('article.message')).toHaveCount(80);
+  const layout = await page.evaluate(() => ({
+    width: document.documentElement.scrollWidth, viewportWidth: innerWidth,
+    height: document.documentElement.scrollHeight, viewportHeight: innerHeight,
+    shellBottom: document.querySelector('.office-shell')!.getBoundingClientRect().bottom,
+    chatHeight: document.querySelector('.office-chat-body')!.clientHeight,
+    chatContentHeight: document.querySelector('.office-chat-body')!.scrollHeight,
+  }));
+  expect(layout.width).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.height).toBeLessThanOrEqual(Math.max(layout.viewportHeight, Math.ceil(layout.shellBottom)) + 1);
+  expect(layout.chatContentHeight).toBeGreaterThan(layout.chatHeight * 5);
+  const composer = page.getByLabel('Mensaje contextual');
+  await composer.scrollIntoViewIfNeeded();
+  await composer.focus();
+  await expect(composer).toBeFocused();
+  const contained = await composer.evaluate(element => {
+    const text = element.getBoundingClientRect();
+    const body = element.closest('.office-chat-body')!.getBoundingClientRect();
+    return text.top >= body.top - 1 && text.bottom <= body.bottom + 1;
+  });
+  expect(contained).toBe(true);
+});
+
 test('department controls select real contextual functions without creating work', async ({ page }) => {
   await boot(page);
   const before = (await snapshot(page.request)).cases;

@@ -67,6 +67,7 @@ h1,h2{font-family:inherit;font-weight:700}button:focus-visible,a:focus-visible,s
 }
 .office-chat-header > .icon-button { min-width: 24px; min-height: 30px; }
 .office-chat-composer textarea { font-size: 12px; }
+.office-chat-composer { position: relative; }
 .office-chat-composer small { font-size: 10px; }
 .visually-hidden {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
