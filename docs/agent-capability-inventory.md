@@ -1,20 +1,23 @@
 # Inventario del primer flujo de agente de ventas
 
-Fecha: 2026-10-11. Base inspeccionada: `ef2c9fadad61687e2ed6c184d13d9ae1263ec563`.
+Fecha: 2026-10-11. Base histórica inspeccionada: `ef2c9fadad61687e2ed6c184d13d9ae1263ec563`.
 Las referencias y números de línea corresponden a ese commit, salvo los apartados
 de entrega local y ampliaciones posteriores. Este documento no activa modelos, cuentas, conectores, llamadas,
 envíos ni despliegues.
 Ampliaciones de alcance: operación remota completa, encargo de 15:22 UTC;
 fuentes de sourcing y compras, encargo de 15:49 UTC.
-Los cambios del primer vertical que siguen en curso en el working tree no se
-certifican aquí como capacidades terminadas; requieren revisión de su versión final.
+Las tablas base y la propuesta de las 15:49 UTC son cortes históricos. Para
+R08/R09/R19/R24 y los procesos 9/10/11 de la matriz, sus clasificaciones quedan
+sustituidas por el apartado final de proveedores/abastecimiento: implementación
+DEMO persistente con QA local validado. CI del SHA final y despliegue staging
+siguen pendientes en este corte; no se acreditan operaciones o conectores reales.
 
 Office tiene persistencia, permisos de demo, contexto comercial sintético y
 revisión humana con huella. Su motor actual es un **guion local, sin LLM**.
 `src/operations` contiene núcleos útiles de asignación, telefonía, borradores y
 pagos; no constituye un servicio operativo conectado de extremo a extremo.
 
-## Estado de entrega local
+## Estado de entrega local: corte comercial histórico
 
 Corte previo a publicación: durante la inspección base, la referencia de staging
 era `ef2c9fa`. Este snapshot no acredita la versión remota posterior a publicar
@@ -30,11 +33,12 @@ Google Voice, PayPal, calendario o publicación de páginas. Telnyx y pagos tien
 núcleos verificadores/arithmetic locales, sin clientes o gateways activos.
 La ubicación del generador existente y los originales HTML siguen pendientes.
 
-Validación local: typecheck y compilación Office correctos; 168 pruebas Office
+Validación del corte comercial anterior: typecheck y compilación Office correctos; 168 pruebas Office
 incluyen concurrencia PostgreSQL, permisos, 25 salidas adversariales y errores.
 Seis comprobaciones de navegador pasan en escritorio y 320 px: contexto comercial,
 aprobación/revisión/replay, dashboard y saldo parcial con scopes. No son pruebas
-de cuentas externas ni de envío o cobro real.
+de cuentas externas ni de envío o cobro real. La validación actual del tramo
+proveedores/abastecimiento se registra al final; este resultado histórico no la sustituye.
 
 ## Alcance y fuentes
 
@@ -190,7 +194,7 @@ Se revisó el contenido de las pruebas; no se ejecutaron en este inventario:
 Estas pruebas no demuestran conectores reales, watchdog, entrega de alertas,
 contacto humano, parada de seguimientos ni facturación controlada.
 
-## Operación remota completa: clasificación por capacidad
+## Operación remota completa: clasificación histórica por capacidad
 
 En esta tabla, **implementada** significa código disponible dentro del alcance
 indicado, que puede ser sólo núcleo local/DEMO. **Parcial** significa que existe
@@ -198,7 +202,8 @@ una pieza pero falta completar el recorrido. **No implementada** significa que
 no se encontró una implementación en el checkout inspeccionado. **Bloqueada**
 identifica una dependencia o restricción concreta que impide avanzar a esa acción;
 no implica que exista un ejecutor listo. Ninguna fila acredita una cuenta remota
-conectada o un resultado externo sin su evidencia.
+conectada o un resultado externo sin su evidencia. Las filas de sourcing y compras
+describen el corte base; su alcance DEMO queda sustituido por el tramo actual al final.
 
 | Capacidad | Estado comprobado | Evidencia y dependencia para completar el recorrido |
 | --- | --- | --- |
@@ -304,7 +309,7 @@ de cada dato. Un perfil encontrado no acredita identidad, disponibilidad ni
 aceptación; un dato ausente permanece desconocido. Buscar chefs después de vender
 sigue siendo la regla vigente y no impide la venta por falta de capacidad previa.
 
-**Compras: no implementadas.** Instacart y servicios similares son opciones
+**Compras reales: no implementadas en este corte histórico ni activadas ahora.** Instacart y servicios similares son opciones
 solicitadas, sin integración o cuenta acreditada. Primero se valida menú y
 cantidades; después se prepara la lista revisionada y se comparan opciones con
 dirección, ventana y coste total verificados. La aprobación específica precede a
@@ -318,7 +323,7 @@ exactas. En compras incluye cesta, dirección, ventana, coste total y condicione
 un cambio requiere otra revisión. Aprobar el plan o el borrador no ejecuta esas
 acciones ni concede permiso permanente a una fuente o servicio.
 
-## Siguiente porción propuesta, todavía no implementada
+## Corte histórico: porción propuesta a las 15:49 UTC
 
 Documentos, contratos de datos y borradores sintéticos para los procesos de
 sourcing y logística/compras de la [matriz](automation-traceability.md). Cada
@@ -328,4 +333,65 @@ ejemplo serán sintéticos y estarán marcados DEMO; los costes y la disponibili
 no observados serán desconocidos. Formularios, mensajes y pedidos se preparan
 como borradores para revisión humana. Esta porción no añade integración ni
 realiza llamadas, visitas a fuentes, envíos o compras, y no se presenta como
-capacidad terminada del checkout.
+capacidad terminada de aquel corte. La clasificación de propuesta pendiente queda
+sustituida por el tramo DEMO persistente implementado que se documenta a continuación;
+las integraciones y ejecuciones externas siguen pendientes.
+
+## Tramo local actual: proveedores y abastecimiento DEMO persistente
+
+Estado de este corte: **implementado en DEMO; QA local PASS**. Esta
+ampliación sustituye las clasificaciones históricas de R08/R09/R19/R24 y procesos
+9/10/11 de la base `ef2c9fa` para el alcance DEMO persistente; no acredita la versión
+desplegada ni conectores activos. Se reutilizan
+`OfficeState.office`, comandos, aprobaciones, historial y transacción PostgreSQL;
+no se crea otro backend y las nueve funciones Office se conservan.
+
+| Capacidad del tramo | Estado comprobado localmente | Cobertura y límites |
+| --- | --- | --- |
+| Contratos de cola, digests y candidatos | **Implementados en DEMO; QA local PASS** | [supply-contracts.ts](../src/office/supply-contracts.ts), [supply-fixtures.ts](../src/office/backend/supply-fixtures.ts) y [supply-workflow.ts](../src/office/backend/supply-workflow.ts). Cola de venta cerrada sin proveedor, ingestión/deduplicación y discrepancias de conteo visibles. Identidad sintética común entre casos; fuente/link, ciudad/cobertura, tarifa anunciada, moneda/unidad y fecha de lectura. Evaluación humana, disponibilidad y condiciones separadas. Límites de colecciones y recorrido de navegador cubiertos. |
+| Selección revisable y asignación interna | **Implementadas en DEMO; backend PASS** | Snapshot de candidato/evento/condiciones en `supplyContext`, incluido por [computeApprovalDigest](../src/office/backend/pilot-core.ts). Revisión pendiente → decisión DEMO → registro separado de asignación interna; sin contratación externa. Motor revalida dependencias y bloquea solapamientos entre casos y una segunda asignación por caso bajo la transacción existente. Concurrencia, bindings y obsolescencia cubiertos; liberación/reprogramación no implementadas. |
+| Menú/recetas/cantidades → lista → opción → revisión | **Implementado en DEMO; backend PASS** | Menú y cantidades requieren validación humana; la opción conserva dirección ficticia, ventana, moneda, cargos, total calculado y condiciones de sustitución. La revisión vincula menú/lista/opción completos; cambios y ventanas vencidas bloquean aprobación anterior. Cálculo, datos ausentes, invalidación y rollback cubiertos; aprobar nunca ejecuta pedido, pago o recepción. |
+| Comandos y persistencia compatibles | **Integrados en Office; backend PASS** | [commands.ts](../src/office/backend/commands.ts), [state.ts](../src/office/backend/state.ts) y [postgres-store.ts](../src/office/backend/postgres-store.ts). Operación `supply` tipada bajo `action: draft`; decisiones usan los verbos existentes. Upgrade del agregado anterior sin reseedear. Permisos, durabilidad, idempotencia, rollback y concurrencia cubiertos. |
+| Revisión visible y procedencia | **Panel y scopes integrados; QA local PASS** | [SupplyWorkflowPanel.tsx](../src/office/SupplyWorkflowPanel.tsx) muestra estados separados y datos exactos de selección/abastecimiento. [session.ts](../src/office/backend/session.ts) filtra sourcing y compras por función; lectura y revisiones obsoletas cubiertas en navegador. No se acredita contacto, disponibilidad real, contratación, pedido, entrega ni recibo. |
+
+Las nuevas pruebas de [workflow](../tests/office/supply-workflow.test.ts) y
+[PostgreSQL](../tests/office/supply-postgres.test.ts) cubren venta
+previa, datos faltantes, scoping, digest, aprobación independiente de asignación,
+compras sin ejecución, replay, upgrade y concurrencia. La ejecución local de QA
+confirmó **198/198 pruebas backend Office PASS, cero skips**, **89/89 operaciones
+PASS, cero skips**, typecheck final con salida **0** y ambas compilaciones **PASS**.
+La revisión estática no encontró P0/P1.
+Los reporters JSON confirman navegador base **8/8 PASS, cero skips** y navegador
+sobre staging compilado **10/10 PASS, cero skips**. La suite de navegador Office
+terminó con **72 casos recogidos, 71 PASS y un único skip preexistente**: referencia
+de escritorio 1586×992 en el proyecto móvil. Resultado final: **cero fallos, cero
+flaky y salida 0**. Las **8 pruebas de proveedores/abastecimiento** en escritorio
+y móvil pasaron todas. `browser-qa-proof.json` y `source-freeze.json` del registro
+local de QA conservan la evidencia y el freeze del código productivo. Se usaron
+puertos aislados 4176/4181, estado legado único por corrida y estado de cada nueva
+prueba de proveedores único por test; los ajustes del harness de historial no
+modificaron el código productivo.
+Esta edición sólo documenta resultados confirmados por QA; no ejecutó pruebas.
+CI del SHA final y despliegue exclusivamente staging siguen pendientes de evidencia
+posterior en este corte. Estos resultados no acreditan acceso a proveedores reales.
+
+Los comandos del tramo aceptan IDs y decisiones sobre datos sintéticos propiedad
+del servidor, no datos reales arbitrarios del navegador. La tarifa anunciada no
+se convierte en condiciones aprobadas; asignación interna no acredita aceptación
+externa y conserva `externalHired: false`. En compras, `externalOrdered`,
+`externalPaid` y `externalReceived` permanecen falsos. Una fuente ausente sigue
+desconocida, nunca se presenta como conectada por aparecer en un fixture.
+
+Límites del tramo: 1000 selecciones y 1000 opciones históricas por caso. Un nuevo
+registro por encima del límite devuelve `SUPPLY_RECORD_LIMIT`; no se borra ni
+restaura historial para superar el límite. La reutilización de registros existentes
+sigue permitida. Liberación/reprogramación de asignaciones y archivo de revisiones
+no están implementados. Los fixtures de recetas y costes no acreditan inventario,
+precios, impuestos o disponibilidad de un comercio real.
+
+**Bloqueos de operación real:** siguen faltando acceso autorizado y datos reales
+de las fuentes, cuentas/conectores, identidad y aceptación verificables, políticas
+vigentes y ejecutores autorizados. Formularios, mensajes, contratos y pedidos
+requieren aprobación específica. El usuario identificó una cuenta para preparar
+OAuth de Monday después del tramo; identificarla no conecta OAuth ni concede
+scopes. Ese trabajo queda separado, sin activación en esta ampliación.

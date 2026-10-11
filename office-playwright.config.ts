@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
-const baseURL = 'http://127.0.0.1:4175';
-const apiURL = 'http://127.0.0.1:4180';
+const baseURL = 'http://127.0.0.1:4176';
+const apiURL = 'http://127.0.0.1:4181';
 
 export default defineConfig({
   testDir: './tests/office-e2e',
@@ -27,13 +27,13 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'node scripts/office-db.mjs start && node scripts/office-db.mjs migrate && npm run office:api',
+      command: 'node scripts/office-db.mjs start && node scripts/office-db.mjs migrate && node --import tsx tests/office-e2e/server.ts',
       url: `${apiURL}/office-api/health`,
       reuseExistingServer: false,
       timeout: 120_000,
     },
     {
-      command: 'npm run office:dev',
+      command: 'npx --no-install vite --config tests/office-e2e/vite.config.ts',
       url: `${baseURL}/office/`,
       reuseExistingServer: false,
       timeout: 30_000,

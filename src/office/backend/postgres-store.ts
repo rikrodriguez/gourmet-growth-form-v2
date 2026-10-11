@@ -6,6 +6,7 @@ import { createOfficeFixtureState } from './fixtures';
 import { OfficeError, assertOfficeState, canonical } from './state';
 import type { OfficeState, OfficeStore } from './state';
 import { StagingVariableError } from './staging-diagnostics';
+import { ensureSupplyWorkflow } from './supply-workflow';
 
 export const DEFAULT_OFFICE_DATABASE_URL = 'postgresql://office_candidate@127.0.0.1:55433/gourmet_office_candidate_dev';
 export const OFFICE_STATE_ID = 'gourmet-office-candidate-development';
@@ -77,9 +78,17 @@ export class PostgresOfficeStore implements OfficeStore {
       const fixture = createOfficeFixtureState(nowMs);
       assertOfficeState(fixture);
       await client.query('INSERT INTO office_demo.states(id, payload) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO NOTHING', [this.stateId, JSON.stringify(fixture)]);
-      const stored = await client.query<{ payload: OfficeState }>('SELECT payload FROM office_demo.states WHERE id = $1', [this.stateId]);
-      assertOfficeState(stored.rows[0].payload);
-      for (const row of Object.values(stored.rows[0].payload.office.history)) await client.query('INSERT INTO office_demo.history_events(state_id, history_id, record) VALUES ($1,$2,$3::jsonb) ON CONFLICT (state_id, history_id) DO NOTHING', [this.stateId, row.id, JSON.stringify(row)]);
+      const stored = await client.query<{ payload: OfficeState }>('SELECT payload FROM office_demo.states WHERE id = $1 FOR UPDATE', [this.stateId]);
+      if (stored.rows.length !== 1) throw new OfficeError('OFFICE_STATE_MISSING', 503);
+      const state = stored.rows[0].payload;
+      assertOfficeState(state);
+      const before = canonical(state);
+      // Upgrade this aggregate under the same row lock used by commands. Keep
+      // old approvals, digests, durable intents and append-only history intact.
+      ensureSupplyWorkflow(state, nowMs);
+      assertOfficeState(state);
+      if (canonical(state) !== before) await client.query('UPDATE office_demo.states SET payload = $2::jsonb, revision = revision + 1, updated_at = clock_timestamp() WHERE id = $1', [this.stateId, JSON.stringify(state)]);
+      for (const row of Object.values(state.office.history)) await client.query('INSERT INTO office_demo.history_events(state_id, history_id, record) VALUES ($1,$2,$3::jsonb) ON CONFLICT (state_id, history_id) DO NOTHING', [this.stateId, row.id, JSON.stringify(row)]);
       await client.query('COMMIT');
       this.ready = true;
     } catch (error) {

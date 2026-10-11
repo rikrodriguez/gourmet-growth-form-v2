@@ -5,6 +5,7 @@ import type { OfficeState, OfficeStore, DemoCaseId, ApprovalLink } from './state
 import { commercialHistoryBinding, resolveCommercialThread } from './commercial-fixtures';
 import { generateSalesDraft, readSalesDraftContext } from './sales-flow';
 import type { SalesFlowOptions, SalesFlowError } from './sales-flow';
+import { applySupplyOperation, assertSupplyReviewCurrent, bindSupplyReview, ensureSupplyWorkflow, recordSupplyReviewDecision } from './supply-workflow';
 
 function demoText(text: string) { return text.startsWith('DEMO — ') ? text : `DEMO — ${text}`; }
 
@@ -57,6 +58,37 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
       item.messages.push({ id: `message-${token}-user`, area: FUNCTION_AREAS[command.functionId], functionId: command.functionId, author: 'Operador · identidad DEMO', text: `DEMO — ${command.text!}`, evidence: ev }, { id: `message-${token}-response`, area: FUNCTION_AREAS[command.functionId], functionId: command.functionId, author: `${FUNCTION_NAMES[command.functionId]} · guion DEMO`, text: response, evidence: { ...ev, reference: `${ev.reference}:response` } });
       state.office.jobs[`job-${token}-chat`] = { id: `job-${token}-chat`, caseId, area: FUNCTION_AREAS[command.functionId], functionId: command.functionId, title: 'Respuesta guionada DEMO', detail: 'Conversación local guardada; no se consultó un LLM ni se envió un mensaje externo.', status: 'completed', evidence: ev };
       recordHistory(state, command, atMs, 'Chat guionado guardado · DEMO', 'Pregunta y respuesta sintéticas persistidas en PostgreSQL local. Sin LLM ni fuentes conectadas.', 'completed');
+    } else if (command.action === 'draft' && command.supply !== undefined) {
+      // Local fixture operations use the existing aggregate and transaction;
+      // no source, contact, model or procurement API is invoked under this lock.
+      ensureSupplyWorkflow(state, atMs);
+      const outcome = applySupplyOperation(state, command, atMs);
+      const ev = evidence(caseId, `supply-${token}`, atMs);
+      if (outcome.review) {
+        const context = outcome.review.context;
+        const supplyCase = state.office.supply!.cases[caseId];
+        const boundId = context.kind === 'selection' ? supplyCase.selections[context.selectionId]?.approvalId : supplyCase.options[context.optionId]?.approvalId;
+        if (boundId) {
+          const bound = state.office.approvals[boundId];
+          if (!bound || bound.caseId !== caseId || bound.functionId !== command.functionId || sha256(bound.supplyContext) !== sha256(context)) throw new OfficeError('SUPPLY_REVIEW_BINDING_INVALID', 409);
+          state.office.commands[command.idempotencyKey] = { key: command.idempotencyKey, digest: inputDigest, input: command, actorId: DEMO_ACTOR, atMs };
+          return { snapshot: projectOfficeSnapshot(state, atMs), replayed: true };
+        }
+        const id = `approval-${token}`;
+        const coreDraftId = `draft-${token}`;
+        const recipient = 'supply-review@invalid.test';
+        await runPilotCommand(state, caseId, 'message', { draftId: coreDraftId, channel: 'email', recipient, text: demoText(outcome.review.body), artifactRefs: [] }, `${token}-draft`, atMs);
+        const jobId = `job-${token}`;
+        const link: ApprovalLink = { id, caseId, functionId: command.functionId, coreDraftId, title: outcome.review.title, account: 'Gourmet · cuenta de demostración', channel: 'email', recipient, attachments: [], revision: 1, digest: '', status: 'pending', evidence: ev, jobId, supplyContext: structuredClone(context) };
+        link.digest = computeApprovalDigest(state, link);
+        state.office.approvals[id] = link;
+        bindSupplyReview(state, context, id);
+        state.office.jobs[jobId] = { id: jobId, caseId, functionId: command.functionId, area: FUNCTION_AREAS[command.functionId], title: link.title, detail: outcome.detail, status: 'waiting_approval', evidence: ev, approvalId: id, revision: 1 };
+      } else {
+        state.office.jobs[`job-${token}`] = { id: `job-${token}`, caseId, functionId: command.functionId, area: FUNCTION_AREAS[command.functionId], title: outcome.title, detail: outcome.detail, status: outcome.status === 'awaiting_approval' ? 'waiting_approval' : outcome.status, evidence: ev };
+        item.results.push({ id: `result-${token}`, area: FUNCTION_AREAS[command.functionId], functionId: command.functionId, title: outcome.title, detail: outcome.detail, evidence: ev });
+      }
+      recordHistory(state, command, atMs, outcome.title, outcome.detail, outcome.status === 'awaiting_approval' ? 'awaiting_approval' : outcome.status === 'blocked' ? 'blocked' : outcome.status === 'failed' ? 'failed' : outcome.status === 'stale' ? 'stale' : 'completed');
     } else if (command.action === 'draft') {
       const id = `approval-${token}`;
       const coreDraftId = `draft-${token}`;
@@ -97,6 +129,7 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
       if (salesContext) salesFlow = { fingerprint: salesContext.fingerprint, approvalId: id };
     } else {
       const link = checkedApproval(state, command);
+      if (command.action === 'revise' && link.supplyContext !== undefined) throw new OfficeError('SUPPLY_REVIEW_REBUILD_REQUIRED', 409);
       if (command.action !== 'revise' && link.status !== 'pending') throw new OfficeError('APPROVAL_TERMINAL', 409);
       if (command.action === 'revise') {
         const current = state.drafts[link.coreDraftId]!;
@@ -117,6 +150,7 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
       } else {
         const job = state.office.jobs[link.jobId]!;
         if (command.action === 'approve') {
+          if (link.supplyContext !== undefined) assertSupplyReviewCurrent(state, link.supplyContext, caseId, atMs);
           const reviewed = draftCore.reviewMessageDraft(state, { draftId: link.coreDraftId, revision: link.revision });
           const coreApprovalId = `core-approval-${token}`;
           await runPilotCommand(state, caseId, 'approve_message', { approvalId: coreApprovalId, draftId: link.coreDraftId, revision: link.revision, reviewDigest: reviewed.reviewDigest }, `${token}-approve`, atMs, true);
@@ -126,6 +160,7 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
           link.status = command.action === 'reject' ? 'rejected_demo' : 'cancelled_demo';
           job.status = 'completed'; job.detail = `DEMO — Decisión ${command.action === 'reject' ? 'de rechazo' : 'de cancelación'} registrada. No hubo ejecución ni envío.`;
         }
+        if (link.supplyContext !== undefined) recordSupplyReviewDecision(state, link.supplyContext, link.status, atMs);
         link.evidence = evidence(caseId, `${link.id}-${command.action}-revision-${link.revision}`, atMs);
         job.evidence = link.evidence;
         recordHistory(state, command, atMs, command.action === 'approve' ? 'Aprobación registrada · DEMO' : command.action === 'reject' ? 'Borrador rechazado · DEMO' : 'Borrador cancelado · DEMO', `${job.detail}${commercialHistoryBinding(link.commercialContext)}`, command.action === 'approve' ? 'blocked' : 'completed');

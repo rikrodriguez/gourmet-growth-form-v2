@@ -3,6 +3,9 @@ import type { AreaId, CommercialThread, Evidence, FunctionId, OfficeCase, Office
 import { FUNCTIONS } from '../functions';
 import { assertCommercialContext, createCommercialThreads } from './commercial-fixtures';
 import { readSalesWorkflow } from './sales-workflow';
+import type { SupplyReviewContext, SupplyState } from '../supply-contracts';
+import { isSupplyOperation } from '../supply-contracts';
+import { assertSupplyState, projectSupplyWorkflow } from './supply-workflow';
 
 export const DEMO_ACTOR = 'OFFICE_DEMO_OPERATOR';
 export const CASE_IDS = ['demo-aurora', 'demo-cedar', 'demo-harbor'] as const;
@@ -12,17 +15,17 @@ export const FUNCTION_AREAS = Object.fromEntries(FUNCTIONS.map(row => [row.id, r
 export type DemoCaseId = typeof CASE_IDS[number];
 export type JobStatus = Exclude<WorkStatus, 'awaiting_approval'> | 'waiting_approval';
 export type OfficeJob = { id: string; caseId: DemoCaseId; area: AreaId; functionId: FunctionId; title: string; detail: string; status: JobStatus; evidence: Evidence; approvalId?: string; revision?: number };
-export type ApprovalLink = { id: string; caseId: DemoCaseId; functionId: FunctionId; coreDraftId: string; title: string; account: string; channel: 'email'; recipient: string; attachments: string[]; revision: number; digest: string; status: 'pending' | 'approved_demo' | 'rejected_demo' | 'cancelled_demo'; evidence: Evidence; coreApprovalId?: string; jobId: string; commercialContext?: CommercialThread };
+export type ApprovalLink = { id: string; caseId: DemoCaseId; functionId: FunctionId; coreDraftId: string; title: string; account: string; channel: 'email'; recipient: string; attachments: string[]; revision: number; digest: string; status: 'pending' | 'approved_demo' | 'rejected_demo' | 'cancelled_demo'; evidence: Evidence; coreApprovalId?: string; jobId: string; commercialContext?: CommercialThread; supplyContext?: SupplyReviewContext };
 export type CommandRecord = { key: string; digest: string; input: OfficeCommand; actorId: typeof DEMO_ACTOR; atMs: number; salesFlow?: { fingerprint: string; approvalId?: string; error?: 'SALES_PLANNER_FAILED' | 'SALES_PLANNER_TIMEOUT' | 'INVALID_SALES_PLAN' } };
 export type HistoryRecord = OfficeHistory & { caseId: DemoCaseId; commandKey: string | null };
-export type DemoCase = Omit<OfficeCase, 'history' | 'tasks' | 'approvals' | 'commercialThreads'>;
+export type DemoCase = Omit<OfficeCase, 'history' | 'tasks' | 'approvals' | 'commercialThreads' | 'supplyWorkflow'>;
 export type CoreDraft = { kind: string; gourmetEventId: string; currentRevision: number; revisions: Record<string, { draftId: string; revision: number; text?: string; contentDigest: string; [key: string]: unknown }> };
 export type OfficeState = {
   version: 1; mode: 'simulation';
   leads: Record<string, unknown>; closers: Record<string, unknown>; assignments: Record<string, unknown>; callBindings: Record<string, unknown>; callEvents: Record<string, unknown>;
   payments: Record<string, unknown>; invoices: Record<string, unknown>; exceptions: Record<string, unknown>; drafts: Record<string, CoreDraft>; approvals: Record<string, { valid: boolean; [key: string]: unknown }>;
   commands: Record<string, unknown>; sourceLeadBindings: Record<string, unknown>; providerEvents: Record<string, unknown>; audit: Record<string, unknown>; reconciliations: Record<string, unknown>; closerIdentityBindings: Record<string, unknown>;
-  office: { version: 1; syntheticOnly: true; actorId: typeof DEMO_ACTOR; initializedAtMs: number; cases: Record<DemoCaseId, DemoCase>; approvals: Record<string, ApprovalLink>; jobs: Record<string, OfficeJob>; history: Record<string, HistoryRecord>; commands: Record<string, CommandRecord> };
+  office: { version: 1; syntheticOnly: true; actorId: typeof DEMO_ACTOR; initializedAtMs: number; cases: Record<DemoCaseId, DemoCase>; approvals: Record<string, ApprovalLink>; jobs: Record<string, OfficeJob>; history: Record<string, HistoryRecord>; commands: Record<string, CommandRecord>; supply?: SupplyState };
 };
 export interface OfficeStore { transact<T>(fn: (state: OfficeState) => T | Promise<T>): Promise<T>; snapshot(): Promise<OfficeState>; }
 
@@ -54,9 +57,11 @@ export function parseOfficeCommand(body: unknown): OfficeCommand {
   const decision = ['approve', 'reject', 'cancel', 'revise'].includes(body.action);
   const commercialKeys = ['commercialThreadId', 'commercialThreadRevision', 'commercialThreadDigest'];
   const commercial = commercialKeys.some(key => Object.hasOwn(body, key));
+  const supply = Object.hasOwn(body, 'supply');
+  if (supply && (body.action !== 'draft' || !['suppliers', 'logistics'].includes(body.functionId as string) || commercial || Object.hasOwn(body, 'text'))) throw new OfficeError('INVALID_SUPPLY_COMMAND');
   if (commercial && (body.action !== 'draft' || body.functionId !== 'sales')) throw new OfficeError('INVALID_COMMERCIAL_DRAFT');
   const required = [...base, ...(decision ? ['approvalId', 'revision', 'digest'] : []), ...(['chat', 'revise'].includes(body.action) ? ['text'] : []), ...(commercial ? commercialKeys : [])];
-  const allowed = [...required, ...(body.action === 'draft' && !commercial ? ['text'] : [])];
+  const allowed = [...required, ...(body.action === 'draft' && !commercial && !supply ? ['text'] : []), ...(supply ? ['supply'] : [])];
   for (const key of Reflect.ownKeys(body)) {
     const descriptor = Object.getOwnPropertyDescriptor(body, key);
     if (typeof key !== 'string' || !allowed.includes(key) || !descriptor?.enumerable || !('value' in descriptor)) throw new OfficeError('UNKNOWN_FIELD');
@@ -69,6 +74,11 @@ export function parseOfficeCommand(body: unknown): OfficeCommand {
   if (body.text !== undefined && (typeof body.text !== 'string' || body.text.trim().length === 0 || body.text.length > 2000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(body.text))) throw new OfficeError('INVALID_TEXT');
   if (decision && (!validId(body.approvalId) || !Number.isSafeInteger(body.revision) || (body.revision as number) < 1 || (body.revision as number) > 1_000_000 || typeof body.digest !== 'string' || !/^[a-f0-9]{64}$/.test(body.digest))) throw new OfficeError('INVALID_DECISION');
   if (commercial && (!validId(body.commercialThreadId) || !Number.isSafeInteger(body.commercialThreadRevision) || (body.commercialThreadRevision as number) < 1 || (body.commercialThreadRevision as number) > 1_000_000 || typeof body.commercialThreadDigest !== 'string' || !/^[a-f0-9]{64}$/.test(body.commercialThreadDigest))) throw new OfficeError('INVALID_COMMERCIAL_BINDING');
+  if (supply) {
+    if (!isSupplyOperation(body.supply)) throw new OfficeError('INVALID_SUPPLY_COMMAND');
+    const sourcing = ['queue_sourcing', 'ingest_digest', 'evaluate_candidate', 'verify_availability', 'approve_terms', 'select_candidate', 'assign_demo'].includes(body.supply.step);
+    if (body.functionId !== (sourcing ? 'suppliers' : 'logistics')) throw new OfficeError('INVALID_SUPPLY_FUNCTION', 403);
+  }
   return structuredClone(body) as OfficeCommand;
 }
 export function assertOfficeState(state: OfficeState): void {
@@ -85,6 +95,14 @@ export function assertOfficeState(state: OfficeState): void {
   for (const link of Object.values(state.office.approvals)) if (link.commercialContext !== undefined) {
     assertCommercialContext(state, link.commercialContext, link.caseId);
     if (link.functionId !== 'sales' || link.recipient !== link.commercialContext.recipient) throw new OfficeError('INVALID_COMMERCIAL_CONTEXT', 503);
+  }
+  assertSupplyState(state);
+  for (const link of Object.values(state.office.approvals)) if (link.supplyContext !== undefined) {
+    if (link.supplyContext.caseId !== link.caseId || link.functionId !== (link.supplyContext.kind === 'selection' ? 'suppliers' : 'logistics') || link.recipient !== 'supply-review@invalid.test' || link.commercialContext !== undefined) throw new OfficeError('INVALID_SUPPLY_CONTEXT', 503);
+    assertEvidence(link.supplyContext.evidence, link.caseId);
+    const context = link.supplyContext;
+    const id = context.kind === 'selection' ? context.selectionId : context.optionId;
+    if (context.digest !== sha256({ kind: context.kind, caseId: context.caseId, id, revision: context.revision, snapshot: context.snapshot })) throw new OfficeError('INVALID_SUPPLY_CONTEXT', 503);
   }
 }
 export function assertEvidence(ev: Evidence, caseId: DemoCaseId) {
@@ -109,9 +127,10 @@ export function projectOfficeSnapshot(state: OfficeState, nowMs: number): Office
       const workflow = readSalesWorkflow(state, id, nowMs);
       return { ...state.office.cases[id],
       commercialThreads: createCommercialThreads(id, state.office.initializedAtMs),
+      supplyWorkflow: projectSupplyWorkflow(state, id, nowMs),
       results: bounded([...state.office.cases[id].results, ...workflow.results], false, true).map(currentArea), messages: bounded([...state.office.cases[id].messages]).map(currentArea),
       tasks: bounded([...Object.values(state.office.jobs).filter(row => row.caseId === id), ...workflow.tasks], false, true).map(job => { const { caseId: _caseId, approvalId: _approvalId, revision: _revision, ...task } = job as OfficeJob; return { ...currentArea(task), status: task.status === 'waiting_approval' ? 'awaiting_approval' : task.status }; }),
-      approvals: bounded(Object.values(state.office.approvals).filter(row => row.caseId === id), true).map(row => ({ id: row.id, area: FUNCTION_AREAS[row.functionId], functionId: row.functionId, title: row.title, body: state.drafts[row.coreDraftId]?.revisions[row.revision]?.text ?? '', recipient: row.recipient, account: row.account, attachments: row.attachments, channel: row.channel, revision: row.revision, digest: row.digest, status: row.status, evidence: row.evidence, ...(row.commercialContext !== undefined ? { commercialContext: row.commercialContext } : {}) })),
+      approvals: bounded(Object.values(state.office.approvals).filter(row => row.caseId === id), true).map(row => ({ id: row.id, area: FUNCTION_AREAS[row.functionId], functionId: row.functionId, title: row.title, body: state.drafts[row.coreDraftId]?.revisions[row.revision]?.text ?? '', recipient: row.recipient, account: row.account, attachments: row.attachments, channel: row.channel, revision: row.revision, digest: row.digest, status: row.status, evidence: row.evidence, ...(row.commercialContext !== undefined ? { commercialContext: row.commercialContext } : {}), ...(row.supplyContext !== undefined ? { supplyContext: row.supplyContext } : {}) })),
       history: bounded(Object.values(state.office.history).filter(row => row.caseId === id)).map(({ caseId: _caseId, commandKey: _commandKey, ...row }) => row).sort((a, b) => a.evidence.at.localeCompare(b.evidence.at) || a.id.localeCompare(b.id)),
     }; }),
   } as OfficeSnapshot;

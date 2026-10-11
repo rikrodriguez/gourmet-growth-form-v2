@@ -1,10 +1,10 @@
 # Trazabilidad de automatizaciones comerciales
 
-Fecha: 2026-10-11. Base revisada: `ef2c9fa`, corte previo a publicación. Fuentes: instrucciones de Ricardo sobre automatizaciones y reglas, `src/office/functions.ts`, `docs/commercial-flow.md`, `src/operations/` y contratos Office. No se encontró una especificación integral adicional en este checkout. Las políticas ausentes siguen pendientes; el código no las inventa. La versión remota posterior requiere evidencia de despliegue y SHA; este corte no la certifica.
+Fecha: 2026-10-11. Base histórica revisada: `ef2c9fa`, corte previo a publicación. Fuentes: instrucciones de Ricardo sobre automatizaciones y reglas, `src/office/functions.ts`, `docs/commercial-flow.md`, `src/operations/` y contratos Office. No se encontró una especificación integral adicional en este checkout. Las políticas ausentes siguen pendientes; el código no las inventa. La versión remota posterior requiere evidencia de despliegue y SHA; este documento no la certifica.
 
-Esta matriz precede la implementación del primer flujo vertical. «Núcleo» significa reglas puras probadas, no un conector activo. «DEMO» significa evidencia sintética. Tener una herramienta en el entorno de Codex no concede acceso a la aplicación.
+La matriz y la tabla de doce procesos conservan el corte histórico previo al primer flujo vertical. La propuesta de las 15:49 UTC también es histórica. Sus clasificaciones de R08/R09/R19/R24 y procesos 9/10/11 quedan sustituidas, para el alcance DEMO persistente, por el tramo local al final: ese código ya está implementado y su QA local está validado. CI del SHA final y despliegue staging siguen pendientes en este corte. Las operaciones y conectores reales siguen pendientes. «Núcleo» significa reglas puras probadas, no un conector activo. «DEMO» significa evidencia sintética. Tener una herramienta en el entorno de Codex no concede acceso a la aplicación.
 
-| ID / requisito | Trigger | Estado y condiciones | Responsable existente | Herramienta / alcance | Aprobación | Evidencia | Pruebas / cobertura |
+| ID / requisito | Trigger | Estado y condiciones | Responsable existente | Herramienta / alcance histórico | Aprobación | Evidencia | Pruebas / cobertura del corte base |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | R01 Captura y deduplicación | Lead recibido | Identidad de origen estable; reintento no crea otro lead | Ventas / humano | `assignment.captureLead`; núcleo | Gateway autenticado pendiente para datos reales | ID y timestamp de captura | `assignment.test.mjs`: replay, colisiones |
 | R02 Closer activo y disponible | Lead capturado, disponibilidad o expiración | Departamento, turno, disponibilidad con TTL y capacidad explícitos; si faltan, cola | Ventas / closer humano | `setCloserAvailability`, `reserveLead`, `acceptReservation`; núcleo | Aceptación humana; no inferir presencia | Reserva, closer y expiración | `assignment.test.mjs`: turno, TTL, pausa, concurrencia |
@@ -49,7 +49,7 @@ Identidad real de empleados y permisos por caso; proveedor/modelo LLM y autoriza
 4. Twenty es stack histórico. Los blueprints antiguos no autorizan reintroducirlo en la arquitectura vigente.
 5. La revisión autorizada identificó modelos HTML reales de reunión/reprogramación y recibo. No se copian nombres, correos, importes ni enlaces privados. Para adaptarlos exactamente deben estar disponibles los originales HTML en este entorno; una descripción de estructura no los sustituye. El recibo no acredita una propuesta pendiente. El generador existente de pago/calendario todavía no está localizado.
 
-## Los doce procesos y su aceptación
+## Los doce procesos y su aceptación: corte histórico base
 
 | Proceso | Estado operativo comprobado | Regla / dependencia | Aceptación pendiente o cubierta |
 | --- | --- | --- | --- |
@@ -66,7 +66,7 @@ Identidad real de empleados y permisos por caso; proveedor/modelo LLM y autoriza
 | 11 Ejecución por estilo | No implementado: checklists descriptivos | Drop-Off/Buffet/Serving/Live Cooking con responsables, hitos y evidencias; compras R24 desde menú/cantidades validados hasta recepción/recibos | Matrices por estilo pendientes; cada pedido requiere aprobación específica y resultado verificable; coste o entrega desconocidos permanecen pendientes |
 | 12 Cierre y optimización | Parcial: ledger/conciliación pura y alerta local; cierres reales ausentes | Cierre operativo y financiero separados; urgentes inmediatos; cohortes y denominadores | Sin falsos opens/clicks; P0 aprobación/deduplicación/pagos/errores precede P2 optimización |
 
-La regla histórica de lock de menú/invitados T−5 se registra como pendiente de vigencia por acuerdo. No se codifica globalmente. Los casos sintéticos indicados describen aceptación exigida, no funcionalidad que ya esté implementada.
+La regla histórica de lock de menú/invitados T−5 se registra como pendiente de vigencia por acuerdo. No se codifica globalmente. En este corte histórico, los casos sintéticos indicados describían aceptación exigida. El tramo local posterior documenta la implementación DEMO actual de proveedores y abastecimiento.
 
 ## Ampliación solicitada a las 15:49 UTC: fuentes y compras
 
@@ -76,8 +76,29 @@ Instacart y servicios similares se registran como opciones de compra, sin integr
 
 Toda presentación de formulario, mensaje a un candidato o pedido requiere aprobación específica del contenido, destinatario/cuenta y condiciones exactas de esa acción. Una aprobación del plan o de un borrador no autoriza su ejecución externa; cualquier cambio invalida la revisión anterior.
 
-## Siguiente porción propuesta: documentos, datos y borradores sintéticos
+## Corte histórico: porción propuesta a las 15:49 UTC
 
-Preparar contratos de datos y ejemplos DEMO para candidatos y compras, con procedencia, revisión, datos faltantes, responsables y estados separados. Los ejemplos de candidatos usarán fuente/link sintéticos y evaluaciones pendientes; las listas de compra usarán menú/cantidades sintéticos y opciones sin disponibilidad, precio o entrega atribuidos a un proveedor real. Los formularios, mensajes y pedidos permanecerán como borradores para revisión humana. Esta porción está propuesta, no implementada: no añade integración, visita fuentes, realiza llamadas, envía formularios/mensajes ni compra.
+En ese corte se propuso preparar contratos de datos y ejemplos DEMO para candidatos y compras, con procedencia, revisión, datos faltantes, responsables y estados separados. La clasificación «propuesta, no implementada» describía las 15:49 UTC y queda sustituida por el tramo DEMO persistente implementado que se documenta abajo. Sus datos siguen siendo sintéticos; no se atribuyen disponibilidad, precios o entregas a proveedores reales. Formularios, mensajes y pedidos externos siguen sin ejecutor.
 
 No se configuran accesos persistentes, permisos, cuentas, secretos ni conectores. `ef2c9fa` identifica el snapshot base previo a publicación; la versión efectivamente desplegada después debe verificarse por separado.
+
+## Tramo local actual: proveedores y abastecimiento DEMO persistente
+
+Este apartado sustituye las clasificaciones históricas de R08/R09/R19/R24 y los procesos 9/10/11 para el alcance DEMO del working tree local. El motor y su integración están implementados; la revisión estática no encontró P0/P1. QA local confirmado: backend Office **198/198 PASS, cero skips**, operaciones **89/89 PASS, cero skips**, typecheck final con salida **0** y ambas compilaciones **PASS**. Los reporters JSON confirman navegador base **8/8 PASS, cero skips** y navegador sobre staging compilado **10/10 PASS, cero skips**. La arquitectura mantiene el agregado Office y sus nueve funciones; los pasos usan `action: draft` con una operación `supply` tipada, y las decisiones conservan los verbos existentes.
+
+La suite de navegador Office terminó con **72 casos recogidos, 71 PASS y un único skip preexistente**: referencia de escritorio 1586×992 en el proyecto móvil. Resultado final: **cero fallos, cero flaky y salida 0**. Las **8 pruebas de proveedores/abastecimiento**, en escritorio y móvil, pasaron todas. La evidencia está registrada en `browser-qa-proof.json` y `source-freeze.json` del registro local de QA; el código productivo permaneció congelado. Se usaron puertos aislados 4176/4181, estado legado único por corrida y estado de cada prueba nueva de proveedores único por test. Los ajustes del harness de historial no modificaron el código productivo.
+
+Este corte cierra QA local. CI del SHA final y despliegue exclusivamente staging siguen pendientes de evidencia posterior; no se acredita operación real ni activación de conectores.
+
+| Pieza local | Comprobado en código | Validación y límites |
+| --- | --- | --- |
+| Datos de sourcing | [Contrato](../src/office/supply-contracts.ts), [fixtures](../src/office/backend/supply-fixtures.ts) y [motor](../src/office/backend/supply-workflow.ts) DEMO de evento, cola, digest y candidatos con identidad común entre casos, fuente/link, ciudad/cobertura, tarifa anunciada, moneda/unidad y fecha de lectura. Cola tras venta sin proveedor, deduplicación y discrepancias de conteo visibles; evaluación, disponibilidad y condiciones separadas. | Backend, límites de colecciones y recorrido de navegador cubiertos por QA local PASS. No se extraen candidatos reales de las fuentes declaradas ni se les atribuye disponibilidad. |
+| Selección y asignación | Contexto estructurado de selección con candidato, condiciones y ventana del evento; [digest de aprobación](../src/office/backend/pilot-core.ts) incluye `supplyContext`. El motor revalida dependencias y comprueba solapamientos entre casos y asignación única por caso bajo la transacción existente. Revisión, aprobación y `assigned_demo` son estados separados; `externalHired` permanece falso. | Concurrencia, bindings y revisión obsoleta cubiertos por backend PASS. La asignación interna no confirma aceptación externa ni resuelve la incidencia real de proveedor; liberación/reprogramación de asignaciones no forma parte del tramo. |
+| Abastecimiento | Menú/receta/cantidades/unidades, validación humana DEMO, lista revisionada y opciones con dirección, ventana, cargos y coste total calculado. Revisión conserva snapshot exacto de menú/lista/opción; cambios o ventanas vencidas bloquean aprobar el contexto anterior. | Cálculo, datos desconocidos, invalidación y rollback cubiertos por backend PASS. `externalOrdered`, `externalPaid` y `externalReceived` permanecen falsos, incluso tras aprobar. No hay pedido, recepción ni recibo real. |
+| Persistencia y revisión visible | [Comandos](../src/office/backend/commands.ts), [upgrade PostgreSQL](../src/office/backend/postgres-store.ts) y [filtrado por función](../src/office/backend/session.ts) integrados sobre el agregado existente; [panel](../src/office/SupplyWorkflowPanel.tsx) muestra procedencia y contextos revisables. | Las [pruebas de workflow](../tests/office/supply-workflow.test.ts) y [PostgreSQL](../tests/office/supply-postgres.test.ts) forman parte del backend PASS: compatibilidad con payload anterior, scopes, idempotencia, rollback y concurrencia. Navegador base, staging compilado y Office validados localmente con el resultado detallado arriba. |
+
+Los comandos reciben IDs y decisiones sobre fixtures del servidor; no reciben candidatos, menús, precios, direcciones o enlaces reales del navegador. Toda evidencia del tramo sigue marcada DEMO. Los formularios, contactos, contratos, compras y pagos externos permanecen bloqueados y requieren aprobación específica antes de cualquier integración futura.
+
+El motor limita a 1000 selecciones y 1000 opciones históricas por caso para mantener una lectura compatible. Crear otro registro devuelve `SUPPLY_RECORD_LIMIT` sin sustituir el historial o la opción vigente; reutilizar un registro existente sigue permitido. No hay archivo, borrado, liberación o reprogramación automática de esos registros.
+
+El usuario identificó la cuenta para una preparación posterior de acceso Monday; esa identificación no acredita OAuth, permisos de lectura ni un conector activo. El contrato de ese acceso se documenta por separado y no habilita este tramo. Tampoco se activa LLM, Gmail, Facebook, MeetAChef, Instacart u otro proveedor.

@@ -1,6 +1,7 @@
 import { draftCore, computeApprovalDigest, paymentCore, officePilotPolicy } from './pilot-core';
 import { CASE_IDS, DEMO_ACTOR, FUNCTION_AREAS, FUNCTION_IDS, FUNCTION_NAMES, evidence, currentTime } from './state';
 import type { OfficeState, DemoCaseId, DemoCase, JobStatus, ApprovalLink } from './state';
+import { ensureSupplyWorkflow } from './supply-workflow';
 
 export function createOfficeFixtureState(nowMs = Date.now()): OfficeState {
   currentTime(() => nowMs);
@@ -60,5 +61,6 @@ export function createOfficeFixtureState(nowMs = Date.now()): OfficeState {
     state.office.approvals[id] = link;
     Object.assign(state.office.jobs[jobId]!, { status: 'waiting_approval', detail: 'DEMO — Borrador listo para revisión humana. Aprobar registra una decisión local; el envío sigue bloqueado.', approvalId: id, revision: 1 });
   }
+  ensureSupplyWorkflow(state, nowMs);
   return state;
 }

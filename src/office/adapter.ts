@@ -1,4 +1,6 @@
 import type { AreaId, CommercialThread, DataMode, Evidence, FunctionId, OfficeCase, OfficeCommand, OfficeSnapshot, WorkStatus } from './contracts';
+import { isSupplyOperation } from './supply-contracts';
+import type * as Supply from './supply-contracts';
 
 export type OfficeErrorCode = 'unauthorized' | 'forbidden' | 'offline' | 'incompatible' | 'conflict' | 'validation';
 const ERROR_MESSAGES: Record<OfficeErrorCode, string> = {
@@ -25,6 +27,10 @@ type RecordValue = Record<string, unknown>;
 function bad(): never { throw new OfficeReadError('incompatible'); }
 function record(value: unknown): RecordValue {
   if (!value || typeof value !== 'object' || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) bad();
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (typeof key !== 'string' || !descriptor?.enumerable || !('value' in descriptor)) bad();
+  }
   return value as RecordValue;
 }
 function keys(value: RecordValue, required: string[], optional: string[] = []): void {
@@ -90,9 +96,214 @@ function commercialThread(value: unknown, mode: DataMode, caseId: string): Comme
     }),
   };
 }
+
+// Supply records are synthetic, case-owned facts. Rebuild each object from an
+// explicit field list before it can reach the dashboard or an approval card.
+function supplyId(value: unknown): string {
+  const result = id(value);
+  if (result.length > 96 || ['__proto__', 'prototype', 'constructor'].includes(result)) bad();
+  return result;
+}
+function number(value: unknown, minimum = 0, integer = false, maximum = 1_000_000_000_000): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum || (integer && !Number.isSafeInteger(value))) bad();
+  return value;
+}
+function revision(value: unknown): number { return number(value, 1, true, 1_000_000); }
+function digest(value: unknown): string { const result = string(value, 64); if (!DIGEST.test(result)) bad(); return result; }
+function nullable<T>(value: unknown, parse: (value: unknown) => T): T | null { return value === null ? null : parse(value); }
+function strings(value: unknown, maximum = 1000): string[] {
+  if (!Array.isArray(value) || value.length > maximum) bad();
+  return value.map(item => string(item, 1000));
+}
+function supplyEvidence(value: unknown, caseId: string): Evidence { return evidence(value, 'demo', caseId); }
+function falseFact(value: unknown): false { if (value !== false) bad(); return false; }
+function supplyWindow(value: unknown): Supply.SupplyWindow {
+  const item = record(value); keys(item, ['startAt', 'endAt']);
+  const result = { startAt: date(item.startAt), endAt: date(item.endAt) };
+  if (Date.parse(result.startAt) >= Date.parse(result.endAt)) bad();
+  return result;
+}
+function syntheticContact(value: unknown): string {
+  const result = string(value, 300);
+  if (!/^[A-Za-z0-9._:+-]+@invalid\.test$/.test(result)) bad();
+  return result;
+}
+function syntheticSourceLink(value: unknown): string {
+  const result = string(value, 1000);
+  let parsed: URL;
+  try { parsed = new URL(result); } catch { bad(); }
+  if (parsed.protocol !== 'https:' || !parsed.hostname.endsWith('.invalid.test') || parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash) bad();
+  return result;
+}
+const SUPPLY_SOURCES = ['facebook_marketplace', 'facebook_groups', 'outreach_forms', 'meetachef'] as const;
+const SUPPLY_REVIEW_STATUSES = ['pending', 'approved_demo', 'rejected_demo', 'cancelled_demo', 'stale'] as const;
+function supplyEvent(value: unknown, caseId: string): Supply.SyntheticSupplyEvent {
+  const item = record(value); keys(item, ['id', 'caseId', 'revision', 'city', 'coverage', 'window', 'evidence']);
+  if (item.caseId !== caseId || item.revision !== 1) bad();
+  return { id: supplyId(item.id), caseId, revision: 1, city: string(item.city, 200), coverage: string(item.coverage, 500), window: supplyWindow(item.window), evidence: supplyEvidence(item.evidence, caseId) };
+}
+function supplyAnnouncement(value: unknown): Supply.SupplyCandidateAnnouncement {
+  const item = record(value); keys(item, ['id', 'candidateId', 'label', 'contact', 'source', 'sourceLink', 'readAt', 'city', 'coverage', 'announcedRateCents', 'announcedRateUnit', 'currency']);
+  return { id: supplyId(item.id), candidateId: supplyId(item.candidateId), label: string(item.label, 200), contact: syntheticContact(item.contact), source: choice(item.source, SUPPLY_SOURCES), sourceLink: syntheticSourceLink(item.sourceLink), readAt: date(item.readAt), city: nullable(item.city, value => string(value, 200)), coverage: nullable(item.coverage, value => strings(value, 20)), announcedRateCents: nullable(item.announcedRateCents, value => number(value, 0, true)), announcedRateUnit: nullable(item.announcedRateUnit, value => choice(value, ['hour', 'event'])), currency: nullable(item.currency, value => choice(value, ['USD'])) };
+}
+function supplyDigestFixture(value: unknown, caseId: string, optional: string[] = []): Supply.SupplyDigestFixture {
+  const item = record(value); keys(item, ['id', 'label', 'announcedCount', 'entries', 'evidence'], optional);
+  return { id: supplyId(item.id), label: string(item.label, 200), announcedCount: number(item.announcedCount, 0, true, 1000), entries: collection(item.entries, supplyAnnouncement), evidence: supplyEvidence(item.evidence, caseId) };
+}
+function supplyDigestRecord(value: unknown, caseId: string): Supply.SupplyDigestRecord {
+  const item = record(value);
+  const fixture = supplyDigestFixture(item, caseId, ['extractedCount', 'uniqueCount', 'duplicateCount', 'countMismatch', 'ingestedAt']);
+  keys(item, [...Object.keys(fixture), 'extractedCount', 'uniqueCount', 'duplicateCount', 'countMismatch', 'ingestedAt']);
+  const result = { ...fixture, extractedCount: number(item.extractedCount, 0, true, 1000), uniqueCount: number(item.uniqueCount, 0, true, 1000), duplicateCount: number(item.duplicateCount, 0, true, 1000), countMismatch: bool(item.countMismatch), ingestedAt: date(item.ingestedAt) };
+  if (result.extractedCount !== result.entries.length || result.uniqueCount !== new Set(result.entries.map(entry => entry.candidateId)).size || result.duplicateCount !== result.extractedCount - result.uniqueCount || result.countMismatch !== (result.announcedCount !== result.extractedCount || result.announcedCount !== result.uniqueCount)) bad();
+  return result;
+}
+function supplyTermsFixture(value: unknown, caseId: string, optional: string[] = []): Supply.SupplyTermsFixture {
+  const item = record(value); keys(item, ['id', 'label', 'candidateId', 'rateCents', 'rateUnit', 'quantity', 'currency', 'totalCents', 'conditions', 'evidence'], optional);
+  return { id: supplyId(item.id), label: string(item.label, 200), candidateId: supplyId(item.candidateId), rateCents: nullable(item.rateCents, value => number(value, 0, true)), rateUnit: nullable(item.rateUnit, value => choice(value, ['hour', 'event'])), quantity: nullable(item.quantity, value => number(value, Number.MIN_VALUE, false, 1_000_000)), currency: nullable(item.currency, value => choice(value, ['USD'])), totalCents: nullable(item.totalCents, value => number(value, 0, true)), conditions: nullable(item.conditions, value => string(value, 4000)), evidence: supplyEvidence(item.evidence, caseId) };
+}
+function checkedSupplyTerms(value: unknown, caseId: string): NonNullable<Supply.SupplyCandidate['terms']> {
+  const item = record(value);
+  const result = { ...supplyTermsFixture(item, caseId, ['checkedAt', 'checkedBy']), checkedAt: date(item.checkedAt), checkedBy: supplyId(item.checkedBy) };
+  keys(item, Object.keys(result));
+  return result;
+}
+function supplyCandidate(value: unknown, caseId: string): Supply.SupplyCandidate {
+  const item = record(value); keys(item, ['id', 'caseId', 'revision', 'label', 'contact', 'source', 'sourceLink', 'readAt', 'city', 'coverage', 'announcedRateCents', 'announcedRateUnit', 'currency', 'announcements', 'evaluation', 'availability', 'terms', 'externalHired', 'evidence']);
+  if (item.caseId !== caseId) bad();
+  const evaluation = record(item.evaluation); keys(evaluation, ['verdict', 'checkedAt', 'checkedBy']);
+  const availability = record(item.availability); keys(availability, ['status', 'window', 'checkedAt', 'checkedBy']);
+  const result: Supply.SupplyCandidate = {
+    id: supplyId(item.id), caseId, revision: revision(item.revision), label: string(item.label, 200), contact: syntheticContact(item.contact), source: choice(item.source, SUPPLY_SOURCES), sourceLink: syntheticSourceLink(item.sourceLink), readAt: date(item.readAt), city: nullable(item.city, value => string(value, 200)), coverage: nullable(item.coverage, value => strings(value, 20)), announcedRateCents: nullable(item.announcedRateCents, value => number(value, 0, true)), announcedRateUnit: nullable(item.announcedRateUnit, value => choice(value, ['hour', 'event'])), currency: nullable(item.currency, value => choice(value, ['USD'])),
+    announcements: collection(item.announcements, supplyAnnouncement),
+    evaluation: { verdict: nullable(evaluation.verdict, value => choice(value, ['eligible', 'rejected'])), checkedAt: nullableDate(evaluation.checkedAt), checkedBy: nullable(evaluation.checkedBy, supplyId) },
+    availability: { status: choice(availability.status, ['unknown', 'available', 'unavailable']), window: nullable(availability.window, supplyWindow), checkedAt: nullableDate(availability.checkedAt), checkedBy: nullable(availability.checkedBy, supplyId) },
+    terms: nullable(item.terms, value => checkedSupplyTerms(value, caseId)), externalHired: falseFact(item.externalHired), evidence: supplyEvidence(item.evidence, caseId),
+  };
+  if (!result.announcements.length || result.announcements.some(entry => entry.candidateId !== result.id) || (result.terms && result.terms.candidateId !== result.id)) bad();
+  if ((result.evaluation.verdict === null) !== (result.evaluation.checkedAt === null) || (result.evaluation.checkedAt === null) !== (result.evaluation.checkedBy === null)) bad();
+  if ((result.availability.status === 'unknown') !== (result.availability.window === null) || (result.availability.window === null) !== (result.availability.checkedAt === null) || (result.availability.checkedAt === null) !== (result.availability.checkedBy === null)) bad();
+  return result;
+}
+function supplyQueue(value: unknown, caseId: string): Supply.SupplyQueue {
+  const item = record(value); keys(item, ['id', 'caseId', 'status', 'reason', 'createdAt', 'updatedAt', 'externalResolved', 'evidence']);
+  if (item.caseId !== caseId || item.reason !== 'sold_without_accepted_supplier') bad();
+  const result: Supply.SupplyQueue = { id: supplyId(item.id), caseId, status: choice(item.status, ['queued', 'resolved_fixture']), reason: 'sold_without_accepted_supplier', createdAt: date(item.createdAt), updatedAt: date(item.updatedAt), externalResolved: falseFact(item.externalResolved), evidence: supplyEvidence(item.evidence, caseId) };
+  if (Date.parse(result.updatedAt) < Date.parse(result.createdAt)) bad();
+  return result;
+}
+function supplySelectionSnapshot(value: unknown, caseId: string): Supply.SupplySelectionSnapshot {
+  const item = record(value); keys(item, ['candidate', 'event', 'terms']);
+  const result = { candidate: supplyCandidate(item.candidate, caseId), event: supplyEvent(item.event, caseId), terms: checkedSupplyTerms(item.terms, caseId) };
+  if (!result.candidate.terms || JSON.stringify(result.candidate.terms) !== JSON.stringify(result.terms)) bad();
+  if (result.candidate.evaluation.verdict !== 'eligible' || result.candidate.availability.status !== 'available' || JSON.stringify(result.candidate.availability.window) !== JSON.stringify(result.event.window) || result.candidate.city !== result.event.city || !result.candidate.coverage?.includes(result.event.coverage)) bad();
+  if (result.terms.rateCents === null || result.terms.rateUnit === null || result.terms.quantity === null || result.terms.currency === null || result.terms.totalCents === null || result.terms.conditions === null || result.terms.totalCents !== result.terms.rateCents * result.terms.quantity) bad();
+  return result;
+}
+function supplySelection(value: unknown, caseId: string): Supply.SupplySelection {
+  const item = record(value); keys(item, ['id', 'caseId', 'candidateId', 'revision', 'digest', 'snapshot', 'approvalId', 'reviewStatus', 'reviewedAt', 'assignedDemo', 'evidence']);
+  if (item.caseId !== caseId) bad();
+  const result = { id: supplyId(item.id), caseId, candidateId: supplyId(item.candidateId), revision: revision(item.revision), digest: digest(item.digest), snapshot: supplySelectionSnapshot(item.snapshot, caseId), approvalId: nullable(item.approvalId, supplyId), reviewStatus: choice(item.reviewStatus, SUPPLY_REVIEW_STATUSES), reviewedAt: nullableDate(item.reviewedAt), assignedDemo: bool(item.assignedDemo), evidence: supplyEvidence(item.evidence, caseId) };
+  if (result.candidateId !== result.snapshot.candidate.id || (result.assignedDemo && (!['approved_demo', 'stale'].includes(result.reviewStatus) || !result.approvalId))) bad();
+  return result;
+}
+function supplyAssignment(value: unknown, caseId: string): Supply.SupplyAssignment {
+  const item = record(value); keys(item, ['id', 'caseId', 'candidateId', 'selectionId', 'selectionRevision', 'approvalId', 'window', 'assignedAt', 'status', 'externalHired', 'evidence']);
+  if (item.caseId !== caseId || item.status !== 'assigned_demo') bad();
+  return { id: supplyId(item.id), caseId, candidateId: supplyId(item.candidateId), selectionId: supplyId(item.selectionId), selectionRevision: revision(item.selectionRevision), approvalId: supplyId(item.approvalId), window: supplyWindow(item.window), assignedAt: date(item.assignedAt), status: 'assigned_demo', externalHired: falseFact(item.externalHired), evidence: supplyEvidence(item.evidence, caseId) };
+}
+function supplyMenuFixture(value: unknown, caseId: string, optional: string[] = []): Supply.SupplyMenuFixture {
+  const item = record(value); keys(item, ['id', 'label', 'menuRevision', 'items', 'recipes', 'evidence'], optional);
+  return { id: supplyId(item.id), label: string(item.label, 200), menuRevision: revision(item.menuRevision), evidence: supplyEvidence(item.evidence, caseId),
+    items: collection(item.items, value => { const row = record(value); keys(row, ['id', 'label', 'recipeId', 'servings']); return { id: supplyId(row.id), label: string(row.label, 200), recipeId: nullable(row.recipeId, supplyId), servings: nullable(row.servings, value => number(value, Number.MIN_VALUE, false, 1_000_000)) }; }),
+    recipes: collection(item.recipes, value => { const row = record(value); keys(row, ['id', 'label', 'ingredients']); return { id: supplyId(row.id), label: string(row.label, 200), ingredients: collection(row.ingredients, value => { const ingredient = record(value); keys(ingredient, ['id', 'label', 'quantityPerServing', 'unit']); return { id: supplyId(ingredient.id), label: string(ingredient.label, 200), quantityPerServing: nullable(ingredient.quantityPerServing, value => number(value, Number.MIN_VALUE, false, 1_000_000)), unit: nullable(ingredient.unit, value => choice(value, ['g', 'unit'])) }; }) }; }) };
+}
+function supplyMenu(value: unknown, caseId: string): Supply.SupplyMenu {
+  const item = record(value);
+  const result = { ...supplyMenuFixture(item, caseId, ['revision', 'digest', 'validation', 'validatedAt', 'validatedBy', 'missingFacts']), revision: revision(item.revision), digest: digest(item.digest), validation: choice(item.validation, ['validated_demo', 'blocked']), validatedAt: nullableDate(item.validatedAt), validatedBy: nullable(item.validatedBy, supplyId), missingFacts: strings(item.missingFacts, 100) };
+  keys(item, Object.keys(result));
+  if (result.validation === 'validated_demo' && (!result.validatedAt || !result.validatedBy || result.missingFacts.length || !result.items.length || result.items.some(entry => !entry.recipeId || entry.servings === null || !result.recipes.some(recipe => recipe.id === entry.recipeId)) || result.recipes.some(recipe => !recipe.ingredients.length || recipe.ingredients.some(entry => entry.quantityPerServing === null || entry.unit === null)))) bad();
+  return result;
+}
+function supplyPurchaseItem(value: unknown, optional: string[] = []): Supply.SupplyPurchaseItem {
+  const item = record(value); keys(item, ['id', 'label', 'quantity', 'unit'], optional);
+  return { id: supplyId(item.id), label: string(item.label, 200), quantity: nullable(item.quantity, value => number(value, Number.MIN_VALUE, false, 1_000_000_000)), unit: nullable(item.unit, value => choice(value, ['g', 'unit'])) };
+}
+function supplyPurchaseList(value: unknown, caseId: string): Supply.SupplyPurchaseList {
+  const item = record(value); keys(item, ['id', 'caseId', 'revision', 'menuRevision', 'menuDigest', 'digest', 'items', 'createdAt', 'evidence']);
+  if (item.caseId !== caseId) bad();
+  return { id: supplyId(item.id), caseId, revision: revision(item.revision), menuRevision: revision(item.menuRevision), menuDigest: digest(item.menuDigest), digest: digest(item.digest), items: collection(item.items, value => supplyPurchaseItem(value)), createdAt: date(item.createdAt), evidence: supplyEvidence(item.evidence, caseId) };
+}
+function supplyPurchaseOptionFixture(value: unknown, caseId: string): Supply.SupplyPurchaseOptionFixture {
+  const item = record(value); keys(item, ['id', 'label', 'service', 'deliveryAddress', 'deliveryWindow', 'prices', 'deliveryFeeCents', 'taxCents', 'currency', 'substitutions', 'evidence']);
+  if (!Array.isArray(item.prices) || item.prices.length > 1000) bad();
+  const prices = item.prices.map(value => { const row = record(value); keys(row, ['itemId', 'unitPriceCents']); return { itemId: supplyId(row.itemId), unitPriceCents: nullable(row.unitPriceCents, value => number(value, 0, true)) }; });
+  if (new Set(prices.map(row => row.itemId)).size !== prices.length) bad();
+  return { id: supplyId(item.id), label: string(item.label, 200), service: choice(item.service, ['instacart', 'similar']), deliveryAddress: nullable(item.deliveryAddress, value => string(value, 1000)), deliveryWindow: nullable(item.deliveryWindow, supplyWindow), prices, deliveryFeeCents: nullable(item.deliveryFeeCents, value => number(value, 0, true)), taxCents: nullable(item.taxCents, value => number(value, 0, true)), currency: nullable(item.currency, value => choice(value, ['USD'])), substitutions: nullable(item.substitutions, value => choice(value, ['no_substitutions_demo'])), evidence: supplyEvidence(item.evidence, caseId) };
+}
+function supplyPurchaseOptionFacts(value: unknown, caseId: string, optional: string[] = []): Supply.SupplyPurchaseSnapshot['option'] {
+  const item = record(value); keys(item, ['id', 'caseId', 'fixtureId', 'revision', 'menuRevision', 'listRevision', 'label', 'service', 'deliveryAddress', 'deliveryWindow', 'items', 'itemsTotalCents', 'deliveryFeeCents', 'taxCents', 'totalCents', 'currency', 'substitutions', 'missingFacts', 'externalOrdered', 'externalPaid', 'externalReceived', 'evidence'], optional);
+  if (item.caseId !== caseId) bad();
+  return { id: supplyId(item.id), caseId, fixtureId: supplyId(item.fixtureId), revision: revision(item.revision), menuRevision: revision(item.menuRevision), listRevision: revision(item.listRevision), label: string(item.label, 200), service: choice(item.service, ['instacart', 'similar']), deliveryAddress: nullable(item.deliveryAddress, value => string(value, 1000)), deliveryWindow: nullable(item.deliveryWindow, supplyWindow),
+    items: collection(item.items, value => { const row = record(value); const facts = supplyPurchaseItem(row, ['unitPriceCents', 'lineTotalCents']); keys(row, [...Object.keys(facts), 'unitPriceCents', 'lineTotalCents']); return { ...facts, unitPriceCents: nullable(row.unitPriceCents, value => number(value, 0, true)), lineTotalCents: nullable(row.lineTotalCents, value => number(value, 0, true)) }; }),
+    itemsTotalCents: nullable(item.itemsTotalCents, value => number(value, 0, true)), deliveryFeeCents: nullable(item.deliveryFeeCents, value => number(value, 0, true)), taxCents: nullable(item.taxCents, value => number(value, 0, true)), totalCents: nullable(item.totalCents, value => number(value, 0, true)), currency: nullable(item.currency, value => choice(value, ['USD'])), substitutions: nullable(item.substitutions, value => choice(value, ['no_substitutions_demo'])), missingFacts: strings(item.missingFacts, 100), externalOrdered: falseFact(item.externalOrdered), externalPaid: falseFact(item.externalPaid), externalReceived: falseFact(item.externalReceived), evidence: supplyEvidence(item.evidence, caseId) };
+}
+function supplyPurchaseSnapshot(value: unknown, caseId: string): Supply.SupplyPurchaseSnapshot {
+  const item = record(value); keys(item, ['menu', 'list', 'option']);
+  const result = { menu: supplyMenu(item.menu, caseId), list: supplyPurchaseList(item.list, caseId), option: supplyPurchaseOptionFacts(item.option, caseId) };
+  if (result.menu.validation !== 'validated_demo' || result.list.menuRevision !== result.menu.revision || result.list.menuDigest !== result.menu.digest || result.option.menuRevision !== result.menu.revision || result.option.listRevision !== result.list.revision) bad();
+  const option = result.option;
+  if (option.missingFacts.length || !option.deliveryAddress || !option.deliveryWindow || option.currency === null || option.substitutions === null || option.itemsTotalCents === null || option.deliveryFeeCents === null || option.taxCents === null || option.totalCents === null || !result.list.items.length || option.items.length !== result.list.items.length) bad();
+  for (const item of option.items) {
+    const listed = result.list.items.find(entry => entry.id === item.id);
+    if (!listed || item.quantity === null || item.unit === null || item.quantity !== listed.quantity || item.unit !== listed.unit || item.unitPriceCents === null || item.lineTotalCents !== item.quantity * item.unitPriceCents) bad();
+  }
+  if (option.itemsTotalCents !== option.items.reduce((sum, item) => sum + item.lineTotalCents!, 0) || option.totalCents !== option.itemsTotalCents + option.deliveryFeeCents + option.taxCents) bad();
+  return result;
+}
+function supplyPurchaseOption(value: unknown, caseId: string): Supply.SupplyPurchaseOption {
+  const item = record(value);
+  const facts = supplyPurchaseOptionFacts(item, caseId, ['approvalId', 'reviewStatus', 'reviewedAt', 'snapshot', 'digest']);
+  const result = { ...facts, approvalId: nullable(item.approvalId, supplyId), reviewStatus: choice(item.reviewStatus, SUPPLY_REVIEW_STATUSES), reviewedAt: nullableDate(item.reviewedAt), snapshot: nullable(item.snapshot, value => supplyPurchaseSnapshot(value, caseId)), digest: digest(item.digest) };
+  keys(item, Object.keys(result));
+  if (result.snapshot && JSON.stringify(result.snapshot.option) !== JSON.stringify(facts)) bad();
+  return result;
+}
+function supplyReviewContext(value: unknown, mode: DataMode, caseId: string): Supply.SupplyReviewContext {
+  const item = record(value);
+  if (mode !== 'demo' || item.schemaVersion !== 1 || item.caseId !== caseId) bad();
+  if (item.kind === 'selection') {
+    keys(item, ['schemaVersion', 'kind', 'caseId', 'selectionId', 'revision', 'digest', 'snapshot', 'evidence']);
+    return { schemaVersion: 1, kind: 'selection', caseId, selectionId: supplyId(item.selectionId), revision: revision(item.revision), digest: digest(item.digest), snapshot: supplySelectionSnapshot(item.snapshot, caseId), evidence: supplyEvidence(item.evidence, caseId) };
+  }
+  if (item.kind === 'purchase') {
+    keys(item, ['schemaVersion', 'kind', 'caseId', 'optionId', 'revision', 'digest', 'snapshot', 'evidence']);
+    const snapshot = supplyPurchaseSnapshot(item.snapshot, caseId);
+    const optionId = supplyId(item.optionId); const reviewRevision = revision(item.revision);
+    if (snapshot.option.id !== optionId || snapshot.option.revision !== reviewRevision) bad();
+    return { schemaVersion: 1, kind: 'purchase', caseId, optionId, revision: reviewRevision, digest: digest(item.digest), snapshot, evidence: supplyEvidence(item.evidence, caseId) };
+  }
+  bad();
+}
+function supplyWorkflow(value: unknown, mode: DataMode, caseId: string): Supply.SupplyWorkflow {
+  const item = record(value); keys(item, ['mode', 'event'], ['sourcing', 'procurement']);
+  if (mode !== 'demo' || item.mode !== 'demo') bad();
+  const result: Supply.SupplyWorkflow = { mode: 'demo', event: supplyEvent(item.event, caseId) };
+  if (Object.hasOwn(item, 'sourcing')) {
+    const sourcing = record(item.sourcing); keys(sourcing, ['queue', 'digests', 'candidates', 'selections', 'assignments', 'digestFixtures', 'termsFixtures']);
+    result.sourcing = { queue: nullable(sourcing.queue, value => supplyQueue(value, caseId)), digests: collection(sourcing.digests, value => supplyDigestRecord(value, caseId)), candidates: collection(sourcing.candidates, value => supplyCandidate(value, caseId)), selections: collection(sourcing.selections, value => supplySelection(value, caseId)), assignments: collection(sourcing.assignments, value => supplyAssignment(value, caseId)), digestFixtures: collection(sourcing.digestFixtures, value => supplyDigestFixture(value, caseId)), termsFixtures: collection(sourcing.termsFixtures, value => supplyTermsFixture(value, caseId)) };
+  }
+  if (Object.hasOwn(item, 'procurement')) {
+    const procurement = record(item.procurement); keys(procurement, ['menu', 'list', 'options', 'selectedOptionId', 'menuFixtures', 'optionFixtures']);
+    const scoped = { menu: nullable(procurement.menu, value => supplyMenu(value, caseId)), list: nullable(procurement.list, value => supplyPurchaseList(value, caseId)), options: collection(procurement.options, value => supplyPurchaseOption(value, caseId)), selectedOptionId: nullable(procurement.selectedOptionId, supplyId), menuFixtures: collection(procurement.menuFixtures, value => supplyMenuFixture(value, caseId)), optionFixtures: collection(procurement.optionFixtures, value => supplyPurchaseOptionFixture(value, caseId)) };
+    if (scoped.selectedOptionId && !scoped.options.some(option => option.id === scoped.selectedOptionId)) bad();
+    result.procurement = scoped;
+  }
+  return result;
+}
 function officeCase(value: unknown, mode: DataMode): OfficeCase {
   const c = record(value);
-  keys(c, ['id', 'title', 'subtitle', 'evidence', 'payment', 'paymentEvidence', 'supplier', 'supplierEvidence', 'capturedAt', 'attemptedAt', 'connectedAt', 'humanContactVerified', 'callEvidence', 'closerAvailable', 'assignment', 'saleClosed', 'history', 'tasks', 'results', 'approvals', 'messages'], ['commercialThreads']);
+  keys(c, ['id', 'title', 'subtitle', 'evidence', 'payment', 'paymentEvidence', 'supplier', 'supplierEvidence', 'capturedAt', 'attemptedAt', 'connectedAt', 'humanContactVerified', 'callEvidence', 'closerAvailable', 'assignment', 'saleClosed', 'history', 'tasks', 'results', 'approvals', 'messages'], ['commercialThreads', 'supplyWorkflow']);
   const caseId = id(c.id);
   const result: OfficeCase = {
     id: caseId, title: string(c.title, 200), subtitle: string(c.subtitle, 600), evidence: evidence(c.evidence, mode, caseId),
@@ -104,12 +315,14 @@ function officeCase(value: unknown, mode: DataMode): OfficeCase {
     tasks: collection(c.tasks, value => { const item = record(value); keys(item, ['id', 'area', 'functionId', 'title', 'detail', 'status', 'evidence']); return { ...base(item, mode, caseId), area: choice(item.area, AREAS), title: string(item.title, 200), detail: string(item.detail), status: choice(item.status, STATUSES) }; }),
     results: collection(c.results, value => { const item = record(value); keys(item, ['id', 'area', 'functionId', 'title', 'detail', 'evidence']); return { ...base(item, mode, caseId), area: choice(item.area, AREAS), title: string(item.title, 200), detail: string(item.detail) }; }),
     approvals: collection(c.approvals, value => {
-      const item = record(value); keys(item, ['id', 'area', 'functionId', 'title', 'body', 'recipient', 'account', 'attachments', 'channel', 'revision', 'digest', 'status', 'evidence'], ['commercialContext']);
+      const item = record(value); keys(item, ['id', 'area', 'functionId', 'title', 'body', 'recipient', 'account', 'attachments', 'channel', 'revision', 'digest', 'status', 'evidence'], ['commercialContext', 'supplyContext']);
       if (!Number.isSafeInteger(item.revision) || (item.revision as number) < 1 || !DIGEST.test(string(item.digest, 64))) bad();
       if (!Array.isArray(item.attachments) || item.attachments.length > 20) bad();
       const context = Object.hasOwn(item, 'commercialContext') ? commercialThread(item.commercialContext, mode, caseId) : undefined;
       if (context && (item.functionId !== 'sales' || item.recipient !== context.recipient)) bad();
-      return { ...base(item, mode, caseId), area: choice(item.area, AREAS), title: string(item.title, 200), body: string(item.body, 12000), recipient: string(item.recipient, 300), account: string(item.account, 300), attachments: item.attachments.map(value => string(value, 1000)), channel: string(item.channel, 100), revision: item.revision as number, digest: item.digest as string, status: choice(item.status, ['pending', 'approved_demo', 'rejected_demo', 'cancelled_demo']), ...(context ? { commercialContext: context } : {}) };
+      const supplyContext = Object.hasOwn(item, 'supplyContext') ? supplyReviewContext(item.supplyContext, mode, caseId) : undefined;
+      if (supplyContext && (context || item.functionId !== (supplyContext.kind === 'selection' ? 'suppliers' : 'logistics') || item.recipient !== 'supply-review@invalid.test' || item.channel !== 'email' || item.attachments.length !== 0)) bad();
+      return { ...base(item, mode, caseId), area: choice(item.area, AREAS), title: string(item.title, 200), body: string(item.body, 12000), recipient: string(item.recipient, 300), account: string(item.account, 300), attachments: item.attachments.map(value => string(value, 1000)), channel: string(item.channel, 100), revision: item.revision as number, digest: item.digest as string, status: choice(item.status, ['pending', 'approved_demo', 'rejected_demo', 'cancelled_demo']), ...(context ? { commercialContext: context } : {}), ...(supplyContext ? { supplyContext } : {}) };
     }),
     messages: collection(c.messages, value => { const item = record(value); keys(item, ['id', 'area', 'functionId', 'author', 'text', 'evidence']); return { ...base(item, mode, caseId), area: choice(item.area, AREAS), author: string(item.author, 100), text: string(item.text, 12000) }; }),
     history: collection(c.history, value => { const item = record(value); keys(item, ['id', 'functionId', 'title', 'detail', 'status', 'evidence']); return { ...base(item, mode, caseId), title: string(item.title, 200), detail: string(item.detail), status: choice(item.status, STATUSES) }; }),
@@ -118,6 +331,7 @@ function officeCase(value: unknown, mode: DataMode): OfficeCase {
     if (mode !== 'demo' || !Array.isArray(c.commercialThreads) || c.commercialThreads.length > 20) bad();
     result.commercialThreads = collection(c.commercialThreads, value => commercialThread(value, mode, caseId));
   }
+  if (Object.hasOwn(c, 'supplyWorkflow')) result.supplyWorkflow = supplyWorkflow(c.supplyWorkflow, mode, caseId);
   if ((result.payment === 'verified' && !result.paymentEvidence) || (result.supplier === 'accepted' && !result.supplierEvidence)) bad();
   if ((result.attemptedAt || result.connectedAt || result.humanContactVerified) && !result.callEvidence) bad();
   if (result.connectedAt && !result.humanContactVerified) bad();
@@ -214,7 +428,7 @@ function validatedCommand(command: OfficeCommand): OfficeCommand {
     const decision = ['approve', 'reject', 'cancel', 'revise'].includes(command.action);
     const required = ['idempotencyKey', 'caseId', 'functionId', 'action', ...(decision ? ['approvalId', 'revision', 'digest'] : []), ...(['chat', 'revise'].includes(command.action) ? ['text'] : [])];
     const commercialFields = ['commercialThreadId', 'commercialThreadRevision', 'commercialThreadDigest'];
-    keys(item, required, command.action === 'draft' ? ['text', ...commercialFields] : []);
+    keys(item, required, command.action === 'draft' ? ['text', ...commercialFields, 'supply'] : []);
     const commandId = (value: unknown) => { const result = id(value); if (result.length > 96 || ['__proto__', 'prototype', 'constructor'].includes(result)) bad(); return result; };
     commandId(item.idempotencyKey); choice(item.caseId, ['demo-aurora', 'demo-cedar', 'demo-harbor']); choice(item.functionId, FUNCTIONS);
     if (item.text !== undefined) string(item.text, 2000);
@@ -222,10 +436,15 @@ function validatedCommand(command: OfficeCommand): OfficeCommand {
     if (item.revision !== undefined && (!Number.isSafeInteger(item.revision) || (item.revision as number) < 1 || (item.revision as number) > 1_000_000)) bad();
     if (item.digest !== undefined && !DIGEST.test(string(item.digest, 64))) bad();
     if (commercialFields.some(key => Object.hasOwn(item, key))) {
-      if (!commercialFields.every(key => Object.hasOwn(item, key)) || item.action !== 'draft' || item.functionId !== 'sales' || Object.hasOwn(item, 'text')) bad();
+      if (!commercialFields.every(key => Object.hasOwn(item, key)) || item.action !== 'draft' || item.functionId !== 'sales' || Object.hasOwn(item, 'text') || Object.hasOwn(item, 'supply')) bad();
       commandId(item.commercialThreadId);
       if (!Number.isSafeInteger(item.commercialThreadRevision) || (item.commercialThreadRevision as number) < 1 || (item.commercialThreadRevision as number) > 1_000_000) bad();
       if (!DIGEST.test(string(item.commercialThreadDigest, 64))) bad();
+    }
+    if (Object.hasOwn(item, 'supply')) {
+      if (item.action !== 'draft' || !isSupplyOperation(item.supply) || Object.hasOwn(item, 'text') || commercialFields.some(key => Object.hasOwn(item, key))) bad();
+      const procurement = ['validate_menu', 'build_purchase_list', 'choose_purchase_option', 'review_purchase'].includes(item.supply.step);
+      if (item.functionId !== (procurement ? 'logistics' : 'suppliers')) bad();
     }
     if (['chat', 'revise'].includes(command.action) && item.text === undefined) bad();
     if (['approve', 'reject', 'cancel', 'revise'].includes(command.action) && (item.approvalId === undefined || item.revision === undefined || item.digest === undefined)) bad();

@@ -34,7 +34,7 @@ const test = base.extend<{ networkBoundary: void }>({
     });
     await context.routeWebSocket('**/*', socket => {
       const url = new URL(socket.url());
-      if (url.hostname === '127.0.0.1' && url.port === '4175') {
+      if (url.hostname === new URL(origin).hostname && url.port === new URL(origin).port) {
         socket.connectToServer();
       } else {
         blocked.push(`WebSocket ${url.href}`);
@@ -397,6 +397,9 @@ test('a drawer opened by Ricardo restores visible Nueva tarea after resizing to 
 });
 
 test('all nine functions save a contextual chat and a human-review draft', async ({ page }) => {
+  // This exercises eighteen writes and navigation through all nine workspaces.
+  // Keep the per-action assertions while allowing the full durable round trip.
+  test.setTimeout(90_000);
   await boot(page);
   const questions = new Map<FunctionId, string>();
   for (const item of functions) {

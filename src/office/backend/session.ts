@@ -57,6 +57,11 @@ export function scopeSnapshot(snapshot: OfficeSnapshot, session: DevelopmentSess
   result.cases = result.cases.filter(item => session.caseIds.includes(item.id as DemoCaseId)).map(item => {
     const scoped = { ...item, tasks: item.tasks.filter(row => session.functionIds.includes(row.functionId)), approvals: item.approvals.filter(row => session.functionIds.includes(row.functionId)), results: item.results.filter(row => session.functionIds.includes(row.functionId)), history: item.history.filter(row => session.functionIds.includes(row.functionId)), messages: item.messages.filter(row => session.functionIds.includes(row.functionId)) };
     if (!session.functionIds.includes('sales')) delete scoped.commercialThreads;
+    if (scoped.supplyWorkflow) {
+      if (!session.functionIds.includes('suppliers')) delete scoped.supplyWorkflow.sourcing;
+      if (!session.functionIds.includes('logistics')) delete scoped.supplyWorkflow.procurement;
+      if (!session.functionIds.includes('suppliers') && !session.functionIds.includes('logistics')) delete scoped.supplyWorkflow;
+    }
     return scoped;
   });
   return result;
