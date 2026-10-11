@@ -40,7 +40,12 @@ export function createOfficeApi(store: OfficeStore, options: { clock?: () => num
     if (request.method === 'POST' && request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') throw new OfficeError('JSON_REQUIRED', 415);
   });
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof OfficeError) return reply.code(error.statusCode).send({ error: error.code });
+    if (error instanceof OfficeError) {
+      // Owner cookies are separate from HTTP Basic. Even a 401 without a
+      // challenge can evict valid browser Basic credentials and reopen its prompt.
+      const status = error.code === 'MONDAY_OWNER_UNAUTHORIZED' && error.statusCode === 401 ? 403 : error.statusCode;
+      return reply.code(status).send({ error: error.code });
+    }
     if (error instanceof MondayOAuthError) return reply.code(error.httpStatus).send({ error: error.code });
     if (error instanceof MondayReadError) {
       const status = error.code === 'rate_limited' ? 429 : ['unauthorized', 'expired'].includes(error.code) ? 401 : ['forbidden', 'forbidden_board'].includes(error.code) ? 403 : error.code === 'invalid_request' ? 400 : 502;

@@ -115,8 +115,12 @@ test('shared Basic Auth and a DEMO viewer session do not grant any private Monda
   assert.equal(viewer.statusCode, 200);
   const headers = { ...f.headers, cookie: String(viewer.headers['set-cookie']).split(';')[0] };
   assert.deepEqual((await f.api.inject({ url: '/office-api/monday/owner/session', headers })).json(), { available: true, authenticated: false });
-  assert.equal((await f.api.inject({ url: '/office-api/monday/status', headers })).statusCode, 401);
-  for (const path of ['oauth/start', 'refresh', 'disconnect', 'read-board', 'read-updates']) assert.equal((await f.api.inject({ method: 'POST', url: `/office-api/monday/${path}`, headers, payload: { boardId: MONDAY_READ_BOARD_IDS[0] } })).statusCode, 401);
+  assert.equal((await f.api.inject({ url: '/office-api/monday/status', headers })).statusCode, 403);
+  for (const path of ['oauth/start', 'refresh', 'disconnect', 'read-board', 'read-updates']) {
+    const response = await f.api.inject({ method: 'POST', url: `/office-api/monday/${path}`, headers, payload: { boardId: MONDAY_READ_BOARD_IDS[0] } });
+    assert.equal(response.statusCode, 403); assert.equal(response.headers['www-authenticate'], undefined);
+    assert.deepEqual(response.json(), { error: 'MONDAY_OWNER_UNAUTHORIZED' });
+  }
   assert.equal(f.calls.length, 0);
 });
 test('owner challenge, login and session JSON never serialize HttpOnly cookie credentials', async t => {
@@ -139,8 +143,28 @@ test('owner login requires a challenge and matching CSRF, consuming a bad creden
   assert.equal((await f.api.inject({ method: 'POST', url: '/office-api/monday/owner/login', headers, payload })).statusCode, 403);
   const csrfHeaders = { ...headers, [MONDAY_OWNER_CSRF_HEADER]: challenge.json().csrfToken };
   const bad = await f.api.inject({ method: 'POST', url: '/office-api/monday/owner/login', headers: csrfHeaders, payload: { ...payload, password: 'synthetic-invalid-password-for-tests' } });
-  assert.equal(bad.statusCode, 401); assert.deepEqual(bad.json(), { error: 'MONDAY_OWNER_UNAUTHORIZED' });
+  assert.equal(bad.statusCode, 403); assert.deepEqual(bad.json(), { error: 'MONDAY_OWNER_UNAUTHORIZED' });
+  assert.equal(bad.headers['www-authenticate'], undefined);
   assert.equal((await f.api.inject({ method: 'POST', url: '/office-api/monday/owner/login', headers: csrfHeaders, payload })).statusCode, 403);
+  assert.deepEqual((await f.api.inject({ url: '/office-api/monday/owner/session', headers: f.headers })).json(), { available: true, authenticated: false });
+  const fresh = await f.api.inject({ url: '/office-api/monday/owner/login', headers: f.headers });
+  assert.equal(fresh.statusCode, 200); assert.notEqual(fresh.json().csrfToken, challenge.json().csrfToken);
+  const freshHeaders = { ...f.headers, cookie: cookie(fresh, MONDAY_OWNER_LOGIN_COOKIE), [MONDAY_OWNER_CSRF_HEADER]: fresh.json().csrfToken };
+  const invalidBasic = await f.api.inject({ method: 'POST', url: '/office-api/monday/owner/login', headers: { ...freshHeaders, authorization: 'Basic ???' }, payload });
+  assert.equal(invalidBasic.statusCode, 401); assert.match(String(invalidBasic.headers['www-authenticate']), /^Basic /);
+  assert.deepEqual(invalidBasic.json(), { error: 'STAGING_AUTHENTICATION_REQUIRED' });
+  assert.equal((await f.api.inject({ method: 'POST', url: '/office-api/monday/owner/login', headers: freshHeaders, payload })).statusCode, 200);
+  assert.equal(f.calls.length, 0);
+});
+test('expired owner credentials return a cookie error without a browser Basic challenge', async t => {
+  const f = await fixture(t); const owner = await f.login();
+  f.setTime(AT + 15 * 60_000);
+  const response = await f.api.inject({ url: '/office-api/monday/status', headers: owner.ownerHeaders });
+  assert.equal(response.statusCode, 403); assert.equal(response.headers['www-authenticate'], undefined);
+  assert.deepEqual(response.json(), { error: 'MONDAY_OWNER_UNAUTHORIZED' });
+  assert.deepEqual((await f.api.inject({ url: '/office-api/monday/owner/session', headers: owner.ownerHeaders })).json(), { available: true, authenticated: false });
+  assert.equal((await f.api.inject({ url: '/office-api/monday/owner/login', headers: f.headers })).statusCode, 200);
+  assert.equal(f.calls.length, 0);
 });
 test('every owner operation including reads requires CSRF and a same-origin JSON POST', async t => {
   const f = await fixture(t); const owner = await f.login();
@@ -244,8 +268,8 @@ test('logout revokes the owner session and clears the callback nonce; viewer sti
   const f = await fixture(t); const flow = await f.complete();
   const logout = await f.api.inject({ method: 'POST', url: '/office-api/monday/owner/logout', headers: flow.ownerHeaders, payload: {} });
   assert.equal(logout.statusCode, 204); assert.match(String(logout.headers['set-cookie']), /Max-Age=0/);
-  assert.equal((await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders })).statusCode, 401);
-  assert.equal((await f.api.inject({ method: 'POST', url: '/office-api/monday/read-updates', headers: f.headers, payload: { boardId: MONDAY_READ_BOARD_IDS[0] } })).statusCode, 401);
+  assert.equal((await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders })).statusCode, 403);
+  assert.equal((await f.api.inject({ method: 'POST', url: '/office-api/monday/read-updates', headers: f.headers, payload: { boardId: MONDAY_READ_BOARD_IDS[0] } })).statusCode, 403);
   assert.equal(f.calls.length, 3);
 });
 test('dependency failures return a safe HTTP code without reflecting error details', async t => {

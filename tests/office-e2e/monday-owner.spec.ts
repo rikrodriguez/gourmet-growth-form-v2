@@ -117,7 +117,7 @@ test('an unauthenticated owner gate rejects another user and clears its transien
     expect(Object.keys(payload).sort()).toEqual(['password', 'username']);
     expect(payload.username === 'otro_propietario_fixture', 'Only the explicitly supplied username is submitted').toBe(true);
     expect(payload.password === syntheticPassword, 'Only the transient synthetic password is submitted').toBe(true);
-    return { status: 401, body: { error: 'MONDAY_OWNER_UNAUTHORIZED' } };
+    return { status: 403, body: { error: 'MONDAY_OWNER_UNAUTHORIZED' } };
   });
   await page.goto('/office/monday');
   const password = page.getByLabel('Contraseña del propietario', { exact: true });
@@ -130,14 +130,32 @@ test('an unauthenticated owner gate rejects another user and clears its transien
   await expect(page.getByRole('button', { name: 'Entrar como propietario', exact: true })).toBeEnabled();
   const response = page.waitForResponse(item => new URL(item.url()).pathname === `${api}/owner/login` && item.request().method() === 'POST');
   await page.getByRole('button', { name: 'Entrar como propietario', exact: true }).click();
-  expect((await response).status()).toBe(401);
+  expect((await response).status()).toBe(403);
+  await expect(page.getByRole('alert')).toHaveText('No se pudo confirmar el acceso del propietario. Vuelve a intentarlo.');
   await expect(password).toHaveValue('');
   await expect(page.getByRole('button', { name: 'Entrar como propietario', exact: true })).toBeVisible();
   await expect(page.getByTestId('monday-connection-state')).toHaveCount(0);
   expect(monday.calls.filter(call => call.method === 'POST')).toEqual([{ method: 'POST', path: `${api}/owner/login` }]);
   expect(monday.calls.every(call => call.path.startsWith(`${api}/owner/`))).toBe(true);
+  expect(monday.calls.filter(call => call.method === 'GET' && call.path === `${api}/owner/login`)).toHaveLength(2);
   await expectNoPersistedPassword(page, syntheticPassword);
   await expectFits(page);
+});
+
+test('an owner CSRF rejection stays forbidden without retrying login or refreshing its challenge', async ({ page, monday }) => {
+  monday.respond('GET', `${api}/owner/session`, { body: { available: true, authenticated: false } });
+  monday.respond('GET', `${api}/owner/login`, { body: { csrfToken, expiresAt } });
+  monday.respond('POST', `${api}/owner/login`, { status: 403, body: { error: 'MONDAY_OWNER_CSRF_REQUIRED' } });
+  await page.goto('/office/monday');
+  await expect(page.getByRole('button', { name: 'Entrar como propietario', exact: true })).toBeEnabled();
+  await page.getByLabel('Usuario del propietario', { exact: true }).fill('synthetic_owner_fixture');
+  await page.getByLabel('Contraseña del propietario', { exact: true }).fill('SYNTHETIC_OWNER_PASSWORD_FOR_CSRF_TEST');
+  await page.getByRole('button', { name: 'Entrar como propietario', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText('El acceso del propietario o la acción fueron rechazados.');
+  await expect(page.getByLabel('Contraseña del propietario', { exact: true })).toHaveValue('');
+  await expect(page.getByTestId('monday-connection-state')).toHaveCount(0);
+  expect(monday.calls.filter(call => call.method === 'POST')).toEqual([{ method: 'POST', path: `${api}/owner/login` }]);
+  expect(monday.calls.filter(call => call.method === 'GET' && call.path === `${api}/owner/login`)).toHaveLength(1);
 });
 
 test('the authorized Info integration shows only confirmed state and bounded readings', async ({ page, monday }, testInfo) => {

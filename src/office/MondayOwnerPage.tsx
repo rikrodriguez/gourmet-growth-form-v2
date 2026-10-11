@@ -25,6 +25,7 @@ const ERROR_TEXT = {
   offline: 'No se pudo confirmar la respuesta del servicio. Vuelve a consultar el estado.',
   incompatible: 'La respuesta no cumple el contrato de Monday. No se muestran datos sin verificar.',
   unauthorized: 'La sesión del propietario no está vigente. Vuelve a acceder.',
+  owner_login_failed: 'No se pudo confirmar el acceso del propietario. Vuelve a intentarlo.',
   forbidden: 'El acceso del propietario o la acción fueron rechazados.',
   unavailable: 'Monday no está disponible para esta acción. La configuración o el consentimiento siguen pendientes.',
 };
@@ -107,6 +108,11 @@ async function request(path: string, options: { csrfToken?: string; body?: unkno
       ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
     });
   } catch { throw new MondayPageError('offline'); }
+  if (response.status === 403 && response.headers.get('content-type')?.includes('application/json')) {
+    const failure: unknown = await response.json().catch(() => null);
+    if (failure && typeof failure === 'object' && !Array.isArray(failure) && Object.keys(failure).length === 1
+      && 'error' in failure && failure.error === 'MONDAY_OWNER_UNAUTHORIZED') throw new MondayPageError('unauthorized');
+  }
   if (!response.ok) throw new MondayPageError(response.status === 401 ? 'unauthorized' : response.status === 403 ? 'forbidden' : response.status === 503 ? 'unavailable' : 'incompatible');
   if (response.status === 204) return null;
   try { if (!response.headers.get('content-type')?.includes('application/json')) bad(); return await response.json(); } catch { bad(); }
@@ -153,7 +159,8 @@ export function MondayOwnerPage() {
         setConnection(null); setReading(null); csrfToken.current = null; loginForm.current?.reset();
         try { await loadOwner(); } catch { setSession(null); }
       }
-      setError(error instanceof MondayPageError ? error.message : ERROR_TEXT.offline);
+      const message = error instanceof MondayPageError ? error.message : ERROR_TEXT.offline;
+      setError(name === 'login' && error instanceof MondayPageError && error.code === 'unauthorized' ? ERROR_TEXT.owner_login_failed : message);
     } finally { operation.current = false; setBusy(null); }
   }
   async function signIn(event: FormEvent<HTMLFormElement>) {
