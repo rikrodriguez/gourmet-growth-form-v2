@@ -12,6 +12,20 @@ La aprobación captura el hilo completo en `commercialContext`; los mensajes y r
 
 El agregado JSON existente en PostgreSQL guarda el contexto en la misma transacción que el borrador y el historial. No hay migraciones nuevas. Las aprobaciones anteriores que carecen de `commercialContext` conservan su cálculo de huella; los hilos se derivan de la inicialización persistida sin resembrar oficinas guardadas. Una sesión sin permiso de Ventas no recibe hilos ni aprobaciones comerciales.
 
+## Flujo vertical local de ventas
+
+El borrador comercial consulta ahora dos herramientas locales de lectura: el hilo validado del servidor y los hechos operativos del caso. El resultado muestra closer explícito, intento y contacto separados, cierre humano y condiciones faltantes del seguimiento. Los datos financieros y de proveedores permanecen en sus vistas por función; no se incorporan a un borrador de Ventas que pueda leer una sesión sin esos permisos. Fecha, ubicación, asistentes y restricciones sin confirmación siguen pendientes.
+
+`sales-flow.ts` conserva guion DEMO por defecto. Los entrypoints de desarrollo y staging no configuran un proveedor LLM. Para evaluar la frontera existe un planificador inyectable sintético: recibe datos del cliente separados de la política, y sólo puede ordenar secciones autorizadas y citar todas sus referencias. No admite texto libre, destinatarios, instrucciones de herramientas, aprobaciones, envíos ni fuentes inventadas. Valida objetos y arrays de datos sin ejecutar métodos o getters de la dependencia. No es un cliente LLM preparado para producción.
+
+La transacción serializa generación y deduplicación. Misma clave/contenido reutiliza el estado actual; clave distinta con el mismo contexto exitoso reutiliza el mismo borrador y su revisión actual. Una clave con contenido distinto da conflicto. Fallos/timeout guardan sólo código sanitizado, tarea fallida e historial; no crean aprobación. Repetir una clave fallida devuelve el fallo sin invocar otra vez. Una clave nueva permite un reintento explícito. Resultados tardíos no adjuntan borradores; el límite del texto generado es 10 000 caracteres.
+
+El dashboard proyecta el ledger verificado de cada caso: pago parcial conserva saldo pendiente; ledger ausente/corrupto conserva valores desconocidos. Un pago confirmado sin aceptación verificable del proveedor produce una cola visible de resolución humana, con identidad estable y evidencia. Aparece en la lectura actual sin esperar conciliación semanal; no se entrega una alerta fuera de la aplicación ni existe watchdog autónomo. No bloquea preparar la venta ni inventa un chef.
+
+El evaluador de seguimiento detiene ante respuesta, pago, rechazo o baja, bloquea si falta alguna señal confiable o el canal respondido y permite únicamente ese canal. El runtime no tiene ingreso de estas señales, STOP persistente, scheduler o sender; su proyección actual declara el seguimiento bloqueado. Preparar una respuesta interna a una solicitud no programa ni envía un seguimiento.
+
+Antes de un proveedor facturable se necesitan contratos reales de contexto e identidad, scopes, modelo y gasto autorizados, intentos duraderos y revalidación. La implementación sintética mantiene un lock acotado para demostrar concurrencia; las llamadas externas futuras deben ejecutarse fuera del lock con reserva de intento y revalidación. Las pruebas locales no acreditan idempotencia ni efectos de un proveedor real.
+
 ## Límite para futuras lecturas de Gmail y Monday
 
 Un futuro adaptador del servidor podrá convertir lecturas autorizadas de Gmail y Monday en contexto normalizado: mensajes del hilo, asunto y destinatario, datos del brief y referencias verificables con fecha y origen. Antes de habilitarlo deberá definir una nueva versión de contrato, validación de procedencia y permisos por usuario y caso. El contrato actual rechazará datos reales; no es un conector preparado para recibirlos.

@@ -2,7 +2,9 @@ import type { FunctionId, OfficeCommand } from '../contracts';
 import { computeApprovalDigest, draftCore, runPilotCommand } from './pilot-core';
 import { DEMO_ACTOR, FUNCTION_AREAS, FUNCTION_NAMES, OfficeError, assertOfficeState, currentTime, evidence, parseOfficeCommand, projectOfficeSnapshot, sha256 } from './state';
 import type { OfficeState, OfficeStore, DemoCaseId, ApprovalLink } from './state';
-import { commercialHistoryBinding, commercialScriptedDraft, resolveCommercialThread } from './commercial-fixtures';
+import { commercialHistoryBinding, resolveCommercialThread } from './commercial-fixtures';
+import { generateSalesDraft, readSalesDraftContext } from './sales-flow';
+import type { SalesFlowOptions, SalesFlowError } from './sales-flow';
 
 function demoText(text: string) { return text.startsWith('DEMO — ') ? text : `DEMO — ${text}`; }
 
@@ -21,7 +23,7 @@ function scriptedResponse(state: OfficeState, caseId: DemoCaseId, functionId: Fu
   };
   return `DEMO — Respuesta guionada local de ${FUNCTION_NAMES[functionId]}, sin LLM. ${topic[functionId]} Ninguna aprobación ejecuta acciones externas.`;
 }
-function recordHistory(state: OfficeState, command: OfficeCommand, atMs: number, title: string, detail: string, status: 'completed' | 'blocked' | 'awaiting_approval' | 'stale') {
+function recordHistory(state: OfficeState, command: OfficeCommand, atMs: number, title: string, detail: string, status: 'completed' | 'blocked' | 'awaiting_approval' | 'stale' | 'failed') {
   const id = `history-${sha256(command.idempotencyKey).slice(0, 24)}`;
   state.office.history[id] = { id, caseId: command.caseId as DemoCaseId, functionId: command.functionId, commandKey: command.idempotencyKey, title, detail, status, evidence: evidence(command.caseId as DemoCaseId, id, atMs) };
 }
@@ -32,22 +34,23 @@ function checkedApproval(state: OfficeState, command: OfficeCommand) {
   if (link.digest !== command.digest || computeApprovalDigest(state, link) !== command.digest) throw new OfficeError('APPROVAL_DIGEST_MISMATCH', 409);
   return link;
 }
-export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clock = Date.now) {
+export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clock = Date.now, options: SalesFlowOptions = {}) {
   const command = parseOfficeCommand(raw);
   const inputDigest = sha256(command);
-  return store.transact(async state => {
+  const result = await store.transact(async state => {
     assertOfficeState(state);
     const previous = Object.hasOwn(state.office.commands, command.idempotencyKey) ? state.office.commands[command.idempotencyKey] : undefined;
     const atMs = currentTime(clock);
     if (previous) {
       if (previous.digest !== inputDigest) throw new OfficeError('IDEMPOTENCY_CONFLICT', 409);
       // Replay reports current authoritative state; it never restores an old approval.
-      return { snapshot: projectOfficeSnapshot(state, atMs), replayed: true };
+      return { snapshot: projectOfficeSnapshot(state, atMs), replayed: true, error: previous.salesFlow?.error };
     }
     const caseId = command.caseId as DemoCaseId;
     const item = state.office.cases[caseId];
     if (command.functionId === 'suppliers' && command.action !== 'chat' && item.saleClosed !== true) throw new OfficeError('SALE_NOT_CLOSED', 403);
     const token = sha256(command.idempotencyKey).slice(0, 24);
+    let salesFlow: import('./state').CommandRecord['salesFlow'];
     if (command.action === 'chat') {
       const response = scriptedResponse(state, caseId, command.functionId);
       const ev = evidence(caseId, `chat-${token}`, atMs, 'demo:scripted-chat');
@@ -58,7 +61,28 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
       const id = `approval-${token}`;
       const coreDraftId = `draft-${token}`;
       const commercialContext = command.commercialThreadId !== undefined ? resolveCommercialThread(state, command) : undefined;
-      const text = commercialContext ? commercialScriptedDraft(commercialContext) : demoText(command.text ?? scriptedResponse(state, caseId, command.functionId));
+      const salesContext = commercialContext ? readSalesDraftContext(state, caseId, commercialContext, atMs, options) : undefined;
+      if (salesContext) {
+        // The store serializes this lookup and generation with the aggregate lock.
+        // A different transport key cannot generate another reply to the same facts.
+        const existing = Object.values(state.office.commands).find(row => row.salesFlow?.fingerprint === salesContext.fingerprint && row.salesFlow.approvalId !== undefined);
+        if (existing) {
+          state.office.commands[command.idempotencyKey] = { key: command.idempotencyKey, digest: inputDigest, input: command, actorId: DEMO_ACTOR, atMs, salesFlow: structuredClone(existing.salesFlow) };
+          return { snapshot: projectOfficeSnapshot(state, atMs), replayed: true };
+        }
+      }
+      let text: string;
+      try {
+        text = salesContext ? await generateSalesDraft(salesContext, options) : demoText(command.text ?? scriptedResponse(state, caseId, command.functionId));
+      } catch (error) {
+        if (!salesContext || !(error instanceof OfficeError) || !['SALES_PLANNER_FAILED', 'SALES_PLANNER_TIMEOUT', 'INVALID_SALES_PLAN'].includes(error.code)) throw error;
+        const code = error.code as SalesFlowError;
+        const ev = evidence(caseId, `sales-failed-${token}`, atMs);
+        state.office.jobs[`job-${token}`] = { id: `job-${token}`, caseId, functionId: 'sales', area: FUNCTION_AREAS.sales, title: 'Generación comercial fallida · DEMO', detail: `${code}. No se creó un borrador ni una aprobación. Fuentes y permisos del caso no cambiaron.`, status: 'failed', evidence: ev };
+        recordHistory(state, command, atMs, 'Generación comercial fallida · DEMO', `${code}. Contexto ${salesContext.input.contextDigest}; herramientas de lectura de hilo y estado del caso. Sin envío ni efectos externos.`, 'failed');
+        state.office.commands[command.idempotencyKey] = { key: command.idempotencyKey, digest: inputDigest, input: command, actorId: DEMO_ACTOR, atMs, salesFlow: { fingerprint: salesContext.fingerprint, error: code } };
+        return { snapshot: projectOfficeSnapshot(state, atMs), replayed: false, error: code };
+      }
       const recipient = commercialContext?.recipient ?? 'cliente-demo@invalid.test';
       const refs = command.functionId === 'proposals' ? [{ draftId: `quote-${caseId}-fixture`, revision: 1 }] : [];
       await runPilotCommand(state, caseId, 'message', { draftId: coreDraftId, channel: 'email', recipient, text, artifactRefs: refs }, `${token}-draft`, atMs);
@@ -67,8 +91,10 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
       const link: ApprovalLink = { id, caseId, functionId: command.functionId, coreDraftId, title: `${FUNCTION_NAMES[command.functionId]} · ${commercialContext ? 'respuesta contextual' : 'borrador'} DEMO`, account: 'Gourmet · cuenta de demostración', channel: 'email', recipient, attachments: refs.length ? [`Cotización DEMO ${caseId} · revisión 1`] : [], revision: 1, digest: '', status: 'pending', evidence: ev, jobId, ...(commercialContext ? { commercialContext: structuredClone(commercialContext) } : {}) };
       link.digest = computeApprovalDigest(state, link);
       state.office.approvals[id] = link;
-      state.office.jobs[jobId] = { id: jobId, caseId, functionId: command.functionId, area: FUNCTION_AREAS[command.functionId], title: link.title, detail: 'DEMO — Requiere decisión humana. No hay envío ni ejecución externa.', status: 'waiting_approval', evidence: ev, approvalId: id, revision: 1 };
-      recordHistory(state, command, atMs, commercialContext ? 'Respuesta comercial preparada · DEMO' : 'Borrador preparado · DEMO', `Contenido exacto, cuenta, destinatario y adjuntos quedan vinculados a la revisión. No se envió.${commercialHistoryBinding(commercialContext)}`, 'awaiting_approval');
+      const toolDetail = salesContext ? ` Lecturas del hilo y hechos operativos completadas; contexto ${salesContext.input.contextDigest}. Motor: ${options.salesPlanner ? 'planificador sintético acotado' : 'guion DEMO, sin LLM'}.` : '';
+      state.office.jobs[jobId] = { id: jobId, caseId, functionId: command.functionId, area: FUNCTION_AREAS[command.functionId], title: link.title, detail: `DEMO — Requiere decisión humana. No hay envío ni ejecución externa.${toolDetail}`, status: 'waiting_approval', evidence: ev, approvalId: id, revision: 1 };
+      recordHistory(state, command, atMs, commercialContext ? 'Respuesta comercial preparada · DEMO' : 'Borrador preparado · DEMO', `Contenido exacto, cuenta, destinatario y adjuntos quedan vinculados a la revisión. No se envió.${commercialHistoryBinding(commercialContext)}${toolDetail}`, 'awaiting_approval');
+      if (salesContext) salesFlow = { fingerprint: salesContext.fingerprint, approvalId: id };
     } else {
       const link = checkedApproval(state, command);
       if (command.action !== 'revise' && link.status !== 'pending') throw new OfficeError('APPROVAL_TERMINAL', 409);
@@ -107,7 +133,10 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
       }
     }
     const snapshot = projectOfficeSnapshot(state, atMs);
-    state.office.commands[command.idempotencyKey] = { key: command.idempotencyKey, digest: inputDigest, input: command, actorId: DEMO_ACTOR, atMs };
+    state.office.commands[command.idempotencyKey] = { key: command.idempotencyKey, digest: inputDigest, input: command, actorId: DEMO_ACTOR, atMs, ...(salesFlow ? { salesFlow } : {}) };
     return { snapshot, replayed: false };
   });
+  // Persist only the sanitized failure audit; dependency messages never escape.
+  if (result.error) throw new OfficeError(result.error, result.error === 'SALES_PLANNER_TIMEOUT' ? 504 : 502);
+  return { snapshot: result.snapshot, replayed: result.replayed };
 }

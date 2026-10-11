@@ -122,6 +122,20 @@ function receiptIntegrity(state, receiptId, receipt) {
   return fingerprints({ ...receipt, eventId: receipt.sourceEventId }).transactionDigest === receipt.transactionDigest;
 }
 
+// A case-scoped reader: verify this invoice and its receipts without initializing
+// payment maps, inspecting unrelated ledgers, or changing any persisted state.
+export function readVerifiedInvoiceLedger(state, invoiceId) {
+  if (!isId(invoiceId) || !isRecord(state) || !isRecord(state.invoices) || !isRecord(state.payments)
+    || (state.payments.transactions !== undefined && !isRecord(state.payments.transactions))) return null;
+  const invoice = own(state.invoices, invoiceId);
+  if (!invoice || invoice.invoiceId !== invoiceId || !ledgerIntegrity(state, invoice)) return null;
+  const receipts = invoice.receiptIds.map(id => state.payments.transactions[id]);
+  return structuredClone({
+    ...summary(invoice), receiptIds: invoice.receiptIds,
+    confirmedAtMs: receipts.length ? Math.max(...receipts.map(receipt => receipt.receivedAtMs)) : null,
+  });
+}
+
 function validationError(reason) {
   const error = new TypeError(reason);
   error.code = reason;

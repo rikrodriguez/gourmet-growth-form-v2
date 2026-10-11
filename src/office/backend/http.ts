@@ -6,10 +6,11 @@ import { OfficeError, currentTime, parseOfficeCommand, projectOfficeSnapshot } f
 import type { OfficeStore } from './state';
 import { DevelopmentSessions, SESSION_COOKIE, SESSION_TTL_MS, authorizeCommand, scopeSnapshot } from './session';
 import type { StagingAccess } from './staging';
+import type { SalesFlowOptions } from './sales-flow';
 
 const ORIGINS = new Set(['http://127.0.0.1:4175', 'http://localhost:4175', 'http://127.0.0.1:4180', 'http://localhost:4180']);
 const HOSTS = new Set([...ORIGINS].map(origin => new URL(origin).host));
-export function createOfficeApi(store: OfficeStore, options: { clock?: () => number; staging?: StagingAccess; staticRoot?: string } = {}) {
+export function createOfficeApi(store: OfficeStore, options: { clock?: () => number; staging?: StagingAccess; staticRoot?: string } & SalesFlowOptions = {}) {
   const clock = options.clock ?? Date.now;
   const sessions = new DevelopmentSessions(clock);
   const app = Fastify({ logger: false, bodyLimit: 16_384, trustProxy: false });
@@ -67,7 +68,7 @@ export function createOfficeApi(store: OfficeStore, options: { clock?: () => num
     const session = sessions.get(request.headers.cookie);
     const parsed = parseOfficeCommand(request.body);
     authorizeCommand(session, parsed);
-    const result = await executeOfficeCommand(store, parsed, clock);
+    const result = await executeOfficeCommand(store, parsed, clock, options);
     return { snapshot: scopeSnapshot(result.snapshot, session), replayed: result.replayed };
   };
   app.post('/office-api/commands', command);

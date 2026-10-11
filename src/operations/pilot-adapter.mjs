@@ -121,8 +121,10 @@ export function createPilotAdapter({ store, mode, policy, clock = Date.now, teln
     if (envelope.operation === 'approve_message' && context.explicitApproval !== true) fail('FORBIDDEN_EXPLICIT_APPROVAL_REQUIRED');
     return structuredClone(envelope);
   }
-  function pendingAlerts(state, atMs) {
+  function pendingAlerts(state, atMs, gourmetEventId) {
     for (const lead of Object.values(state.leads)) {
+      // An event-scoped UI command must not mutate another case's audit queue.
+      if (gourmetEventId !== undefined && lead.gourmetEventId !== gourmetEventId) continue;
       if (lead.status === 'released' || lead.telephony?.firstCallInitiatedAtMs != null || atMs - lead.capturedAtMs < 30_000) continue;
       const key = `sla:${lead.leadId}`;
       state.exceptions[key] ??= { type: 'telephony', code: 'INITIATION_NOT_VERIFIED_WITHIN_30S', leadId: lead.leadId, gourmetEventId: lead.gourmetEventId, recordedAtMs: atMs, status: 'pending_human_review', severity: 'immediate', requiresHumanReview: true };
@@ -220,7 +222,7 @@ export function createPilotAdapter({ store, mode, policy, clock = Date.now, teln
         }
         const atMs = now(clock);
         const data = dispatch(state, command, context, atMs);
-        pendingAlerts(state, atMs);
+        pendingAlerts(state, atMs, command.gourmetEventId);
         const result = { commandId, data, replayed: false, scope: 'local_simulation_only', allowsLiveEffect: false };
         state.commands[commandId] = { digest: commandDigest, actorId, gourmetEventId: command.gourmetEventId, recordedAtMs: atMs, result: structuredClone(result) };
         state.audit[commandId] = { commandId, actorId, operation: command.operation, gourmetEventId: command.gourmetEventId, recordedAtMs: atMs, mode: 'simulation' };

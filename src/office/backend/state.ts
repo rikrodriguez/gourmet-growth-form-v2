@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { AreaId, CommercialThread, Evidence, FunctionId, OfficeCase, OfficeCommand, OfficeHistory, OfficeSnapshot, WorkStatus } from '../contracts';
 import { FUNCTIONS } from '../functions';
 import { assertCommercialContext, createCommercialThreads } from './commercial-fixtures';
+import { readSalesWorkflow } from './sales-workflow';
 
 export const DEMO_ACTOR = 'OFFICE_DEMO_OPERATOR';
 export const CASE_IDS = ['demo-aurora', 'demo-cedar', 'demo-harbor'] as const;
@@ -12,7 +13,7 @@ export type DemoCaseId = typeof CASE_IDS[number];
 export type JobStatus = Exclude<WorkStatus, 'awaiting_approval'> | 'waiting_approval';
 export type OfficeJob = { id: string; caseId: DemoCaseId; area: AreaId; functionId: FunctionId; title: string; detail: string; status: JobStatus; evidence: Evidence; approvalId?: string; revision?: number };
 export type ApprovalLink = { id: string; caseId: DemoCaseId; functionId: FunctionId; coreDraftId: string; title: string; account: string; channel: 'email'; recipient: string; attachments: string[]; revision: number; digest: string; status: 'pending' | 'approved_demo' | 'rejected_demo' | 'cancelled_demo'; evidence: Evidence; coreApprovalId?: string; jobId: string; commercialContext?: CommercialThread };
-export type CommandRecord = { key: string; digest: string; input: OfficeCommand; actorId: typeof DEMO_ACTOR; atMs: number };
+export type CommandRecord = { key: string; digest: string; input: OfficeCommand; actorId: typeof DEMO_ACTOR; atMs: number; salesFlow?: { fingerprint: string; approvalId?: string; error?: 'SALES_PLANNER_FAILED' | 'SALES_PLANNER_TIMEOUT' | 'INVALID_SALES_PLAN' } };
 export type HistoryRecord = OfficeHistory & { caseId: DemoCaseId; commandKey: string | null };
 export type DemoCase = Omit<OfficeCase, 'history' | 'tasks' | 'approvals' | 'commercialThreads'>;
 export type CoreDraft = { kind: string; gourmetEventId: string; currentRevision: number; revisions: Record<string, { draftId: string; revision: number; text?: string; contentDigest: string; [key: string]: unknown }> };
@@ -92,9 +93,10 @@ export function assertEvidence(ev: Evidence, caseId: DemoCaseId) {
 export function projectOfficeSnapshot(state: OfficeState, nowMs: number): OfficeSnapshot {
   assertOfficeState(state);
   let hasMore = false;
-  const bounded = <T extends { id: string; evidence: Evidence }>(rows: T[], pendingFirst = false): T[] => {
+  const bounded = <T extends { id: string; evidence: Evidence }>(rows: T[], pendingFirst = false, workflowFirst = false): T[] => {
     if (rows.length > 1000) hasMore = true;
-    return rows.sort((a, b) => (pendingFirst ? Number((b as T & { status?: string }).status === 'pending') - Number((a as T & { status?: string }).status === 'pending') : 0) || b.evidence.at.localeCompare(a.evidence.at) || b.id.localeCompare(a.id)).slice(0, 1000);
+    const priority = (row: T) => workflowFirst && row.id.startsWith('workflow-') ? 2 : pendingFirst && (row as T & { status?: string }).status === 'pending' ? 1 : 0;
+    return rows.sort((a, b) => priority(b) - priority(a) || b.evidence.at.localeCompare(a.evidence.at) || b.id.localeCompare(a.id)).slice(0, 1000);
   };
   // Existing development records retain their original stored values; the UI
   // projects every function into its current canonical area without rewriting history.
@@ -103,13 +105,15 @@ export function projectOfficeSnapshot(state: OfficeState, nowMs: number): Office
     mode: 'demo', asOf: new Date(nowMs).toISOString(),
     note: 'DEMOSTRACIÓN · PostgreSQL local. Funciones lógicas, venta humana y chat guionado. Sin LLM, conectores, envíos ni cobros reales. Toda aprobación continúa siendo simulada.',
     outboundEffects: 0, mondayWrites: 0,
-    cases: CASE_IDS.map(id => ({ ...state.office.cases[id],
+    cases: CASE_IDS.map(id => {
+      const workflow = readSalesWorkflow(state, id, nowMs);
+      return { ...state.office.cases[id],
       commercialThreads: createCommercialThreads(id, state.office.initializedAtMs),
-      results: bounded([...state.office.cases[id].results]).map(currentArea), messages: bounded([...state.office.cases[id].messages]).map(currentArea),
-      tasks: bounded(Object.values(state.office.jobs).filter(row => row.caseId === id)).map(({ caseId: _caseId, approvalId: _approvalId, revision: _revision, ...job }) => ({ ...currentArea(job), status: job.status === 'waiting_approval' ? 'awaiting_approval' : job.status })),
+      results: bounded([...state.office.cases[id].results, ...workflow.results], false, true).map(currentArea), messages: bounded([...state.office.cases[id].messages]).map(currentArea),
+      tasks: bounded([...Object.values(state.office.jobs).filter(row => row.caseId === id), ...workflow.tasks], false, true).map(job => { const { caseId: _caseId, approvalId: _approvalId, revision: _revision, ...task } = job as OfficeJob; return { ...currentArea(task), status: task.status === 'waiting_approval' ? 'awaiting_approval' : task.status }; }),
       approvals: bounded(Object.values(state.office.approvals).filter(row => row.caseId === id), true).map(row => ({ id: row.id, area: FUNCTION_AREAS[row.functionId], functionId: row.functionId, title: row.title, body: state.drafts[row.coreDraftId]?.revisions[row.revision]?.text ?? '', recipient: row.recipient, account: row.account, attachments: row.attachments, channel: row.channel, revision: row.revision, digest: row.digest, status: row.status, evidence: row.evidence, ...(row.commercialContext !== undefined ? { commercialContext: row.commercialContext } : {}) })),
       history: bounded(Object.values(state.office.history).filter(row => row.caseId === id)).map(({ caseId: _caseId, commandKey: _commandKey, ...row }) => row).sort((a, b) => a.evidence.at.localeCompare(b.evidence.at) || a.id.localeCompare(b.id)),
-    })),
+    }; }),
   } as OfficeSnapshot;
   if (hasMore) { snapshot.hasMore = true; snapshot.note += ' Cobertura parcial: hasta 1000 registros recientes por colección; aprobaciones pendientes primero. PostgreSQL conserva el historial completo.'; }
   return structuredClone(snapshot);

@@ -6,6 +6,7 @@ import { executeOfficeCommand } from '../../src/office/backend/commands';
 import { createOfficeApi } from '../../src/office/backend/http';
 import { OfficeError, canonical, projectOfficeSnapshot } from '../../src/office/backend/state';
 import { validateOfficeSnapshot } from '../../src/office/adapter';
+import type { SalesPlanner } from '../../src/office/backend/sales-flow';
 
 const AT = Date.parse('2026-10-10T21:00:00.000Z');
 const stateId = `test-office-${randomUUID()}`;
@@ -97,5 +98,49 @@ describe('office real PostgreSQL durability (requires office:db start)', () => {
       assert.equal(count.rows[0].count, 1);
       assert.equal(replay.snapshot.outboundEffects, 0); assert.equal(replay.snapshot.mondayWrites, 0);
     } finally { await independent.close(); }
+  });
+
+  it('serializes synthetic planning across pools and transport keys and preserves sanitized failures after restart', async () => {
+    const independent = new PostgresOfficeStore({ stateId });
+    let independentClosed = false;
+    let calls = 0;
+    const planner: SalesPlanner = { async plan(input) {
+      calls += 1;
+      await new Promise(resolve => setTimeout(resolve, 15));
+      return { sectionIds: input.sections.map(row => row.id), evidenceIds: input.evidenceIds };
+    } };
+    try {
+      await independent.initialize(AT + 40);
+      const thread = projectOfficeSnapshot(await store.snapshot(), AT + 40).cases[0].commercialThreads![0];
+      const base = { caseId: thread.caseId, functionId: 'sales', action: 'draft', commercialThreadId: thread.id, commercialThreadRevision: thread.revision, commercialThreadDigest: thread.digest };
+      const generated = await Promise.all(Array.from({ length: 6 }, (_, index) => executeOfficeCommand(index % 2 ? independent : store, { ...base, idempotencyKey: `pg-sales-plan-${index}` }, () => AT + 40, { salesPlanner: planner })));
+      assert.equal(calls, 1);
+      assert.equal(generated.filter(row => !row.replayed).length, 1);
+      const records = (await independent.snapshot()).office.commands;
+      const ids = Array.from({ length: 6 }, (_, index) => records[`pg-sales-plan-${index}`].salesFlow!.approvalId);
+      assert.equal(new Set(ids).size, 1);
+      const history = await store.pool.query('SELECT count(*)::int AS count FROM office_demo.history_events WHERE state_id=$1 AND record->>\'commandKey\' LIKE \'pg-sales-plan-%\'', [stateId]);
+      assert.equal(history.rows[0].count, 1);
+
+      const failedThread = projectOfficeSnapshot(await store.snapshot(), AT + 41).cases[2].commercialThreads![1];
+      const failed = { ...base, caseId: failedThread.caseId, commercialThreadId: failedThread.id, commercialThreadRevision: failedThread.revision, commercialThreadDigest: failedThread.digest, idempotencyKey: 'pg-sales-failed' };
+      const failing: SalesPlanner = { async plan() { throw new Error('synthetic-dependency-detail-must-not-persist'); } };
+      await assert.rejects(executeOfficeCommand(independent, failed, () => AT + 41, { salesPlanner: failing }), (error: unknown) => error instanceof OfficeError && error.code === 'SALES_PLANNER_FAILED');
+      const persisted = await store.snapshot();
+      assert.equal(persisted.office.commands['pg-sales-failed'].salesFlow!.error, 'SALES_PLANNER_FAILED');
+      assert(!canonical(persisted).includes('synthetic-dependency-detail-must-not-persist'));
+      await independent.close();
+      independentClosed = true;
+      const restarted = new PostgresOfficeStore({ stateId });
+      try {
+        await restarted.initialize(AT + 42);
+        const beforeCalls = calls;
+        await assert.rejects(executeOfficeCommand(restarted, failed, () => AT + 42, { salesPlanner: planner }), (error: unknown) => error instanceof OfficeError && error.code === 'SALES_PLANNER_FAILED');
+        assert.equal(calls, beforeCalls);
+        const snapshot = projectOfficeSnapshot(await restarted.snapshot(), AT + 42);
+        assert.equal(snapshot.outboundEffects, 0); assert.equal(snapshot.mondayWrites, 0);
+        assert(snapshot.cases[2].tasks.some(row => row.title === 'Generación comercial fallida · DEMO' && row.status === 'failed'));
+      } finally { await restarted.close(); }
+    } finally { if (!independentClosed) await independent.close(); }
   });
 });
