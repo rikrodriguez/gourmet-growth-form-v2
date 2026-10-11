@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createServer } from 'node:http';
 import { checkStagingHealth } from '../../scripts/office-staging-health.mjs';
 
 const ENV = Object.freeze({
@@ -12,6 +13,27 @@ const ENV = Object.freeze({
 const HEALTH = Object.freeze({ status: 'ok', mode: 'demo', storage: 'postgres', outboundEffects: 0 });
 
 describe('authenticated staging health probe with in-memory TEST_ONLY fixtures', () => {
+  it('preserves Host and authentication with the real Node HTTP transport', async () => {
+    let calls = 0;
+    const server = createServer((request, response) => {
+      calls++;
+      assert.equal(request.method, 'GET');
+      assert.equal(request.url, '/office-api/health');
+      assert.equal(request.headers.host, 'office.synthetic.test');
+      assert.equal(request.headers['x-forwarded-proto'], 'https');
+      assert.equal(request.headers.authorization, `Basic ${Buffer.from(`${ENV.OFFICE_STAGING_USERNAME}:${ENV.OFFICE_STAGING_PASSWORD}`).toString('base64')}`);
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify(HEALTH));
+    });
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(4180, '127.0.0.1', resolve); });
+    try {
+      await checkStagingHealth({ env: ENV });
+      assert.equal(calls, 1);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   it('contacts only its fixed loopback endpoint with Basic, configured Host and HTTPS protocol', async () => {
     let calls = 0;
     await checkStagingHealth({ env: ENV, fetchImpl: async (target: string, options: RequestInit) => {
@@ -99,9 +121,9 @@ describe('authenticated staging health probe with in-memory TEST_ONLY fixtures',
     assert(!result.stderr.includes(ENV.OFFICE_STAGING_PASSWORD));
   });
 
-  it('prints only a generic CLI failure when a fetch implementation throws a credential-bearing error', () => {
+  it('prints only a generic CLI failure when HTTP transport throws a credential-bearing error', () => {
     const script = fileURLToPath(new URL('../../scripts/office-staging-health.mjs', import.meta.url));
-    const source = `process.argv[1] = ${JSON.stringify(script)}; globalThis.fetch = async () => { throw new Error(process.env.OFFICE_STAGING_PASSWORD); }; await import(${JSON.stringify(new URL('../../scripts/office-staging-health.mjs', import.meta.url).href)});`;
+    const source = `import http from 'node:http'; process.argv[1] = ${JSON.stringify(script)}; http.request = () => { throw new Error(process.env.OFFICE_STAGING_PASSWORD); }; await import(${JSON.stringify(new URL('../../scripts/office-staging-health.mjs', import.meta.url).href)});`;
     const result = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { env: ENV, encoding: 'utf8' });
     assert.equal(result.status, 1);
     assert.equal(result.stdout, '');

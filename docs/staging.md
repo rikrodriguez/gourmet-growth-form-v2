@@ -17,14 +17,14 @@ exercised.
 | `OFFICE_RUNTIME_MODE` | `staging`; set by Compose and the image. |
 | `OFFICE_STAGING_ORIGIN` | One exact HTTPS origin, without path, credentials, query or fragment. |
 | `OFFICE_STAGING_USERNAME` | Runtime staging username; no committed value. |
-| `OFFICE_STAGING_PASSWORD` | Runtime staging password; no committed value. |
+| `OFFICE_STAGING_PASSWORD` | 24–256 printable ASCII characters from `!` to `~`, without spaces; runtime only. |
 | `OFFICE_STAGING_ROLE` | `viewer` initially. `operator` is an explicit server-side opt-in. |
 | `OFFICE_STAGING_TRUSTED_PROXY_CIDRS` | Actual private proxy addresses/CIDRs, bounded to the trusted proxy. Compose also adds `127.0.0.1/32` for its health probe. |
 | `OFFICE_STAGING_DB_HOST` | `office-db`, reachable only by service name on the internal network. |
 | `OFFICE_STAGING_DB_PORT` | `5432`. |
 | `OFFICE_STAGING_DB_USER` | `office_stage`. |
 | `OFFICE_STAGING_DB_NAME` | `gourmet_office_stage_demo`. |
-| `OFFICE_STAGING_DB_PASSWORD` | Runtime synthetic database password, shared only by the app and PostgreSQL service. |
+| `OFFICE_STAGING_DB_PASSWORD` | 24–256 characters without U+0000–001F or U+007F controls; runtime only, shared by the app and PostgreSQL service. |
 
 Use `.env.staging.example` as a blank variable inventory. Enter real credentials
 only in the staging resource's runtime secret settings. Do not make them build
@@ -70,8 +70,21 @@ PostgreSQL readiness uses `pg_isready`. The application waits for that healthy
 dependency and then verifies migrations, existing state and database access.
 Its own health probe authenticates to loopback port 4180 with the configured
 Host and forwarded HTTPS protocol, checks the demo/PostgreSQL/zero-effects
-response, and prints no credentials. `pg_isready` alone does not validate the
+response, and prints no credentials. It uses `node:http.request` to preserve the
+configured Host: Node 24 `fetch` replaces that header with the loopback host and
+the application correctly rejects the request. The target remains fixed to
+loopback and the probe follows no redirects. `pg_isready` alone does not validate the
 application's database password; the authenticated API health check does.
+
+Startup failures emit one JSON diagnostic with `event`, `stage` and a fixed
+allowlisted `code`. Invalid runtime settings also include only the variable
+name and its fixed `requirement`. Stages distinguish configuration, database
+construction, compiled UI, application readiness, database initialization and
+listening. Recognized database error codes identify authentication, permissions,
+missing database or connectivity without copying messages, stacks, detail or
+DSNs. Resource cleanup failures also stay inside this diagnostic boundary.
+Keep secret validation strict; correct an invalid setting through the runtime
+secret controls without copying its value into troubleshooting evidence.
 
 ## Coolify preflight
 

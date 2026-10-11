@@ -1,9 +1,29 @@
 import { pathToFileURL } from 'node:url';
 import { isIP } from 'node:net';
+import http from 'node:http';
+
+function requestLoopbackHealth(target, options) {
+  return new Promise((resolve, reject) => {
+    // Node 24 fetch replaces an explicit Host with the loopback destination.
+    // http.request preserves it and never follows a redirect.
+    const request = http.request(target, { method: options.method, headers: options.headers, signal: options.signal }, response => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { body += chunk; });
+      response.on('error', reject);
+      response.on('end', () => resolve({
+        ok: response.statusCode >= 200 && response.statusCode < 300,
+        json: async () => JSON.parse(body),
+      }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
 
 // This probe only connects to its own container. It never uses the public
 // origin as a request destination and never prints credential-bearing values.
-export async function checkStagingHealth({ env = process.env, fetchImpl = fetch } = {}) {
+export async function checkStagingHealth({ env = process.env, fetchImpl = requestLoopbackHealth } = {}) {
   const { OFFICE_STAGING_ORIGIN: value, OFFICE_STAGING_USERNAME: username, OFFICE_STAGING_PASSWORD: password } = env;
   let origin;
   try { origin = new URL(value); } catch { throw new Error('Staging health configuration is invalid.'); }

@@ -5,6 +5,7 @@ import type { PoolClient } from 'pg';
 import { createOfficeFixtureState } from './fixtures';
 import { OfficeError, assertOfficeState, canonical } from './state';
 import type { OfficeState, OfficeStore } from './state';
+import { StagingVariableError } from './staging-diagnostics';
 
 export const DEFAULT_OFFICE_DATABASE_URL = 'postgresql://office_candidate@127.0.0.1:55433/gourmet_office_candidate_dev';
 export const OFFICE_STATE_ID = 'gourmet-office-candidate-development';
@@ -26,7 +27,12 @@ export function validateStagingDatabaseOptions(value: unknown): StagingDatabaseO
   const invalid = () => new OfficeError('INVALID_STAGING_DATABASE', 503);
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
   const body = value as Record<string, unknown>;
-  if (Object.keys(body).some(key => !['host', 'port', 'user', 'database', 'password'].includes(key)) || body.host !== 'office-db' || body.port !== 5432 || body.user !== 'office_stage' || body.database !== 'gourmet_office_stage_demo' || typeof body.password !== 'string' || body.password.length < 24 || body.password.length > 256 || /[\u0000-\u001f\u007f]/u.test(body.password)) throw invalid();
+  if (Object.keys(body).some(key => !['host', 'port', 'user', 'database', 'password'].includes(key))) throw invalid();
+  if (body.host !== 'office-db') throw new StagingVariableError('INVALID_STAGING_DATABASE', 'OFFICE_STAGING_DB_HOST');
+  if (body.port !== 5432) throw new StagingVariableError('INVALID_STAGING_DATABASE', 'OFFICE_STAGING_DB_PORT');
+  if (body.user !== 'office_stage') throw new StagingVariableError('INVALID_STAGING_DATABASE', 'OFFICE_STAGING_DB_USER');
+  if (body.database !== 'gourmet_office_stage_demo') throw new StagingVariableError('INVALID_STAGING_DATABASE', 'OFFICE_STAGING_DB_NAME');
+  if (typeof body.password !== 'string' || body.password.length < 24 || body.password.length > 256 || /[\u0000-\u001f\u007f]/u.test(body.password)) throw new StagingVariableError('INVALID_STAGING_DATABASE', 'OFFICE_STAGING_DB_PASSWORD');
   return Object.freeze({ host: body.host, port: body.port, user: body.user, database: body.database, password: body.password });
 }
 

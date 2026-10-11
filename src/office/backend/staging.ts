@@ -1,6 +1,8 @@
 import { BlockList, isIP } from 'node:net';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { OfficeError } from './state';
+import { StagingVariableError } from './staging-diagnostics';
+import type { StagingVariable } from './staging-diagnostics';
 import { validateStagingDatabaseOptions } from './postgres-store';
 import type { StagingDatabaseOptions } from './postgres-store';
 
@@ -17,21 +19,23 @@ export type OfficeStagingRuntime = Readonly<{ access: StagingAccess; database: S
 // No implicit staging, hostname discovery, URL credentials or production DB names.
 // Secrets enter through explicit environment fields and never appear in errors.
 export function parseOfficeStagingEnvironment(env: Record<string, string | undefined>): OfficeStagingRuntime {
-  const invalid = () => new OfficeError('INVALID_STAGING_CONFIGURATION', 503);
-  if (env.OFFICE_RUNTIME_MODE !== 'staging') throw invalid();
-  for (const key of ['OFFICE_DATABASE_URL', 'DATABASE_URL', 'PGHOST', 'PGHOSTADDR', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGOPTIONS', 'PGSSLMODE', 'PGSERVICE', 'PGSERVICEFILE', 'PGPASSFILE']) {
-    if (env[key] !== undefined) throw invalid();
+  const invalid = (key: StagingVariable) => new StagingVariableError('INVALID_STAGING_CONFIGURATION', key);
+  if (env.OFFICE_RUNTIME_MODE !== 'staging') throw invalid('OFFICE_RUNTIME_MODE');
+  for (const key of ['OFFICE_DATABASE_URL', 'DATABASE_URL', 'PGHOST', 'PGHOSTADDR', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGOPTIONS', 'PGSSLMODE', 'PGSERVICE', 'PGSERVICEFILE', 'PGPASSFILE'] as const) {
+    if (env[key] !== undefined) throw invalid(key);
   }
   let origin: URL;
-  try { origin = new URL(env.OFFICE_STAGING_ORIGIN ?? ''); } catch { throw invalid(); }
+  try { origin = new URL(env.OFFICE_STAGING_ORIGIN ?? ''); } catch { throw invalid('OFFICE_STAGING_ORIGIN'); }
   // WHATWG URL preserves IPv6 brackets; node:net.isIP expects their contents.
   const hostname = origin.hostname.startsWith('[') ? origin.hostname.slice(1, -1) : origin.hostname;
-  if (origin.protocol !== 'https:' || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== '/' || env.OFFICE_STAGING_ORIGIN !== origin.origin || !hostname || isIP(hostname) || hostname === 'localhost' || (origin.port && origin.port !== '443')) throw invalid();
+  if (origin.protocol !== 'https:' || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== '/' || env.OFFICE_STAGING_ORIGIN !== origin.origin || !hostname || isIP(hostname) || hostname === 'localhost' || (origin.port && origin.port !== '443')) throw invalid('OFFICE_STAGING_ORIGIN');
   const username = env.OFFICE_STAGING_USERNAME;
   const password = env.OFFICE_STAGING_PASSWORD;
   const role = env.OFFICE_STAGING_ROLE ?? 'viewer';
-  if (!username || !/^[A-Za-z0-9._-]{3,64}$/.test(username) || !password || password.length < 24 || password.length > 256 || !/^[\x21-\x7e]+$/.test(password) || !['viewer', 'operator'].includes(role)) throw invalid();
-  const peers = proxyPeers(env.OFFICE_STAGING_TRUSTED_PROXY_CIDRS, invalid);
+  if (!username || !/^[A-Za-z0-9._-]{3,64}$/.test(username)) throw invalid('OFFICE_STAGING_USERNAME');
+  if (!password || password.length < 24 || password.length > 256 || !/^[\x21-\x7e]+$/.test(password)) throw invalid('OFFICE_STAGING_PASSWORD');
+  if (!['viewer', 'operator'].includes(role)) throw invalid('OFFICE_STAGING_ROLE');
+  const peers = proxyPeers(env.OFFICE_STAGING_TRUSTED_PROXY_CIDRS, () => invalid('OFFICE_STAGING_TRUSTED_PROXY_CIDRS'));
   const expected = digest(Buffer.from(`${username}:${password}`, 'utf8'));
   const authenticated = (value: string | undefined) => {
     // Canonical bounded Basic header; compare digests even on invalid input.
