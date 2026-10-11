@@ -219,7 +219,7 @@ test('long DEMO chat stays inside its scroll region and keeps the composer reach
       id: `qa-long-chat-${index}`, area: 'coordination', functionId: 'coordination',
       author: index % 2 ? 'Operador DEMO' : 'Coordinación / Tastings',
       text: `Mensaje sintético QA ${index}. Conversación larga para comprobar desplazamiento y acceso al formulario.`,
-      evidence: { source: 'fixture:qa-long-chat', at: state.asOf, simulated: true, reference: `demo:demo-aurora:qa-long-chat-${index}` },
+      evidence: { source: 'fixture:office-demo', at: state.asOf, simulated: true, reference: `demo:demo-aurora:qa-long-chat-${index}` },
     }));
     await route.fulfill({ response, json: state });
   });
