@@ -1,3 +1,6 @@
+import { getMondayBoardCapabilities } from '../monday-board-catalog';
+import type { MondayBoardCapability } from '../monday-board-catalog';
+
 // Server-only fixed queries. No tokens, cursors, provider error text, item names,
 // update bodies or directory fields are included in a returned projection.
 // Docs checked 2026-10-11: /api-reference/docs/api-versioning,
@@ -9,9 +12,11 @@ export const MONDAY_RECORD_BOARD_IDS = Object.freeze(['18403945258', '1839805713
 export const MONDAY_READ_SCOPES = Object.freeze(['boards:read', 'updates:read', 'me:read'] as const);
 export const MONDAY_API_VERSION = '2026-07' as const;
 const ENDPOINT = 'https://api.monday.com/v2';
-const PAGE_SIZE = 25;
-const MAX_PAGES = 4;
-const CURSOR_TTL_MS = 5 * 60_000;
+export const PAGE_SIZE = 25;
+export const MAX_PAGES = 4;
+export const MAX_TOTAL_PAGES = 40;
+export const MAX_TOTAL_ITEMS = 1000;
+export const CURSOR_TTL_MS = 5 * 60_000;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
 export type MondayBoardId = typeof MONDAY_READ_BOARD_IDS[number];
@@ -25,11 +30,17 @@ export type MondayReadReason = 'disabled' | 'invalid_request' | 'forbidden_board
 export type MondayReadItem = { id: string; boardId: MondayBoardId; sourceUpdatedAt: string | null; readAt: string; columns: Array<{ id: string; field: MondayCommercialField; type: MondayAllowedColumn['type']; text: string | null; redacted: boolean }> };
 export type MondayUpdateItem = { id: string; boardId: MondayBoardId; sourceUpdatedAt: string | null; readAt: string; updates: Array<{ id: string; createdAt: string | null; sourceUpdatedAt: string | null; readAt: string }> };
 export type MondayReadResult<T> = { status: 'complete' | 'partial' | 'blocked'; boardId: MondayBoardId; mappingVersion: string; readAt: string; pages: number; items: T[]; reason?: MondayReadReason; retryAfterSeconds?: number };
+// Private server checkpoint: never serialize it into an owner API response.
+export type MondayReadCheckpoint = { cursor: string; boardId: MondayBoardId; actorId: string; kind: 'board' | 'updates'; mappingVersion: string; expiresAtMs: number; seenCursors: string[]; seenItemIds: string[]; pagesRead: number; itemsRead: number; updatesTruncated?: boolean };
+export type MondayReadBatch<T> = { result: MondayReadResult<T>; checkpoint: MondayReadCheckpoint | null };
 export interface MondayReadClient {
   getIdentity(accessToken: string, signal?: AbortSignal): Promise<MondayIdentity>;
   verifyBoardAccess(accessToken: string, signal?: AbortSignal): Promise<MondayBoardAccess>;
   readBoard(input: MondayReadInput): Promise<MondayReadResult<MondayReadItem>>;
   readUpdates(input: MondayReadInput): Promise<MondayReadResult<MondayUpdateItem>>;
+  readBoardBatch?(input: MondayReadInput, checkpoint?: MondayReadCheckpoint): Promise<MondayReadBatch<MondayReadItem>>;
+  readUpdatesBatch?(input: MondayReadInput, checkpoint?: MondayReadCheckpoint): Promise<MondayReadBatch<MondayUpdateItem>>;
+  getBoardCapabilities?(): readonly MondayBoardCapability[];
 }
 export type MondayReadClientOptions = { enabled?: boolean; fetch?: typeof fetch; clock?: () => number; columnAllowlist?: MondayColumnAllowlist; mappingVersion?: string };
 
@@ -181,9 +192,9 @@ export function createMondayReadClient(options: MondayReadClientOptions = {}): M
           if (['UserUnauthorizedException', 'USER_ACCESS_DENIED', 'missingRequiredPermissions'].includes(extensions.code as string)) forbidden = true;
           if (['InvalidTokenException', 'UNAUTHENTICATED', 'Unauthorized'].includes(extensions.code as string)) unauthorized = true;
           const retry = extensions.retry_in_seconds ?? row.retry_in_seconds;
-          if (Number.isSafeInteger(retry) && (retry as number) >= 0) seconds = retry as number;
+          if (Number.isSafeInteger(retry) && (retry as number) >= 0) seconds = Math.max(seconds ?? 0, retry as number);
         }
-        throw new MondayReadError(rateLimited ? 'rate_limited' : unauthorized ? 'unauthorized' : forbidden ? 'forbidden' : 'provider_partial', seconds);
+        throw new MondayReadError(unauthorized ? 'unauthorized' : forbidden ? 'forbidden' : rateLimited ? 'rate_limited' : 'provider_partial', seconds);
       }
     }
     if (!Object.hasOwn(payload, 'data')) fail();
@@ -209,20 +220,51 @@ export function createMondayReadClient(options: MondayReadClientOptions = {}): M
     if (new Set(ids).size !== MONDAY_READ_BOARD_IDS.length || MONDAY_READ_BOARD_IDS.some(id => !ids.includes(id))) fail('forbidden_board');
     return { boardIds: Object.freeze([...MONDAY_READ_BOARD_IDS]), readAt: new Date(now()).toISOString() };
   }
-  async function read<T extends MondayReadItem | MondayUpdateItem>(raw: MondayReadInput, kind: 'board' | 'updates'): Promise<MondayReadResult<T>> {
+  function validateCheckpoint(raw: MondayReadCheckpoint, input: ReturnType<typeof validateInput>, kind: 'board' | 'updates'): MondayReadCheckpoint {
+    const value = record(raw);
+    keys(value, ['cursor', 'boardId', 'actorId', 'kind', 'mappingVersion', 'expiresAtMs', 'seenCursors', 'seenItemIds', 'pagesRead', 'itemsRead'], ['updatesTruncated']);
+    if (Object.hasOwn(value, 'updatesTruncated') && typeof value.updatesTruncated !== 'boolean') fail('invalid_request');
+    if (value.boardId !== input.boardId || value.actorId !== input.actorId || value.kind !== kind || value.mappingVersion !== mappingVersion) fail('invalid_request');
+    const cursor = text(value.cursor, 2048); if (!cursor) fail('invalid_request');
+    if (!Number.isSafeInteger(value.expiresAtMs) || (value.expiresAtMs as number) < 0 || (value.expiresAtMs as number) > Math.min(now() + CURSOR_TTL_MS, input.expiresAtMs)) fail('invalid_request');
+    if (!Number.isSafeInteger(value.pagesRead) || (value.pagesRead as number) < 1 || (value.pagesRead as number) > MAX_TOTAL_PAGES || !Number.isSafeInteger(value.itemsRead) || (value.itemsRead as number) < 0 || (value.itemsRead as number) > Math.min(MAX_TOTAL_ITEMS, (value.pagesRead as number) * PAGE_SIZE)) fail('invalid_request');
+    function strings(raw: unknown, count: number, parse: (value: unknown) => string): string[] {
+      if (!Array.isArray(raw) || Object.getPrototypeOf(raw) !== Array.prototype || raw.length !== count || Reflect.ownKeys(raw).length !== count + 1) fail('invalid_request');
+      const result: string[] = [];
+      for (let index = 0; index < count; index++) {
+        const descriptor = Object.getOwnPropertyDescriptor(raw, String(index));
+        if (!descriptor?.enumerable || !('value' in descriptor)) fail('invalid_request');
+        result.push(parse(descriptor.value));
+      }
+      if (new Set(result).size !== result.length) fail('invalid_request');
+      return result;
+    }
+    const seenCursors = strings(value.seenCursors, value.pagesRead as number, value => { const cursor = text(value, 2048); if (!cursor) fail('invalid_request'); return cursor; });
+    const seenItemIds = strings(value.seenItemIds, value.itemsRead as number, sourceId);
+    if (seenCursors.at(-1) !== cursor) fail('invalid_request');
+    return { cursor, boardId: input.boardId, actorId: input.actorId, kind, mappingVersion, expiresAtMs: value.expiresAtMs as number, seenCursors, seenItemIds, pagesRead: value.pagesRead as number, itemsRead: value.itemsRead as number, updatesTruncated: value.updatesTruncated === true };
+  }
+  async function read<T extends MondayReadItem | MondayUpdateItem>(raw: MondayReadInput, kind: 'board' | 'updates', previous?: MondayReadCheckpoint): Promise<MondayReadBatch<T>> {
     // Invalid envelopes throw a fixed safe error before a board/cursor can be
     // placed into an outbound query. A disabled client never makes a request.
     const input = validateInput(raw);
+    const checkpoint = previous === undefined ? undefined : validateCheckpoint(previous, input, kind);
     const result: MondayReadResult<T> = { status: 'blocked', boardId: input.boardId, mappingVersion, readAt: new Date(now()).toISOString(), pages: 0, items: [] };
-    if (!enabled) return { ...result, reason: 'disabled' };
-    if (!(MONDAY_RECORD_BOARD_IDS as readonly string[]).includes(input.boardId)) return { ...result, reason: 'forbidden_board' };
+    if (!enabled) return { result: { ...result, reason: 'disabled' }, checkpoint: null };
+    if (!(MONDAY_RECORD_BOARD_IDS as readonly string[]).includes(input.boardId)) return { result: { ...result, reason: 'forbidden_board' }, checkpoint: null };
     const columns = mapping[input.boardId];
-    if (kind === 'board' && !columns?.length) return { ...result, reason: 'columns_unconfigured' };
-    const bound = Object.freeze({ boardId: input.boardId, actorId: input.actorId, mappingVersion, expiresAtMs: Math.min(now() + CURSOR_TTL_MS, input.expiresAtMs) });
-    let cursor: string | null = null; const seenCursors = new Set<string>(); const seenItems = new Set<string>(); let updatesTruncated = false;
+    if (kind === 'board' && !columns?.length) return { result: { ...result, reason: 'columns_unconfigured' }, checkpoint: null };
+    const bound = Object.freeze({ boardId: input.boardId, actorId: input.actorId, mappingVersion, expiresAtMs: checkpoint?.expiresAtMs ?? Math.min(now() + CURSOR_TTL_MS, input.expiresAtMs) });
+    let cursor: string | null = checkpoint?.cursor ?? null; const seenCursors = new Set<string>(checkpoint?.seenCursors); const seenItems = new Set<string>(checkpoint?.seenItemIds); let updatesTruncated = checkpoint?.updatesTruncated === true;
+    let pagesRead = checkpoint?.pagesRead ?? 0;
+    function position(): MondayReadCheckpoint | null {
+      if (cursor === null || now() >= bound.expiresAtMs || pagesRead >= MAX_TOTAL_PAGES || seenItems.size >= MAX_TOTAL_ITEMS) return null;
+      return { ...bound, kind, cursor, seenCursors: [...seenCursors], seenItemIds: [...seenItems], pagesRead, itemsRead: seenItems.size, updatesTruncated };
+    }
     for (let page = 0; page < MAX_PAGES; page++) {
       try {
         if (now() >= bound.expiresAtMs) fail('cursor_expired');
+        if (pagesRead >= MAX_TOTAL_PAGES || seenItems.size >= MAX_TOTAL_ITEMS) return { result: { ...result, status: 'partial', reason: 'page_limit' }, checkpoint: null };
         if (bound.boardId !== input.boardId || bound.actorId !== input.actorId || bound.mappingVersion !== mappingVersion) fail('invalid_request');
         const variables: Row = { boardIds: [bound.boardId], cursor, ...(kind === 'board' ? { columnIds: columns!.map(column => column.id) } : {}) };
         const data = await request(kind, input.accessToken, variables, input.signal);
@@ -256,15 +298,21 @@ export function createMondayReadClient(options: MondayReadClientOptions = {}): M
         const nextCursor = batch.cursor === null ? null : text(batch.cursor, 2048);
         if (nextCursor !== null && (!nextCursor || seenCursors.has(nextCursor))) fail('cursor_cycle');
         if (new Set(rows.map(item => item.id)).size !== rows.length) fail();
-        rows.forEach(item => seenItems.add(item.id)); result.items.push(...rows); result.pages++; result.readAt = readAt;
-        if (nextCursor === null) return { ...result, status: updatesTruncated ? 'partial' : 'complete', ...(updatesTruncated ? { reason: 'updates_limit' } : {}) };
+        rows.forEach(item => seenItems.add(item.id)); result.items.push(...rows); result.pages++; pagesRead++; result.readAt = readAt;
+        if (nextCursor === null) return { result: { ...result, status: updatesTruncated ? 'partial' : 'complete', ...(updatesTruncated ? { reason: 'updates_limit' } : {}) }, checkpoint: null };
         seenCursors.add(nextCursor); cursor = nextCursor;
       } catch (error) {
         const failure = safeError(error);
-        return { ...result, status: result.pages || failure.code === 'provider_partial' ? 'partial' : 'blocked', reason: failure.code, ...(failure.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: failure.retryAfterSeconds }) };
+        return { result: { ...result, status: result.pages || failure.code === 'provider_partial' ? 'partial' : 'blocked', reason: failure.code, ...(failure.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: failure.retryAfterSeconds }) }, checkpoint: failure.code === 'rate_limited' || failure.code === 'offline' ? position() : null };
       }
     }
-    return { ...result, status: 'partial', reason: 'page_limit' };
+    return { result: { ...result, status: 'partial', reason: 'page_limit' }, checkpoint: position() };
   }
-  return Object.freeze({ getIdentity, verifyBoardAccess, readBoard: (input: MondayReadInput) => read<MondayReadItem>(input, 'board'), readUpdates: (input: MondayReadInput) => read<MondayUpdateItem>(input, 'updates') });
+  return Object.freeze({ getIdentity, verifyBoardAccess,
+    getBoardCapabilities: () => getMondayBoardCapabilities(mapping, mappingVersion, enabled),
+    readBoard: async (input: MondayReadInput) => (await read<MondayReadItem>(input, 'board')).result,
+    readUpdates: async (input: MondayReadInput) => (await read<MondayUpdateItem>(input, 'updates')).result,
+    readBoardBatch: (input: MondayReadInput, checkpoint?: MondayReadCheckpoint) => read<MondayReadItem>(input, 'board', checkpoint),
+    readUpdatesBatch: (input: MondayReadInput, checkpoint?: MondayReadCheckpoint) => read<MondayUpdateItem>(input, 'updates', checkpoint),
+  });
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createMondayReadClient, MondayReadError, MONDAY_API_VERSION, MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS, MONDAY_READ_SCOPES } from '../../src/office/backend/monday-read';
-import type { MondayColumnAllowlist, MondayReadInput } from '../../src/office/backend/monday-read';
+import type { MondayColumnAllowlist, MondayReadInput, MondayReadCheckpoint } from '../../src/office/backend/monday-read';
 
 const AT = Date.parse('2026-10-11T20:00:00.000Z');
 const BOARD = MONDAY_READ_BOARD_IDS[0];
@@ -240,5 +240,162 @@ describe('Monday fixed read boundary', () => {
     const aborted = fixture([]); assert.equal((await aborted.client.readBoard(input({ signal: controller.signal }))).reason, 'aborted'); assert.equal(aborted.requests.length, 0);
     const extraIdentity = fixture([json({ data: { me: { id: '900001', email: 'demo@invalid.test', phone: 'synthetic-private-phone' } } })]);
     await assert.rejects(extraIdentity.client.getIdentity(TOKEN), (error: unknown) => error instanceof MondayReadError && error.code === 'incompatible');
+  });
+});
+
+function continuingPages(start: number, count = 4, updates = false) {
+  return Array.from({ length: count }, (_, index) => page(Array.from({ length: 25 }, (_, offset) => {
+    const id = String(100000 + (start + index) * 25 + offset);
+    return updates ? { id, updated_at: null, updates: [] } : item(id);
+  }), `synthetic-continuation-${start + index}`));
+}
+function checkpoint(extra: Partial<MondayReadCheckpoint> = {}): MondayReadCheckpoint {
+  return { cursor: 'synthetic-continuation-3', boardId: BOARD, actorId: '900001', kind: 'board', mappingVersion: 'synthetic-mapping-v1', expiresAtMs: AT + 300000,
+    seenCursors: Array.from({ length: 4 }, (_, index) => `synthetic-continuation-${index}`),
+    seenItemIds: Array.from({ length: 100 }, (_, index) => String(100000 + index)), pagesRead: 4, itemsRead: 100, updatesTruncated: false, ...extra };
+}
+
+describe('Monday explicit batch continuity', () => {
+  it('resumes after 100 items with a private fixed-size batch and original TTL', async () => {
+    let at = AT;
+    const { client, requests } = fixture([...continuingPages(0), page([item('100100')])], { clock: () => at });
+    assert.equal(typeof client.readBoardBatch, 'function');
+    const first = await client.readBoardBatch!(input());
+    assert.equal(first.result.reason, 'page_limit'); assert.equal(first.result.pages, 4); assert.equal(first.result.items.length, 100);
+    assert.deepEqual(first.checkpoint, checkpoint());
+    at += 60000;
+    const second = await client.readBoardBatch!(input(), first.checkpoint!);
+    assert.equal(second.result.status, 'complete'); assert.equal(second.result.pages, 1); assert.equal(second.result.items[0].id, '100100'); assert.equal(second.checkpoint, null);
+    assert.equal(requests[4].body.variables.cursor, first.checkpoint!.cursor);
+    assert(requests.every(request => (request.body.variables.boardIds as string[])[0] === BOARD && request.body.query.includes('limit: 25')));
+    assert(!JSON.stringify(first.result).includes('cursor')); assert(!JSON.stringify(second.result).includes(TOKEN));
+  });
+
+  it('retains cumulative counters and TTL across resumed batches and caps a journey at forty pages', async () => {
+    let at = AT;
+    const { client, requests } = fixture(Array.from({ length: 10 }, (_, index) => continuingPages(index * 4)).flat(), { clock: () => at });
+    assert.equal(typeof client.readBoardBatch, 'function');
+    let position: MondayReadCheckpoint | undefined;
+    for (let batch = 0; batch < 10; batch++) {
+      const next = await client.readBoardBatch!(input(), position);
+      assert.equal(next.result.reason, 'page_limit'); assert.equal(next.result.pages, 4); assert.equal(next.result.items.length, 100);
+      if (batch === 9) assert.equal(next.checkpoint, null);
+      else {
+        assert.equal(next.checkpoint!.pagesRead, (batch + 1) * 4); assert.equal(next.checkpoint!.itemsRead, (batch + 1) * 100);
+        assert.equal(next.checkpoint!.expiresAtMs, AT + 300000); position = next.checkpoint!;
+      }
+      at += 1000;
+    }
+    assert.equal(requests.length, 40);
+  });
+
+  it('rejects duplicate items, cycles and unsafe provider pages across batches and discards continuity', async () => {
+    for (const response of [page([item('100000')]), page([item('100100')], 'synthetic-continuation-0'), page([item('100100')], null, DEALS), page([{ ...item('100100'), name: 'synthetic-sensitive-name' }])]) {
+      const { client, requests } = fixture([response]); assert.equal(typeof client.readBoardBatch, 'function');
+      const next = await client.readBoardBatch!(input(), checkpoint());
+      assert.equal(next.checkpoint, null); assert.equal(next.result.pages, 0); assert.equal(next.result.status, 'blocked');
+      assert(['incompatible', 'cursor_cycle'].includes(next.result.reason!)); assert.equal(requests.length, 1);
+    }
+  });
+
+  it('validates exact decoded checkpoint values and bindings before any provider request', async () => {
+    const bad: unknown[] = [null, {}, { ...checkpoint(), extra: TOKEN }, checkpoint({ actorId: '900002' }), checkpoint({ boardId: DEALS }), checkpoint({ kind: 'updates' }),
+      checkpoint({ mappingVersion: 'foreign-v1' }), checkpoint({ cursor: '' }), checkpoint({ cursor: 'unseen-cursor' }), checkpoint({ expiresAtMs: AT + 300001 }), checkpoint({ pagesRead: 4.5 }),
+      checkpoint({ itemsRead: 99 }), checkpoint({ seenCursors: ['synthetic-continuation-3'] }), checkpoint({ seenItemIds: ['bad-id'] }),
+      checkpoint({ seenCursors: ['synthetic-continuation-3', 'synthetic-continuation-3'] }), checkpoint({ expiresAtMs: Number.NaN }),
+      checkpoint({ seenItemIds: Object.assign([...checkpoint().seenItemIds], { extra: TOKEN }) }),
+      Object.defineProperty(checkpoint(), 'cursor', { get() { throw new Error('must not execute getter'); }, enumerable: true }),
+    ];
+    for (const position of bad) {
+      const { client, requests } = fixture([]); assert.equal(typeof client.readBoardBatch, 'function');
+      await assert.rejects(client.readBoardBatch!(input(), position as MondayReadCheckpoint), MondayReadError);
+      assert.equal(requests.length, 0);
+    }
+  });
+
+  it('expires continuations and binds their TTL to token expiration without extending it', async () => {
+    const expired = fixture([], { clock: () => AT + 300000 }); assert.equal(typeof expired.client.readBoardBatch, 'function');
+    const next = await expired.client.readBoardBatch!(input(), checkpoint());
+    assert.equal(next.result.reason, 'cursor_expired'); assert.equal(next.checkpoint, null); assert.equal(expired.requests.length, 0);
+    const nearExpiry = fixture(continuingPages(0));
+    const first = await nearExpiry.client.readBoardBatch!(input({ expiresAt: new Date(AT + 120000).toISOString() }));
+    assert.equal(first.checkpoint!.expiresAtMs, AT + 120000);
+    await assert.rejects(nearExpiry.client.readBoardBatch!(input({ expiresAt: new Date(AT + 60000).toISOString() }), first.checkpoint!), MondayReadError);
+  });
+
+  it('preserves only the verified position on quota and offline failures without retries', async () => {
+    for (const response of [json({ message: TOKEN }, 429, { 'Retry-After': '23' }), new Response(null, { status: 503 })]) {
+      const { client, requests } = fixture([response]); assert.equal(typeof client.readBoardBatch, 'function');
+      const next = await client.readBoardBatch!(input(), checkpoint());
+      assert.deepEqual(next.checkpoint, checkpoint()); assert.equal(next.result.pages, 0); assert.equal(requests.length, 1);
+      assert(['rate_limited', 'offline'].includes(next.result.reason!));
+      if (next.result.reason === 'rate_limited') assert.equal(next.result.retryAfterSeconds, 23);
+    }
+    const partial = fixture([page([item('100100')], 'synthetic-continuation-4'), json({}, 429, { 'Retry-After': new Date(AT + 27000).toUTCString() })]);
+    const next = await partial.client.readBoardBatch!(input(), checkpoint());
+    assert.equal(next.result.pages, 1); assert.equal(next.result.retryAfterSeconds, 27); assert.equal(next.checkpoint!.pagesRead, 5); assert.equal(next.checkpoint!.itemsRead, 101);
+    assert.equal(next.checkpoint!.cursor, 'synthetic-continuation-4'); assert.equal(partial.requests.length, 2);
+    const initial = fixture([json({}, 429)]); assert.equal((await initial.client.readBoardBatch!(input())).checkpoint, null);
+  });
+
+  it('discards checkpoints on authorization, abort, incompatible and partial-provider errors', async () => {
+    for (const response of [json({}, 401), json({}, 403), json({ data: { boards: [] } }), json({ errors: [{ message: TOKEN }] })]) {
+      const { client } = fixture([response]); assert.equal(typeof client.readBoardBatch, 'function');
+      const next = await client.readBoardBatch!(input(), checkpoint()); assert.equal(next.checkpoint, null); assert.equal(next.result.pages, 0);
+    }
+    const controller = new AbortController(); controller.abort(); const aborted = fixture([]);
+    assert.equal((await aborted.client.readBoardBatch!(input({ signal: controller.signal }), checkpoint())).checkpoint, null); assert.equal(aborted.requests.length, 0);
+  });
+
+  it('prioritizes authorization failures over quota errors and keeps the longest provider wait', async () => {
+    for (const [code, reason] of [['missingRequiredPermissions', 'forbidden'], ['UNAUTHENTICATED', 'unauthorized']] as const) {
+      const { client } = fixture([json({ errors: [{ extensions: { code: 'RATE_LIMIT_EXCEEDED', retry_in_seconds: 10 } }, { extensions: { code } }] })]);
+      assert.equal(typeof client.readBoardBatch, 'function');
+      const next = await client.readBoardBatch!(input(), checkpoint()); assert.equal(next.result.reason, reason); assert.equal(next.checkpoint, null);
+    }
+    const wait = fixture([json({ errors: [{ extensions: { code: 'RATE_LIMIT_EXCEEDED', retry_in_seconds: 2 } }, { extensions: { code: 'RATE_LIMIT_EXCEEDED', retry_in_seconds: 4 } }] }, 200, { 'Retry-After': '30' })]);
+    const next = await wait.client.readBoardBatch!(input(), checkpoint()); assert.equal(next.result.retryAfterSeconds, 30); assert.deepEqual(next.checkpoint, checkpoint());
+  });
+
+  it('supports independent bounded update batches while retaining only update metadata', async () => {
+    const { client, requests } = fixture([...continuingPages(0, 4, true), page([{ id: '100100', updated_at: null, updates: [{ id: '200001', created_at: null, updated_at: null }] }])], { columnAllowlist: {} });
+    assert.equal(typeof client.readUpdatesBatch, 'function');
+    const first = await client.readUpdatesBatch!(input()); assert.equal(first.checkpoint!.kind, 'updates');
+    await assert.rejects(client.readBoardBatch!(input(), first.checkpoint!), MondayReadError);
+    const second = await client.readUpdatesBatch!(input(), first.checkpoint!); assert.equal(second.result.status, 'complete'); assert.equal(second.checkpoint, null);
+    assert(requests.every(request => !/body|creator|name|attachments|assets|users|mutation/.test(request.body.query)));
+  });
+
+  it('preserves truncated update coverage across a four-page batch and its final continuation', async () => {
+    const truncated = { id: '100000', updated_at: null, updates: Array.from({ length: 20 }, (_, index) => ({ id: String(200000 + index), created_at: null, updated_at: null })) };
+    const final = { id: '100100', updated_at: null, updates: [] };
+    const { client, requests } = fixture([page([truncated], 'synthetic-continuation-0'), ...continuingPages(1, 3, true), page([final])], { columnAllowlist: {} });
+    const first = await client.readUpdatesBatch!(input());
+    assert.equal(first.result.reason, 'page_limit'); assert.equal(first.result.pages, 4);
+    const second = await client.readUpdatesBatch!(input(), first.checkpoint!);
+    assert.equal(second.result.status, 'partial'); assert.equal(second.result.reason, 'updates_limit');
+    assert.equal(first.checkpoint!.updatesTruncated, true);
+    assert.equal(second.result.pages, 1); assert.equal(second.checkpoint, null); assert.equal(requests.length, 5);
+    assert(!Object.hasOwn(second.result, 'updatesTruncated')); assert(!JSON.stringify(second.result).includes('cursor'));
+  });
+
+  it('validates the private truncation flag and accepts absent legacy flags as false', async () => {
+    for (const flag of ['true', 1, null, undefined]) {
+      const { client, requests } = fixture([]);
+      await assert.rejects(client.readUpdatesBatch!(input(), { ...checkpoint({ kind: 'updates' }), updatesTruncated: flag } as MondayReadCheckpoint), MondayReadError);
+      assert.equal(requests.length, 0);
+    }
+    const { client } = fixture([page([{ id: '100100', updated_at: null, updates: [] }])], { columnAllowlist: {} });
+    const legacy = checkpoint({ kind: 'updates' });
+    delete legacy.updatesTruncated;
+    assert.equal((await client.readUpdatesBatch!(input(), legacy)).result.status, 'complete');
+  });
+
+  it('exposes capabilities from the validated immutable mapping without fetching or widening access', () => {
+    const config = structuredClone(mapping); const { client, requests } = fixture([], { columnAllowlist: config });
+    assert.equal(typeof client.getBoardCapabilities, 'function'); config[BOARD]![0].id = 'changed_after_factory';
+    const capabilities = client.getBoardCapabilities!(); assert.equal(capabilities.length, 5);
+    assert.equal(capabilities.find(board => board.id === DEALS)!.commercialRead.enabled, false);
+    assert.deepEqual(capabilities.find(board => board.id === BOARD)!.commercialRead.columns, mapping[BOARD]); assert.equal(requests.length, 0);
   });
 });

@@ -6,6 +6,7 @@ import { MondayOwnerSessions, parseMondayOwnerConfiguration } from './monday-own
 import { createMondayReadClient, MONDAY_READ_BOARD_IDS } from './monday-read';
 import type { MondayColumnAllowlist } from './monday-read';
 import { MondayVault, PostgresMondayStore } from './monday-store';
+import { createMondayRenewalScheduler } from './monday-renewal';
 import { createMondayDisabledDiagnostic, getMondayConfigurationDiagnostic, withMondayConfigurationDiagnostic, type MondayConfigurationDiagnostic, type MondayConfigurationField, type MondayConfigurationReason } from './monday-diagnostics';
 
 export type MondayRuntime = Readonly<{
@@ -13,6 +14,7 @@ export type MondayRuntime = Readonly<{
   configured: boolean;
   ownerSessions: MondayOwnerSessions;
   oauthService?: MondayOAuthService;
+  renewalScheduler?: ReturnType<typeof createMondayRenewalScheduler>;
   configurationFailure?: 'configuration_invalid';
   startupDiagnostic?: MondayConfigurationDiagnostic;
 }>;
@@ -63,11 +65,13 @@ export function createMondayRuntime(env: Readonly<Record<string, string | undefi
       if (descriptor && !('value' in descriptor)) throw new Error();
       readClient = createMondayReadClient({ enabled: true, ...columns(descriptor?.value) });
     } catch { throw invalid('MONDAY_BOARD_COLUMNS_JSON', 'invalid_format'); }
-    const oauthService = createMondayOAuthService({
-      configuration, store: new PostgresMondayStore(pool),
-      vault: new MondayVault(configuration.tokenEncryptionKey), readClient,
-    });
-    return Object.freeze({ enabled: true, configured: true, ownerSessions: new MondayOwnerSessions(ownerConfiguration), oauthService });
+    const store = new PostgresMondayStore(pool);
+    const vault = new MondayVault(configuration.tokenEncryptionKey);
+    const oauthService = createMondayOAuthService({ configuration, store, vault, readClient });
+    // Deliberately fixed off. This lot has no environment switch or HTTP route
+    // that can activate background refresh of the existing grant.
+    const renewalScheduler = createMondayRenewalScheduler({ enabled: false, service: oauthService, store, vault });
+    return Object.freeze({ enabled: true, configured: true, ownerSessions: new MondayOwnerSessions(ownerConfiguration), oauthService, renewalScheduler });
   } catch (error) {
     // No raw error, field value, client configuration or credential is exposed.
     return unavailable(getMondayConfigurationDiagnostic(error) ?? Object.freeze({ code: 'configuration_invalid' }));

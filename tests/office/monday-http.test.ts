@@ -12,6 +12,7 @@ import { createMondayReadClient, MONDAY_READ_BOARD_IDS, MONDAY_READ_SCOPES } fro
 import { MemoryMondayStore, MondayVault } from '../../src/office/backend/monday-store';
 import { MONDAY_CALLBACK_PATH, MONDAY_OAUTH_NONCE_COOKIE } from '../../src/office/backend/monday-http';
 import type { MondayRuntime } from '../../src/office/backend/monday-runtime';
+import { MONDAY_BOARD_CATALOG } from '../../src/office/monday-board-catalog';
 
 const AT = Date.parse('2026-10-11T18:00:00.000Z');
 // Fixed fictitious fixtures, never provisioned as credentials.
@@ -114,6 +115,87 @@ test('callback parser contract accepts documented Monday returns with form encod
     assert.deepEqual(f.exchangedCodes, ['synthetic+code/opaque=._-']);
     assert.equal((await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders })).json().pending, false);
   }
+});
+
+test('owner status exposes mapping-derived capabilities while keeping the private grant fingerprint server-only', async t => {
+  const f = await fixture(t); const flow = await f.complete();
+  const originalStatus = f.monday.oauthService!.status.bind(f.monday.oauthService);
+  f.monday.oauthService!.status = async () => ({ ...await originalStatus(), grantFingerprint: 'SYNTHETIC_INTERNAL_GRANT_FINGERPRINT' });
+  const before = f.calls.length;
+  const response = await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders });
+  assert.equal(response.statusCode, 200); assert.equal(f.calls.length, before);
+  const projected = response.json();
+  assert.equal(Object.hasOwn(projected, 'grantFingerprint'), false);
+  assert.deepEqual(projected.boardCapabilities.map((board: { id: string; name: string }) => ({ id: board.id, name: board.name })), MONDAY_BOARD_CATALOG.map(({ id, name }) => ({ id, name })));
+  assert.equal(projected.boardCapabilities[0].commercialRead.enabled, true);
+  assert.equal(projected.boardCapabilities[1].commercialRead.enabled, false);
+  assert.equal(projected.boardCapabilities[1].updatesRead.enabled, false);
+  assert.equal(projected.boardCapabilities[2].commercialRead.reason, 'columns_unconfigured');
+  assert.equal(projected.boardCapabilities[2].updatesRead.enabled, true);
+  assert.ok(!response.body.includes('SYNTHETIC_INTERNAL_GRANT_FINGERPRINT'));
+});
+
+test('read routes forward only canonical opaque continuation handles after owner and CSRF checks', async t => {
+  const f = await fixture(t); const flow = await f.complete();
+  const handle = Buffer.alloc(32, 19).toString('base64url');
+  const forwarded: unknown[][] = [];
+  const answer = { status: 'complete' as const, boardId: MONDAY_READ_BOARD_IDS[0], mappingVersion: 'synthetic-v1', readAt: new Date(AT).toISOString(), pages: 1, items: [], paging: { nextBatch: null, expiresAt: null, pagesRead: 1, itemsRead: 0 } };
+  f.monday.oauthService!.readBoard = async (...input) => { forwarded.push(input); return answer; };
+  f.monday.oauthService!.readUpdates = async (...input) => { forwarded.push(input); return answer; };
+  for (const path of ['read-board', 'read-updates']) {
+    const valid = await f.api.inject({ method: 'POST', url: `/office-api/monday/${path}`, headers: flow.ownerHeaders, payload: { boardId: MONDAY_READ_BOARD_IDS[0], continuation: handle } });
+    assert.equal(valid.statusCode, 200);
+    assert.deepEqual(forwarded.at(-1), [MONDAY_READ_BOARD_IDS[0], handle]);
+    const csrfMissing = { ...flow.ownerHeaders }; delete (csrfMissing as Partial<typeof csrfMissing>)[MONDAY_OWNER_CSRF_HEADER];
+    for (const headers of [f.headers, csrfMissing]) {
+      const count = forwarded.length;
+      const rejected = await f.api.inject({ method: 'POST', url: `/office-api/monday/${path}`, headers, payload: { boardId: MONDAY_READ_BOARD_IDS[0], continuation: handle } });
+      assert.equal(rejected.statusCode, 403); assert.equal(forwarded.length, count);
+    }
+    for (const payload of [
+      { boardId: MONDAY_READ_BOARD_IDS[0], continuation: '' },
+      { boardId: MONDAY_READ_BOARD_IDS[0], continuation: 'not-a-checkpoint' },
+      { boardId: MONDAY_READ_BOARD_IDS[0], continuation: 'B'.repeat(43) },
+      { boardId: MONDAY_READ_BOARD_IDS[0], continuation: null },
+      { boardId: MONDAY_READ_BOARD_IDS[0], continuation: handle, cursor: 'SYNTHETIC_PROVIDER_CURSOR' },
+      { boardId: MONDAY_READ_BOARD_IDS[0], query: 'query { users { email } }' },
+    ]) {
+      const count = forwarded.length;
+      const rejected = await f.api.inject({ method: 'POST', url: `/office-api/monday/${path}`, headers: flow.ownerHeaders, payload });
+      assert.equal(rejected.statusCode, 400); assert.equal(forwarded.length, count);
+      assert.ok(!rejected.body.includes('SYNTHETIC_PROVIDER_CURSOR'));
+    }
+    const count = forwarded.length;
+    const deals = await f.api.inject({ method: 'POST', url: `/office-api/monday/${path}`, headers: flow.ownerHeaders, payload: { boardId: MONDAY_READ_BOARD_IDS[1], continuation: handle } });
+    assert.equal(deals.statusCode, 403); assert.equal(forwarded.length, count);
+  }
+});
+
+test('manual refresh and disconnect responses also omit the internal grant fingerprint', async t => {
+  const f = await fixture(t); const flow = await f.complete();
+  const projected = { ...await f.monday.oauthService!.status(), grantFingerprint: 'SYNTHETIC_INTERNAL_GRANT_FINGERPRINT' };
+  f.monday.oauthService!.refresh = async () => projected;
+  f.monday.oauthService!.disconnect = async () => projected;
+  for (const path of ['refresh', 'disconnect']) {
+    const response = await f.api.inject({ method: 'POST', url: `/office-api/monday/${path}`, headers: flow.ownerHeaders, payload: {} });
+    assert.equal(response.statusCode, 200);
+    assert.equal(Object.hasOwn(response.json(), 'grantFingerprint'), false);
+    assert.ok(!response.body.includes('SYNTHETIC_INTERNAL_GRANT_FINGERPRINT'));
+  }
+});
+
+test('API lifecycle starts and closes the prepared renewal component', async t => {
+  const f = await fixture(t);
+  const lifecycle: string[] = [];
+  const status = () => ({ state: 'disabled' as const, reason: null, nextCheckAt: null, lastAttemptAt: null });
+  const monday: MondayRuntime = { ...f.monday, renewalScheduler: {
+    start() { lifecycle.push('start'); }, stop() { lifecycle.push('stop'); }, status, async tick() { return status(); },
+  } };
+  const api = createOfficeApi(new DemoStore(), { staging: parseOfficeStagingEnvironment(ENV).access, monday, clock: () => AT });
+  t.after(() => api.close());
+  await api.ready(); assert.deepEqual(lifecycle, ['start']);
+  await api.close(); assert.deepEqual(lifecycle, ['start', 'stop']);
+  assert.equal(f.calls.length, 0);
 });
 
 test('callback parser contract decodes query separators and percent escapes exactly once', async t => {

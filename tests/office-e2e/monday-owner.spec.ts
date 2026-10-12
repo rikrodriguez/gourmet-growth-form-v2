@@ -1,8 +1,10 @@
 import { test as base, expect, type Page, type Route } from '@playwright/test';
 import { MONDAY_CALLBACK_QUERY_REASONS, parseMondayOAuthReturn } from '../../src/office/monday-oauth-return';
+import { getMondayBoardCapabilities } from '../../src/office/monday-board-catalog';
+import type { MondayColumnAllowlist } from '../../src/office/backend/monday-read';
 
 type MockResponse = { status?: number; body: unknown };
-type MockHandler = (route: Route) => MockResponse | Promise<MockResponse>;
+type MockHandler = (route: Route) => MockResponse | undefined | Promise<MockResponse | undefined>;
 type MondayHarness = {
   calls: Array<{ method: string; path: string }>;
   respond: (method: string, path: string, handler: MockResponse | MockHandler) => void;
@@ -14,6 +16,10 @@ const csrfToken = 'a'.repeat(64);
 const readAt = '2026-10-11T12:00:00.000Z';
 const expiresAt = '2099-10-11T12:00:00.000Z';
 const ownerSession = { available: true, authenticated: true, principal: 'ricardo', csrfToken, expiresAt };
+const fixtureMapping: MondayColumnAllowlist = { '18403945258': [
+  { id: 'stage_fixture', field: 'stage', type: 'status' },
+  { id: 'count_fixture', field: 'guest_count', type: 'numbers' },
+], '18377848804': [{ id: 'amount_fixture', field: 'amount', type: 'numbers' }] };
 type ConnectionState = 'disabled' | 'connected' | 'disconnected' | 'error' | 'expired';
 
 function connection(state: ConnectionState = 'connected', code: string | null = null) {
@@ -27,6 +33,7 @@ function connection(state: ConnectionState = 'connected', code: string | null = 
     identityReadAt: state === 'connected' ? readAt : null,
     lastReadAt: null, updatedAt: readAt, pending: false, configured: true,
     allowedBoards: boardIds,
+    boardCapabilities: getMondayBoardCapabilities(fixtureMapping, 'fixture-commercial-v1', true),
   };
 }
 
@@ -66,6 +73,7 @@ const test = base.extend<{ monday: MondayHarness }>({
         return;
       }
       const response = typeof handler === 'function' ? await handler(route) : handler;
+      if (!response) return;
       await route.fulfill({ status: response.status ?? 200, contentType: 'application/json', body: response.status === 204 ? '' : JSON.stringify(response.body) });
     });
     await context.routeWebSocket('**/*', socket => {
@@ -248,6 +256,7 @@ test('the authorized Info integration shows only confirmed state and bounded rea
     expect(route.request().postDataJSON()).toEqual({ boardId: boardIds[0] });
     return { body: {
       status: 'partial', boardId: boardIds[0], mappingVersion: 'fixture-commercial-v1', readAt, pages: 4, reason: 'page_limit',
+      paging: { nextBatch: null, expiresAt: null, pagesRead: 4, itemsRead: 1 },
       items: [{ id: '990001', boardId: boardIds[0], sourceUpdatedAt: readAt, readAt, columns: [
         { id: 'stage_fixture', field: 'stage', type: 'status', text: 'Confirmado', redacted: false },
         { id: 'count_fixture', field: 'guest_count', type: 'numbers', text: '10', redacted: false },
@@ -257,7 +266,7 @@ test('the authorized Info integration shows only confirmed state and bounded rea
   monday.respond('POST', `${api}/read-updates`, route => {
     expectOwnerCsrf(route);
     expect(route.request().postDataJSON()).toEqual({ boardId: boardIds[0] });
-    return { body: { status: 'complete', boardId: boardIds[0], mappingVersion: 'fixture-commercial-v1', readAt, pages: 1, items: [
+    return { body: { status: 'complete', boardId: boardIds[0], mappingVersion: 'fixture-commercial-v1', readAt, pages: 1, paging: { nextBatch: null, expiresAt: null, pagesRead: 1, itemsRead: 1 }, items: [
       { id: '990001', boardId: boardIds[0], sourceUpdatedAt: readAt, readAt, updates: [
         { id: '990002', createdAt: readAt, sourceUpdatedAt: readAt, readAt },
       ] },
@@ -573,4 +582,264 @@ for (const invalid of invalidCallbackMarkers) test(`callback marker ignores ${in
   expect(await page.evaluate(marker => document.documentElement.outerHTML.includes(marker), callbackRawSentinel), 'Raw callback input never enters the DOM').toBe(false);
   expect(monday.calls.filter(call => call.path === `${api}/status`).length).toBeGreaterThan(0);
   await expectPrivateCallbackLogin(page, monday, password);
+});
+
+const continuationOne = 'A'.repeat(43);
+const continuationTwo = 'B'.repeat(42) + 'A';
+const fixtureNow = new Date('2026-10-12T04:00:00.000Z');
+const checkpointExpiresAt = '2026-10-12T04:05:00.000Z';
+function commercialItem(id: string, stage: string | null = 'Conversion', redacted = false) {
+  return { id, boardId: boardIds[0], sourceUpdatedAt: readAt, readAt, columns: [
+    { id: 'stage_fixture', field: 'stage', type: 'status', text: stage, redacted },
+    { id: 'count_fixture', field: 'guest_count', type: 'numbers', text: '10', redacted: false },
+  ] };
+}
+function batch(overrides: Record<string, unknown> = {}) {
+  return { status: 'partial', boardId: boardIds[0], mappingVersion: 'fixture-commercial-v1', readAt, pages: 4, reason: 'page_limit',
+    items: [commercialItem('990010')], paging: { nextBatch: continuationOne, expiresAt: checkpointExpiresAt, pagesRead: 4, itemsRead: 1 }, ...overrides };
+}
+function confirmedOwner(monday: MondayHarness, value: unknown = connection()) {
+  monday.respond('GET', `${api}/owner/session`, { body: ownerSession });
+  monday.respond('GET', `${api}/status`, { body: value });
+}
+
+test('board capabilities name all five boards and independently gate commercial and updates reads', async ({ page, monday }) => {
+  confirmedOwner(monday);
+  await page.goto('/office/monday');
+  const select = page.getByLabel('Tablero autorizado', { exact: true });
+  await expect(select.locator('option')).toHaveText([
+    'Lead Management · 18403945258', 'Deals · 18411103560', 'Catering Funnel · 18398057136',
+    'Catering Form · 18396813878', 'Quotes & Invoices · 18377848804',
+  ]);
+  await expect(page.getByText('Renovación automática desactivada. La renovación disponible es manual.', { exact: true })).toBeVisible();
+  await select.selectOption(boardIds[1]);
+  await expect(select).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeDisabled();
+  await expect(page.getByTestId('monday-board-capability')).toContainText('forbidden_board');
+  await select.selectOption(boardIds[2]);
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeEnabled();
+  await expect(page.getByTestId('monday-board-capability')).toContainText('columns_unconfigured');
+  await select.selectOption(boardIds[4]);
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeEnabled();
+  expect(monday.calls.every(call => call.method === 'GET')).toBe(true);
+  await expectFits(page);
+});
+
+test('commercial availability distinguishes empty, redacted and not queried without inferring payments', async ({ page, monday }) => {
+  confirmedOwner(monday);
+  monday.respond('POST', `${api}/read-board`, { body: batch({ status: 'complete', reason: undefined, pages: 1,
+    items: [commercialItem('990010', null), commercialItem('990011', null, true), commercialItem('990012')],
+    paging: { nextBatch: null, expiresAt: null, pagesRead: 1, itemsRead: 3 } }) });
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  const reading = page.getByTestId('monday-reading');
+  await expect(reading).toContainText('Sin valor confirmado');
+  await expect(reading).toContainText('Oculto por privacidad');
+  await expect(reading).toContainText('No consultado');
+  await expect(reading).toContainText('Total del tablero: desconocido');
+  await expect(reading).toContainText('no acreditan pago, cierre, envío ni documentos');
+  await expect(reading).toContainText('Fuente: Monday · Tablero 18403945258');
+  await expect(reading.locator('article')).toHaveCount(3);
+  await expect(reading.locator('article').first().locator('dt')).toHaveText(['Etapa', 'Tipo de evento', 'Personas', 'Fecha del evento', 'Servicio', 'Importe', 'Estado de cotización']);
+  await expectFits(page);
+});
+
+test('continuation requires one explicit action and accumulates bounded provenance without exposing the handle', async ({ page, monday }) => {
+  await page.clock.install({ time: fixtureNow });
+  confirmedOwner(monday);
+  let reads = 0;
+  monday.respond('POST', `${api}/read-board`, route => {
+    expectOwnerCsrf(route); reads++;
+    expect(route.request().postDataJSON()).toEqual(reads === 1 ? { boardId: boardIds[0] } : { boardId: boardIds[0], continuation: continuationOne });
+    return { body: reads === 1 ? batch() : batch({ status: 'complete', reason: undefined, pages: 1,
+      items: [commercialItem('990011')], paging: { nextBatch: null, expiresAt: null, pagesRead: 5, itemsRead: 2 } }) };
+  });
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  const reading = page.getByTestId('monday-reading');
+  await expect(reading.locator('article')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toBeEnabled();
+  await page.clock.fastForward(1000);
+  expect(reads).toBe(1);
+  await expect(page.locator('body')).not.toContainText(continuationOne);
+  await page.getByRole('button', { name: 'Continuar lectura', exact: true }).click();
+  await expect(reading.locator('article')).toHaveCount(2);
+  await expect(reading).toContainText('2 ítems · 5 páginas');
+  await expect(reading).toContainText('Total del tablero: desconocido');
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toHaveCount(0);
+  expect(reads).toBe(2);
+  await expectFits(page);
+});
+
+test('a rate limit preserves confirmed items and enforces the explicit wait on the rotated continuation', async ({ page, monday }) => {
+  await page.clock.install({ time: fixtureNow });
+  confirmedOwner(monday);
+  let reads = 0;
+  monday.respond('POST', `${api}/read-board`, route => {
+    expectOwnerCsrf(route); reads++;
+    return { body: reads === 1 ? batch() : batch({ status: 'blocked', reason: 'rate_limited', pages: 0, items: [], retryAfterSeconds: 60,
+      paging: { nextBatch: continuationTwo, expiresAt: checkpointExpiresAt, pagesRead: 4, itemsRead: 1 } }) };
+  });
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  await page.getByRole('button', { name: 'Continuar lectura', exact: true }).click();
+  const reading = page.getByTestId('monday-reading');
+  await expect(reading.locator('article')).toHaveCount(1);
+  await expect(reading).toContainText('rate_limited');
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeDisabled();
+  await expect(page.getByTestId('monday-continuation-state')).toContainText('Espera');
+  await page.clock.fastForward(60_001);
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeEnabled();
+  expect(reads).toBe(2);
+  await expectFits(page);
+});
+
+test('a first-page rate limit without a checkpoint holds the wait across board selection', async ({ page, monday }) => {
+  await page.clock.install({ time: fixtureNow });
+  confirmedOwner(monday);
+  monday.respond('POST', `${api}/read-board`, { body: batch({ status: 'blocked', reason: 'rate_limited', pages: 0, items: [], retryAfterSeconds: 60,
+    paging: { nextBatch: null, expiresAt: null, pagesRead: 0, itemsRead: 0 } }) });
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  await expect(page.getByTestId('monday-reading')).toContainText('Leído: Sin lectura confirmada');
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeDisabled();
+  await page.getByLabel('Tablero autorizado', { exact: true }).selectOption(boardIds[4]);
+  await expect(page.getByTestId('monday-reading')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeDisabled();
+  await expect(page.getByTestId('monday-provider-wait')).toContainText('Espera');
+  await page.getByRole('button', { name: 'Actualizar estado', exact: true }).click();
+  await expect(page.getByTestId('monday-status-update-result')).toHaveText(/^Estado guardado consultado: .+ UTC$/);
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeDisabled();
+  await page.clock.fastForward(60_001);
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeEnabled();
+  expect(monday.calls.filter(call => call.method === 'POST')).toHaveLength(1);
+});
+
+test('a server cooldown rejection preserves the unconsumed continuation handle', async ({ page, monday }) => {
+  await page.clock.install({ time: fixtureNow });
+  confirmedOwner(monday);
+  let reads = 0;
+  monday.respond('POST', `${api}/read-board`, route => {
+    expectOwnerCsrf(route); reads++;
+    return { body: reads === 1 ? batch() : batch({ status: 'blocked', reason: 'rate_limited', pages: 0, items: [], retryAfterSeconds: 60,
+      paging: { nextBatch: continuationOne, expiresAt: checkpointExpiresAt, pagesRead: 4, itemsRead: 1 } }) };
+  });
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  await page.getByRole('button', { name: 'Continuar lectura', exact: true }).click();
+  await expect(page.getByTestId('monday-reading').locator('article')).toHaveCount(1);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toBeDisabled();
+  await page.clock.fastForward(60_001);
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toBeEnabled();
+  expect(reads).toBe(2);
+});
+
+test('an unconfirmed continuation keeps prior items and stops replaying its uncertain handle', async ({ page, monday }) => {
+  await page.clock.install({ time: fixtureNow });
+  confirmedOwner(monday);
+  monday.respond('POST', `${api}/read-board`, { body: batch() });
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  monday.respond('POST', `${api}/read-board`, async route => { await route.abort('failed'); });
+  await page.getByRole('button', { name: 'Continuar lectura', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('No se pudo confirmar');
+  await expect(page.getByTestId('monday-reading').locator('article')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toHaveCount(0);
+});
+
+test('a checkpoint expires locally and selection clears its continuation without an automatic request', async ({ page, monday }) => {
+  await page.clock.install({ time: fixtureNow });
+  confirmedOwner(monday);
+  monday.respond('POST', `${api}/read-board`, { body: batch() });
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  await page.clock.fastForward(300_001);
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toBeDisabled();
+  await expect(page.getByTestId('monday-continuation-state')).toContainText('Continuación expirada');
+  expect(monday.calls.filter(call => call.method === 'POST')).toHaveLength(1);
+  await page.getByLabel('Tablero autorizado', { exact: true }).selectOption(boardIds[2]);
+  await expect(page.getByTestId('monday-reading')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toHaveCount(0);
+});
+
+for (const mismatch of ['mapping', 'grant'] as const) test(`a changed ${mismatch} after the batch prevents mixed readings`, async ({ page, monday }) => {
+  await page.clock.install({ time: fixtureNow });
+  let reads = 0;
+  const initial = connection();
+  const changed = mismatch === 'grant' ? { ...initial, connectedAt: '2026-10-12T04:00:01.000Z' }
+    : { ...initial, boardCapabilities: getMondayBoardCapabilities(fixtureMapping, 'fixture-commercial-v2', true) };
+  monday.respond('GET', `${api}/owner/session`, { body: ownerSession });
+  monday.respond('GET', `${api}/status`, () => ({ body: reads ? changed : initial }));
+  monday.respond('POST', `${api}/read-board`, () => { reads++; return { body: batch() }; });
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  await expect(page.getByTestId('monday-reading')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toHaveCount(0);
+});
+
+const malformedBatches = [
+  { name: 'different mapping', value: () => batch({ mappingVersion: 'other-map' }) },
+  { name: 'unmapped column', value: () => batch({ items: [{ ...commercialItem('990010'), columns: [{ id: 'private_field', field: 'stage', type: 'status', text: 'Private', redacted: false }] }] }) },
+  { name: 'duplicate items', value: () => batch({ items: [commercialItem('990010'), commercialItem('990010')] }) },
+  { name: 'provider cursor', value: () => ({ ...batch(), cursor: 'SYNTHETIC_CURSOR_MUST_NOT_RENDER' }) },
+  { name: 'over-budget journey', value: () => batch({ paging: { nextBatch: continuationOne, expiresAt: checkpointExpiresAt, pagesRead: 41, itemsRead: 1 } }) },
+  { name: 'malformed handle', value: () => batch({ paging: { nextBatch: 'unsafe', expiresAt: checkpointExpiresAt, pagesRead: 4, itemsRead: 1 } }) },
+] as const;
+for (const malformed of malformedBatches) test(`read contract rejects ${malformed.name} before displaying data`, async ({ page, monday }) => {
+  await page.clock.install({ time: fixtureNow });
+  confirmedOwner(monday);
+  monday.respond('POST', `${api}/read-board`, { body: malformed.value() });
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('La respuesta no cumple el contrato de Monday');
+  await expect(page.getByTestId('monday-reading')).toHaveCount(0);
+});
+
+test('a repeated item across continuation batches is rejected while retaining earlier verified data', async ({ page, monday }) => {
+  await page.clock.install({ time: fixtureNow });
+  confirmedOwner(monday);
+  let reads = 0;
+  monday.respond('POST', `${api}/read-board`, () => ({ body: ++reads === 1 ? batch() : batch({ pages: 1,
+    paging: { nextBatch: continuationTwo, expiresAt: checkpointExpiresAt, pagesRead: 5, itemsRead: 2 } }) }));
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  await page.getByRole('button', { name: 'Continuar lectura', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('La respuesta no cumple el contrato de Monday');
+  await expect(page.getByTestId('monday-reading').locator('article')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Continuar lectura', exact: true })).toHaveCount(0);
+});
+
+test('forged capabilities cannot enable Deals or display an unverified board name', async ({ page, monday }) => {
+  const malformed = JSON.parse(JSON.stringify(connection()));
+  malformed.boardCapabilities[1].commercialRead.enabled = true;
+  malformed.boardCapabilities[1].commercialRead.reason = null;
+  malformed.boardCapabilities[1].name = 'SYNTHETIC_UNVERIFIED_NAME_MUST_NOT_RENDER';
+  confirmedOwner(monday, malformed);
+  await page.goto('/office/monday');
+  await expect(page.getByRole('alert')).toContainText('La respuesta no cumple el contrato de Monday');
+  await expect(page.getByTestId('monday-connection-state')).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText('SYNTHETIC_UNVERIFIED_NAME_MUST_NOT_RENDER');
+  expect(monday.calls.every(call => call.method === 'GET')).toBe(true);
+});
+
+test('items preserve their confirmed page read time before the final batch timestamp', async ({ page, monday }) => {
+  confirmedOwner(monday);
+  const priorRead = '2026-10-11T11:59:58.000Z';
+  monday.respond('POST', `${api}/read-board`, { body: batch({ status: 'complete', reason: undefined, pages: 2,
+    items: [{ ...commercialItem('990010'), readAt: priorRead }, commercialItem('990011')],
+    paging: { nextBatch: null, expiresAt: null, pagesRead: 2, itemsRead: 2 } }) });
+  await page.goto('/office/monday');
+  await page.getByRole('button', { name: 'Leer tablero', exact: true }).click();
+  await expect(page.getByTestId('monday-reading').locator('article')).toHaveCount(2);
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });

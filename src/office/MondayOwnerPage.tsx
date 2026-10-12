@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { MondayReadItem, MondayReadResult, MondayUpdateItem } from './backend/monday-read';
+import type { MondayBoardId, MondayColumnAllowlist, MondayReadItem, MondayReadResult, MondayUpdateItem } from './backend/monday-read';
+import { getMondayBoardCapabilities, MONDAY_BOARD_CATALOG } from './monday-board-catalog';
+import type { MondayBoardCapability } from './monday-board-catalog';
+import { getMondayItemAvailability, getMondayReadCoverage } from './monday-provenance';
 import { parseMondayOAuthReturn } from './monday-oauth-return';
 
 type OwnerSession = { available: boolean; authenticated: false } | { available: true; authenticated: true; principal: 'ricardo'; csrfToken: string; expiresAt: string };
@@ -11,8 +14,11 @@ type MondayStatus = {
   accountVerified: false; configuredAccountId: string | null; boardAccessVerified: boolean; boardAccessReadAt: string | null;
   scopes: string[]; allowedBoards: string[]; expiresAt: string | null; connectedAt: string | null;
   identityReadAt: string | null; lastReadAt: string | null; updatedAt: string | null; pending: boolean;
+  boardCapabilities: readonly MondayBoardCapability[];
 };
-type Reading = { kind: 'board'; result: MondayReadResult<MondayReadItem> } | { kind: 'updates'; result: MondayReadResult<MondayUpdateItem> };
+type Paging = { nextBatch: string | null; expiresAt: string | null; pagesRead: number; itemsRead: number };
+type ReadContext = { paging: Paging; capability: MondayBoardCapability; waitUntilMs: number; grantSnapshot: string };
+type Reading = ReadContext & ({ kind: 'board'; result: MondayReadResult<MondayReadItem> } | { kind: 'updates'; result: MondayReadResult<MondayUpdateItem> });
 type Row = Record<string, unknown>;
 type LoginStage = 'local_challenge' | 'challenge' | 'owner_login' | 'owner_session' | 'monday_status';
 type LoginAttempt = { postAccepted: boolean; stage: LoginStage; httpStatus: number | null };
@@ -44,11 +50,45 @@ function keys(value: Row, required: string[], optional: string[] = []) { if (req
 function text(value: unknown, maximum = 160): string { if (typeof value !== 'string' || value.length > maximum || /[\u0000-\u001f\u007f]/u.test(value)) bad(); return value; }
 function bool(value: unknown): boolean { if (typeof value !== 'boolean') bad(); return value; }
 function numericId(value: unknown): string { const result = text(value, 30); if (!/^[1-9][0-9]{0,29}$/.test(result)) bad(); return result; }
-function date(value: unknown): string { const result = text(value, 40); if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2}))?$/.test(result) || !Number.isFinite(Date.parse(result))) bad(); return result; }
+function date(value: unknown): string { const result = text(value, 40); if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2}))?$/.test(result) || !Number.isFinite(Date.parse(result)) || new Date(`${result.slice(0, 10)}T00:00:00.000Z`).toISOString().slice(0, 10) !== result.slice(0, 10) || result.includes('T') && (Number(result.slice(11, 13)) > 23 || Number(result.slice(14, 16)) > 59 || Number(result.slice(17, 19)) > 59)) bad(); return result; }
 function nullableDate(value: unknown) { return value === null ? null : date(value); }
 function csrf(value: unknown): string { const result = text(value, 512); if (!/^[A-Za-z0-9_-]{16,512}$/.test(result)) bad(); return result; }
 function list<T>(value: unknown, parse: (item: unknown) => T, maximum: number): T[] { if (!Array.isArray(value) || value.length > maximum) bad(); return value.map(parse); }
 function safeCode(value: unknown): string { const result = text(value, 96); if (!/^[a-z][a-z0-9_]{0,95}$/i.test(result)) bad(); return result; }
+function capabilities(value: unknown): readonly MondayBoardCapability[] {
+  const mapping: MondayColumnAllowlist = {};
+  const received = list(value, value => {
+    const board = row(value); keys(board, ['id', 'name', 'nameVerifiedOn', 'mappingVersion', 'commercialRead', 'updatesRead']);
+    const id = numericId(board.id); const verified = MONDAY_BOARD_CATALOG.find(entry => entry.id === id);
+    if (!verified || board.name !== verified.name || board.nameVerifiedOn !== verified.nameVerifiedOn) bad();
+    const commercial = row(board.commercialRead); keys(commercial, ['enabled', 'reason', 'columns']);
+    const updates = row(board.updatesRead); keys(updates, ['enabled', 'reason']);
+    const columns = list(commercial.columns, value => {
+      const column = row(value); keys(column, ['id', 'field', 'type']);
+      return { id: text(column.id, 96), field: text(column.field, 32), type: text(column.type, 16) };
+    }, 20);
+    mapping[id as MondayBoardId] = columns as MondayColumnAllowlist[MondayBoardId];
+    return { id, name: verified.name, nameVerifiedOn: verified.nameVerifiedOn, mappingVersion: text(board.mappingVersion, 96),
+      commercialRead: { enabled: bool(commercial.enabled), reason: commercial.reason, columns },
+      updatesRead: { enabled: bool(updates.enabled), reason: updates.reason } };
+  }, 5);
+  if (received.length !== 5 || new Set(received.map(board => board.id)).size !== 5 || new Set(received.map(board => board.mappingVersion)).size !== 1) bad();
+  const enabled = received.find(board => board.id !== '18411103560')!.updatesRead.enabled;
+  let expected: readonly MondayBoardCapability[];
+  try { expected = getMondayBoardCapabilities(mapping, received[0].mappingVersion, enabled); } catch { bad(); }
+  for (const expectedBoard of expected) {
+    const board = received.find(board => board.id === expectedBoard.id)!;
+    if (board.commercialRead.enabled !== expectedBoard.commercialRead.enabled || board.commercialRead.reason !== expectedBoard.commercialRead.reason
+      || board.updatesRead.enabled !== expectedBoard.updatesRead.enabled || board.updatesRead.reason !== expectedBoard.updatesRead.reason
+      || board.commercialRead.columns.length !== expectedBoard.commercialRead.columns.length
+      || board.commercialRead.columns.some((column, index) => { const expected = expectedBoard.commercialRead.columns[index]; return column.id !== expected.id || column.field !== expected.field || column.type !== expected.type; })) bad();
+  }
+  return expected;
+}
+function grantSnapshot(connection: MondayStatus): string {
+  // Only compare public grant metadata; the private generation stays server-side.
+  return JSON.stringify([connection.actorId, connection.connectedAt, connection.identityReadAt, connection.expiresAt, connection.scopes]);
+}
 function login(value: unknown, authenticated = false): OwnerLogin {
   const result = row(value); keys(result, ['csrfToken', 'expiresAt', ...(authenticated ? ['principal'] : [])]);
   if (authenticated && result.principal !== 'ricardo') bad();
@@ -63,7 +103,7 @@ function ownerSession(value: unknown): OwnerSession {
 }
 function status(value: unknown): MondayStatus {
   const result = row(value);
-  keys(result, ['state', 'configured', 'code', 'actorId', 'accountId', 'accountVerified', 'configuredAccountId', 'boardAccessVerified', 'boardAccessReadAt', 'scopes', 'allowedBoards', 'expiresAt', 'connectedAt', 'identityReadAt', 'lastReadAt', 'updatedAt', 'pending']);
+  keys(result, ['state', 'configured', 'code', 'actorId', 'accountId', 'accountVerified', 'configuredAccountId', 'boardAccessVerified', 'boardAccessReadAt', 'scopes', 'allowedBoards', 'boardCapabilities', 'expiresAt', 'connectedAt', 'identityReadAt', 'lastReadAt', 'updatedAt', 'pending']);
   if (!STATES.includes(result.state as ConnectionState)) bad();
   if (result.code !== null && !OAUTH_CODES.includes(safeCode(result.code))) bad();
   const scopes = list(result.scopes, value => { const scope = text(value, 32); if (!SCOPES.includes(scope)) bad(); return scope; }, 3);
@@ -78,23 +118,28 @@ function status(value: unknown): MondayStatus {
     configuredAccountId: result.configuredAccountId === null ? null : numericId(result.configuredAccountId), boardAccessVerified,
     boardAccessReadAt: nullableDate(result.boardAccessReadAt),
     scopes, allowedBoards, pending: bool(result.pending), expiresAt: nullableDate(result.expiresAt), connectedAt: nullableDate(result.connectedAt),
-    identityReadAt: nullableDate(result.identityReadAt), lastReadAt: nullableDate(result.lastReadAt), updatedAt: nullableDate(result.updatedAt),
+    identityReadAt: nullableDate(result.identityReadAt), lastReadAt: nullableDate(result.lastReadAt), updatedAt: nullableDate(result.updatedAt), boardCapabilities: capabilities(result.boardCapabilities),
   };
 }
-function readResult(value: unknown, kind: Reading['kind'], boardId: string): Reading {
-  const result = row(value); keys(result, ['status', 'boardId', 'mappingVersion', 'readAt', 'pages', 'items'], ['reason', 'retryAfterSeconds']);
+function readResult(value: unknown, kind: Reading['kind'], capability: MondayBoardCapability, snapshot: string): Reading {
+  const boardId = capability.id;
+  const result = row(value); keys(result, ['status', 'boardId', 'mappingVersion', 'readAt', 'pages', 'items', 'paging'], ['reason', 'retryAfterSeconds']);
   if (!['complete', 'partial', 'blocked'].includes(result.status as string) || numericId(result.boardId) !== boardId || !Number.isSafeInteger(result.pages) || Number(result.pages) < 0 || Number(result.pages) > 4) bad();
   if (result.reason !== undefined && !READ_CODES.includes(safeCode(result.reason))) bad();
-  const common = { status: result.status as 'complete' | 'partial' | 'blocked', boardId: boardId as MondayReadItem['boardId'], mappingVersion: text(result.mappingVersion, 96), readAt: date(result.readAt), pages: Number(result.pages), ...(result.reason !== undefined ? { reason: safeCode(result.reason) as MondayReadResult<MondayReadItem>['reason'] } : {}) };
+  if (result.mappingVersion !== capability.mappingVersion) bad();
+  const common = { status: result.status as 'complete' | 'partial' | 'blocked', boardId, mappingVersion: capability.mappingVersion, readAt: date(result.readAt), pages: Number(result.pages), ...(result.reason !== undefined ? { reason: safeCode(result.reason) as MondayReadResult<MondayReadItem>['reason'] } : {}) };
+  if (!common.readAt.includes('T')) bad();
   if (result.retryAfterSeconds !== undefined && (!Number.isSafeInteger(result.retryAfterSeconds) || Number(result.retryAfterSeconds) < 0 || Number(result.retryAfterSeconds) > 86400)) bad();
   const items = list(result.items, value => {
     const item = row(value); keys(item, ['id', 'boardId', 'sourceUpdatedAt', 'readAt', kind === 'board' ? 'columns' : 'updates']);
     if (numericId(item.boardId) !== boardId) bad();
     const base = { id: numericId(item.id), boardId: common.boardId, sourceUpdatedAt: nullableDate(item.sourceUpdatedAt), readAt: date(item.readAt) };
-    if (kind === 'updates') return { ...base, updates: list(item.updates, value => {
+    if (!base.readAt.includes('T') || Date.parse(base.readAt) > Date.parse(common.readAt)) bad();
+    if (kind === 'updates') { const updates = list(item.updates, value => {
       const update = row(value); keys(update, ['id', 'createdAt', 'sourceUpdatedAt', 'readAt']);
-      return { id: numericId(update.id), createdAt: nullableDate(update.createdAt), sourceUpdatedAt: nullableDate(update.sourceUpdatedAt), readAt: date(update.readAt) };
-    }, 20) };
+      const parsed = { id: numericId(update.id), createdAt: nullableDate(update.createdAt), sourceUpdatedAt: nullableDate(update.sourceUpdatedAt), readAt: date(update.readAt) };
+      if (parsed.readAt !== base.readAt) bad(); return parsed;
+    }, 20); if (new Set(updates.map(update => update.id)).size !== updates.length) bad(); return { ...base, updates }; }
     return { ...base, columns: list(item.columns, value => {
       const column = row(value); keys(column, ['id', 'field', 'type', 'text', 'redacted']);
       const id = text(column.id, 96); if (!/^[A-Za-z0-9_]+$/.test(id) || !Object.hasOwn(FIELDS, String(column.field)) || !['status', 'dropdown', 'numbers', 'date'].includes(String(column.type))) bad();
@@ -105,7 +150,34 @@ function readResult(value: unknown, kind: Reading['kind'], boardId: string): Rea
     }, 20) };
   }, 100);
   if (new Set(items.map(item => item.id)).size !== items.length) bad();
-  return kind === 'board' ? { kind, result: { ...common, items: items as MondayReadItem[] } } : { kind, result: { ...common, items: items as MondayUpdateItem[] } };
+  const pagingRow = row(result.paging); keys(pagingRow, ['nextBatch', 'expiresAt', 'pagesRead', 'itemsRead']);
+  const nextBatch = pagingRow.nextBatch === null ? null : text(pagingRow.nextBatch, 43);
+  if (nextBatch !== null && !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(nextBatch)) bad();
+  const paging: Paging = { nextBatch, expiresAt: nullableDate(pagingRow.expiresAt), pagesRead: Number(pagingRow.pagesRead), itemsRead: Number(pagingRow.itemsRead) };
+  if (!Number.isSafeInteger(pagingRow.pagesRead) || paging.pagesRead < common.pages || paging.pagesRead > 40 || !Number.isSafeInteger(pagingRow.itemsRead)
+    || paging.itemsRead < items.length || paging.itemsRead > Math.min(1000, paging.pagesRead * 25) || (nextBatch === null) !== (paging.expiresAt === null)
+    || nextBatch !== null && (paging.pagesRead >= 40 || paging.itemsRead >= 1000 || common.status === 'complete' || !['page_limit', 'rate_limited', 'offline'].includes(common.reason ?? ''))) bad();
+  const projected = { ...common, ...(result.retryAfterSeconds !== undefined ? { retryAfterSeconds: Number(result.retryAfterSeconds) } : {}), items };
+  try {
+    getMondayReadCoverage(projected);
+    if (kind === 'board') for (const item of items) getMondayItemAvailability(item as MondayReadItem, capability);
+  } catch { bad(); }
+  const context: ReadContext = { paging, capability, waitUntilMs: ['rate_limited', 'offline'].includes(common.reason ?? '') ? Date.now() + Math.max(1, Number(result.retryAfterSeconds ?? 1)) * 1000 : 0, grantSnapshot: snapshot };
+  return kind === 'board' ? { ...context, kind, result: { ...projected, items: items as MondayReadItem[] } } : { ...context, kind, result: { ...projected, items: items as MondayUpdateItem[] } };
+}
+function accumulate(previous: Reading | null, next: Reading): Reading {
+  const previousPages = previous?.paging.pagesRead ?? 0, previousItems = previous?.result.items.length ?? 0;
+  if (next.paging.pagesRead !== previousPages + next.result.pages || next.paging.itemsRead !== previousItems + next.result.items.length) bad();
+  if (!previous) return next;
+  const cooldownOnly = next.result.status === 'blocked' && next.result.reason === 'rate_limited' && next.result.pages === 0 && next.result.items.length === 0;
+  if (previous.kind !== next.kind || previous.result.boardId !== next.result.boardId || previous.result.mappingVersion !== next.result.mappingVersion || previous.grantSnapshot !== next.grantSnapshot
+    || next.paging.nextBatch !== null && (next.paging.nextBatch === previous.paging.nextBatch && !cooldownOnly || next.paging.expiresAt !== previous.paging.expiresAt)
+    || next.result.items.some(item => previous.result.items.some(prior => prior.id === item.id))) bad();
+  const common = { ...next.result, readAt: next.result.pages > 0 ? next.result.readAt : previous.result.readAt, pages: next.paging.pagesRead, ...(next.result.status === 'blocked' && previousPages > 0 ? { status: 'partial' as const } : {}) };
+  const merged = previous.kind === 'board' && next.kind === 'board' ? { ...next, result: { ...common, items: [...previous.result.items, ...next.result.items] as MondayReadItem[] } }
+    : { ...next, kind: 'updates' as const, result: { ...common, items: [...previous.result.items, ...next.result.items] as MondayUpdateItem[] } };
+  try { getMondayReadCoverage(merged.result); } catch { bad(); }
+  return merged;
 }
 async function request(path: string, options: { csrfToken?: string; body?: unknown; signal?: AbortSignal; loginAttempt?: LoginAttempt } = {}): Promise<unknown> {
   if (options.loginAttempt) {
@@ -155,6 +227,8 @@ export function MondayOwnerPage() {
   const [loginDiagnostic, setLoginDiagnostic] = useState<LoginDiagnostic | null>(null);
   const [returnDiagnostic] = useState(() => parseMondayOAuthReturn(window.location.search));
   const [statusQueryResult, setStatusQueryResult] = useState<StatusQueryResult | null>(null);
+  const [clockMs, setClockMs] = useState(() => Date.now());
+  const [providerWaitUntilMs, setProviderWaitUntilMs] = useState(0);
   const csrfToken = useRef<string | null>(null);
   const operation = useRef(false);
   const loginForm = useRef<HTMLFormElement>(null);
@@ -174,6 +248,15 @@ export function MondayOwnerPage() {
     void loadOwner(controller.signal).catch(error => { if (!controller.signal.aborted) setError(error instanceof MondayPageError ? error.message : ERROR_TEXT.offline); }).finally(() => { if (!controller.signal.aborted) setBusy(null); });
     return () => { controller.abort(); loginForm.current?.reset(); csrfToken.current = null; };
   }, []);
+  useEffect(() => {
+    if (!reading?.paging.nextBatch && providerWaitUntilMs <= Date.now()) return;
+    setClockMs(Date.now());
+    const timer = window.setInterval(() => {
+      const now = Date.now(); setClockMs(now);
+      if (!reading?.paging.nextBatch && now >= providerWaitUntilMs) window.clearInterval(timer);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [reading?.paging.nextBatch, providerWaitUntilMs]);
   async function run(name: string, action: () => Promise<void>, loginAttempt?: LoginAttempt) {
     if (operation.current) return;
     operation.current = true; setBusy(name); setError(null); setLoginDiagnostic(null); setStatusQueryResult(null);
@@ -235,17 +318,37 @@ export function MondayOwnerPage() {
       window.location.assign(target);
     });
   }
-  function read(kind: Reading['kind']) {
+  function read(kind: Reading['kind'], continuing = false) {
     void run(kind, async () => {
-      if (!csrfToken.current || !session?.authenticated || connection?.state !== 'connected' || !connection.boardAccessVerified || !connection.allowedBoards.includes(boardId)) throw new MondayPageError('forbidden');
-      setReading(null);
-      const result = readResult(await request(kind === 'board' ? '/read-board' : '/read-updates', { csrfToken: csrfToken.current, body: { boardId } }), kind, boardId);
+      const capability = connection?.boardCapabilities.find(board => board.id === boardId);
+      if (!csrfToken.current || !session?.authenticated || connection?.state !== 'connected' || !connection.boardAccessVerified || connection.pending
+        || Date.now() < providerWaitUntilMs || !connection.allowedBoards.includes(boardId) || !capability || !(kind === 'board' ? capability.commercialRead.enabled : capability.updatesRead.enabled)) throw new MondayPageError('forbidden');
+      const previous = continuing ? reading : null;
+      const handle = previous?.paging.nextBatch;
+      if (continuing && (!previous || previous.kind !== kind || previous.result.boardId !== boardId || !handle || !previous.paging.expiresAt
+        || Date.now() >= Date.parse(previous.paging.expiresAt) || Date.now() < previous.waitUntilMs || previous.grantSnapshot !== grantSnapshot(connection))) throw new MondayPageError('forbidden');
+      // Consume the browser's copy before dispatch; an uncertain response cannot
+      // replay a server-side handle which may already have been consumed.
+      setReading(previous ? { ...previous, paging: { ...previous.paging, nextBatch: null, expiresAt: null } } : null);
+      const next = readResult(await request(kind === 'board' ? '/read-board' : '/read-updates', { csrfToken: csrfToken.current, body: { boardId, ...(continuing ? { continuation: handle } : {}) } }), kind, capability, grantSnapshot(connection));
+      if (next.result.reason === 'rate_limited') setProviderWaitUntilMs(previousWait => Math.max(previousWait, next.waitUntilMs));
+      if (next.paging.expiresAt && (!connection.expiresAt || Date.parse(next.paging.expiresAt) > Date.parse(connection.expiresAt))) bad();
+      const result = accumulate(previous, next);
       const confirmed = status(await request('/status'));
-      setConnection(confirmed); if (confirmed.state === 'connected') setReading(result);
+      setConnection(confirmed);
+      const confirmedCapability = confirmed.boardCapabilities.find(board => board.id === boardId);
+      if (confirmed.state === 'connected' && !confirmed.pending && confirmed.boardAccessVerified && confirmedCapability?.mappingVersion === capability.mappingVersion && JSON.stringify(confirmedCapability) === JSON.stringify(capability)
+        && (kind === 'board' ? confirmedCapability.commercialRead.enabled : confirmedCapability.updatesRead.enabled) && grantSnapshot(confirmed) === grantSnapshot(connection)) setReading(result);
+      else setReading(null);
     });
   }
   const disabled = busy !== null;
-  const mayRead = session?.authenticated && connection?.configured && connection.state === 'connected' && connection.boardAccessVerified && !connection.pending && connection.allowedBoards.includes(boardId);
+  const mayRead = session?.authenticated && connection?.configured && connection.state === 'connected' && connection.boardAccessVerified && !connection.pending && connection.allowedBoards.includes(boardId)
+    && connection.expiresAt !== null && Date.parse(connection.expiresAt) > clockMs;
+  const selectedCapability = connection?.boardCapabilities.find(board => board.id === boardId);
+  const continuationExpired = reading?.paging.expiresAt !== null && reading?.paging.expiresAt !== undefined && clockMs >= Date.parse(reading.paging.expiresAt);
+  const providerWaiting = Math.max(0, Math.ceil((providerWaitUntilMs - clockMs) / 1000));
+  const waiting = Math.max(providerWaiting, reading ? Math.max(0, Math.ceil((reading.waitUntilMs - clockMs) / 1000)) : 0);
   return <main className="office-main" style={{ maxWidth: 1000, padding: '24px 16px' }}>
     <header className="panel-heading"><div><p className="eyebrow">GOURMET AI OFFICE · INTEGRACIÓN</p><h1>Monday · acceso del propietario</h1><p>Acceso de integración autorizado por Ricardo · identidad Info.</p></div></header>
     {error && <p className="inline-alert" role="alert">{error}</p>}
@@ -269,9 +372,16 @@ export function MondayOwnerPage() {
         {connection.code && <p>Código del servicio: <code>{connection.code}</code></p>}
         <dl className="approval-target"><div><dt>Actor Monday</dt><dd>{connection.actorId ?? 'Sin identidad confirmada'}</dd></div><div><dt>Cuenta configurada</dt><dd>{connection.configuredAccountId ? `${connection.configuredAccountId} · Sin verificar por OAuth` : 'Cuenta pendiente de configurar'}</dd></div><div><dt>Cuenta verificada por OAuth</dt><dd>Sin cuenta acreditada</dd></div><div><dt>Acceso a cinco tableros</dt><dd>{connection.boardAccessVerified ? 'Verificado por el servicio' : 'Sin acceso acreditado'}</dd></div><div><dt>Lectura del acceso a tableros</dt><dd>{at(connection.boardAccessReadAt)}</dd></div><div><dt>Scopes de lectura</dt><dd>{connection.scopes.join(', ') || 'Sin scopes confirmados'}</dd></div><div><dt>Lectura de identidad</dt><dd>{at(connection.identityReadAt)}</dd></div><div><dt>Conexión confirmada</dt><dd>{at(connection.connectedAt)}</dd></div><div><dt>Expiración del acceso</dt><dd>{at(connection.expiresAt)}</dd></div><div><dt>Última lectura</dt><dd>{at(connection.lastReadAt)}</dd></div></dl>
         <div className="approval-actions"><button className="button button-secondary" disabled={disabled} onClick={updateStatus}>Actualizar estado</button><button className="button button-primary" disabled={disabled || !connection.configured || connection.pending || connection.state === 'connected'} onClick={connect}>Conectar Monday</button><button className="button button-secondary" disabled={disabled || !connection.configured || !['connected', 'expired'].includes(connection.state)} onClick={() => change('/refresh')}>Renovar conexión</button><button className="button button-quiet" disabled={disabled || !connection.configured || connection.state === 'disconnected' || connection.state === 'disabled'} onClick={() => change('/disconnect')}>Desconectar Monday</button></div>
-        <section className="work-section"><h3>Lectura de tableros autorizados</h3><p>La lectura conserva la procedencia y los límites indicados por el servicio.</p><label htmlFor="monday-board">Tablero autorizado</label><select id="monday-board" value={boardId} disabled={disabled || !mayRead} onChange={event => { setBoardId(event.target.value); setReading(null); }}>{connection.allowedBoards.length ? connection.allowedBoards.map(id => <option key={id} value={id}>Tablero {id}</option>) : <option value="">Sin tableros autorizados</option>}</select><div className="approval-actions"><button className="button button-secondary" disabled={disabled || !mayRead} onClick={() => read('board')}>Leer tablero</button><button className="button button-secondary" disabled={disabled || !mayRead} onClick={() => read('updates')}>Leer actualizaciones</button></div></section>
+        <p>Renovación automática desactivada. La renovación disponible es manual.</p>
+        {providerWaiting > 0 && <p data-testid="monday-provider-wait" role="status">Espera {providerWaiting} segundos antes de leer Monday de nuevo. El límite del proveedor afecta a ambos tipos de lectura; cambiar de tablero no elimina la espera.</p>}
+        <section className="work-section"><h3>Lectura de tableros autorizados</h3><p>La lectura conserva la procedencia y los límites indicados por el servicio.</p><label htmlFor="monday-board">Tablero autorizado</label><select id="monday-board" value={boardId} disabled={disabled || !connection.allowedBoards.length} style={{ maxWidth: '100%' }} onChange={event => { setBoardId(event.target.value); setReading(null); }}>{connection.allowedBoards.length ? connection.boardCapabilities.filter(board => connection.allowedBoards.includes(board.id)).map(board => <option key={board.id} value={board.id}>{board.name} · {board.id}</option>) : <option value="">Sin tableros autorizados</option>}</select>
+          {selectedCapability && <p data-testid="monday-board-capability" style={{ overflowWrap: 'anywhere' }}>Lectura comercial: {selectedCapability.commercialRead.enabled ? 'disponible' : selectedCapability.commercialRead.reason}. Metadatos de actualizaciones: {selectedCapability.updatesRead.enabled ? 'disponibles' : selectedCapability.updatesRead.reason}. Nombre verificado: {selectedCapability.nameVerifiedOn}.</p>}
+          <div className="approval-actions"><button className="button button-secondary" disabled={disabled || !mayRead || providerWaiting > 0 || !selectedCapability?.commercialRead.enabled} onClick={() => read('board')}>Leer tablero</button><button className="button button-secondary" disabled={disabled || !mayRead || providerWaiting > 0 || !selectedCapability?.updatesRead.enabled} onClick={() => read('updates')}>Leer actualizaciones</button></div></section>
       </>}
-      {reading && <section className="work-section" data-testid="monday-reading"><h3>{reading.kind === 'board' ? 'Lectura comercial del tablero' : 'Metadatos de actualizaciones'}</h3><p>{reading.result.status === 'complete' ? 'Lectura completa dentro del límite consultado' : reading.result.status === 'partial' ? 'Lectura parcial' : 'Lectura bloqueada'} · {reading.result.items.length} ítems · {reading.result.pages} páginas</p><p className="form-hint">Leído: {at(reading.result.readAt)} · Mapeo: {reading.result.mappingVersion}</p>{reading.result.reason && <p className="inline-alert">Código de lectura: {reading.result.reason}. Esta lectura no acredita datos fuera de su alcance.</p>}{reading.result.items.map(item => <article className="result-card" key={item.id}><h4>Ítem {item.id}</h4><p className="form-hint">Actualización de origen: {at(item.sourceUpdatedAt)} · Lectura: {at(item.readAt)}</p>{'columns' in item ? <dl className="approval-target">{item.columns.map(column => <div key={column.id}><dt>{FIELDS[column.field]}</dt><dd>{column.redacted ? 'Oculto por privacidad' : column.text ?? 'Sin valor confirmado'}</dd></div>)}</dl> : item.updates.map(update => <p key={update.id}>Actualización {update.id} · creación {at(update.createdAt)} · origen {at(update.sourceUpdatedAt)} · lectura {at(update.readAt)}</p>)}</article>)}</section>}
+      {reading && <section className="work-section" data-testid="monday-reading" style={{ overflowWrap: 'anywhere' }}><h3>{reading.kind === 'board' ? 'Lectura comercial del tablero' : 'Metadatos de actualizaciones'}</h3><p>{reading.result.status === 'complete' ? 'Lectura completa dentro del alcance consultado' : reading.result.status === 'partial' ? 'Lectura parcial' : 'Lectura bloqueada'} · {reading.result.items.length} ítems · {reading.paging.pagesRead} páginas</p><p>Total del tablero: desconocido. Límite por lote: 4 páginas / 100 ítems; por recorrido: 40 páginas / 1000 ítems.</p><p className="form-hint">Fuente: Monday · Tablero {reading.result.boardId} · Leído: {at(reading.paging.pagesRead > 0 ? reading.result.readAt : null)} · Mapeo: {reading.result.mappingVersion}</p><p>Las etiquetas no acreditan pago, cierre, envío ni documentos. Un importe vacío no es cero; un importe sin moneda no acredita cobro.</p>{reading.result.reason && <p className="inline-alert">Código de lectura: {reading.result.reason}. Esta lectura no acredita datos fuera de su alcance.</p>}
+        {reading.paging.nextBatch && <div><p data-testid="monday-continuation-state">{continuationExpired ? 'Continuación expirada. Inicia una nueva lectura para consultar de nuevo.' : waiting ? `Espera ${waiting} segundos antes de continuar. Caduca: ${at(reading.paging.expiresAt)}.` : `Continuación disponible hasta ${at(reading.paging.expiresAt)}. Requiere una acción explícita.`}</p><button className="button button-secondary" disabled={disabled || !mayRead || continuationExpired || waiting > 0} onClick={() => read(reading.kind, true)}>Continuar lectura</button></div>}
+        {reading.result.status === 'partial' && !reading.paging.nextBatch && <p>La cobertura sigue siendo parcial; no hay continuación admitida para este recorrido.</p>}
+        {reading.result.items.map(item => <article className="result-card" key={item.id}><h4>Ítem {item.id}</h4><p className="form-hint">Fuente: Monday · Tablero {item.boardId} · Mapeo: {reading.result.mappingVersion} · Actualización de origen: {at(item.sourceUpdatedAt)} · Lectura: {at(item.readAt)}</p>{'columns' in item ? <dl className="approval-target">{getMondayItemAvailability(item, reading.capability).map(field => <div key={field.field}><dt>{FIELDS[field.field]}</dt><dd>{field.availability === 'not_queried' ? 'No consultado' : field.availability === 'redacted' ? 'Oculto por privacidad' : field.availability === 'empty' ? 'Sin valor confirmado · campo consultado vacío' : field.text}</dd></div>)}</dl> : item.updates.map(update => <p key={update.id}>Actualización {update.id} · creación {at(update.createdAt)} · origen {at(update.sourceUpdatedAt)} · lectura {at(update.readAt)}</p>)}</article>)}</section>}
     </section>}
   </main>;
 }

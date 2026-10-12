@@ -3,6 +3,8 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { OfficeError } from './state';
 import { MondayOAuthError } from './monday-oauth';
 import type { MondayOAuthCallbackParams, MondayOAuthService } from './monday-oauth';
+import type { MondayOAuthStatus } from './monday-oauth';
+import { getMondayBoardCapabilities } from '../monday-board-catalog';
 import { MONDAY_OWNER_CSRF_HEADER, MONDAY_OWNER_LOGIN_COOKIE, MONDAY_OWNER_COOKIE_PATH } from './monday-owner';
 import { MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS } from './monday-read';
 import type { MondayBoardId } from './monday-read';
@@ -39,10 +41,21 @@ function body(request: FastifyRequest, expected: readonly string[]) {
   if (Object.keys(record).length !== expected.length || expected.some(key => !Object.hasOwn(record, key))) throw new OfficeError('INVALID_MONDAY_REQUEST');
   return record;
 }
-function board(request: FastifyRequest): MondayBoardId {
-  const id = body(request, ['boardId']).boardId;
+function readInput(request: FastifyRequest): { boardId: MondayBoardId; continuation?: string } {
+  const value = body(request, request.body && typeof request.body === 'object' && Object.hasOwn(request.body, 'continuation') ? ['boardId', 'continuation'] : ['boardId']);
+  const id = value.boardId;
   if (typeof id !== 'string' || !(MONDAY_RECORD_BOARD_IDS as readonly string[]).includes(id)) throw new OfficeError('FORBIDDEN_MONDAY_BOARD', 403);
-  return id as MondayBoardId;
+  if (Object.hasOwn(value, 'continuation')) {
+    const handle = value.continuation;
+    if (typeof handle !== 'string' || !NONCE.test(handle) || Buffer.from(handle, 'base64url').toString('base64url') !== handle) throw new OfficeError('INVALID_MONDAY_REQUEST');
+    return { boardId: id as MondayBoardId, continuation: handle };
+  }
+  return { boardId: id as MondayBoardId };
+}
+function publicStatus(value: MondayOAuthStatus) {
+  // The renewal guard is server-only; no owner endpoint exposes its binding.
+  const { grantFingerprint: _grantFingerprint, ...result } = value;
+  return result;
 }
 class MondayCallbackQueryError extends Error {
   constructor(readonly reason: typeof MONDAY_CALLBACK_QUERY_REASONS[number]) {
@@ -80,6 +93,8 @@ function callbackParams(url: string): MondayOAuthCallbackParams {
 }
 
 export function registerMondayRoutes(app: FastifyInstance, runtime?: MondayRuntime) {
+  app.addHook('onReady', async () => { runtime?.renewalScheduler?.start(); });
+  app.addHook('onClose', async () => { runtime?.renewalScheduler?.stop(); });
   const available = runtime?.enabled === true && runtime.configured && !!runtime.oauthService;
   const owner = () => {
     if (!available || !runtime) throw new OfficeError('MONDAY_OWNER_UNAVAILABLE', 503);
@@ -113,7 +128,9 @@ export function registerMondayRoutes(app: FastifyInstance, runtime?: MondayRunti
   });
   app.get('/office-api/monday/status', async request => {
     authorize(request);
-    return { ...await service().status(), configured: true, allowedBoards: [...MONDAY_READ_BOARD_IDS] };
+    const current = service();
+    return { ...publicStatus(await current.status()), configured: true, allowedBoards: [...MONDAY_READ_BOARD_IDS],
+      boardCapabilities: current.getBoardCapabilities?.() ?? getMondayBoardCapabilities({}, 'unconfigured-v1', true) };
   });
   app.post('/office-api/monday/oauth/start', async (request, reply) => {
     const ownerId = authorize(request, true);
@@ -149,18 +166,20 @@ export function registerMondayRoutes(app: FastifyInstance, runtime?: MondayRunti
   });
   app.post('/office-api/monday/refresh', async request => {
     authorize(request, true); body(request, []);
-    return service().refresh();
+    return publicStatus(await service().refresh());
   });
   app.post('/office-api/monday/disconnect', async request => {
     authorize(request, true); body(request, []);
-    return service().disconnect();
+    return publicStatus(await service().disconnect());
   });
   app.post('/office-api/monday/read-board', async request => {
     authorize(request, true);
-    return service().readBoard(board(request));
+    const input = readInput(request);
+    return service().readBoard(input.boardId, input.continuation);
   });
   app.post('/office-api/monday/read-updates', async request => {
     authorize(request, true);
-    return service().readUpdates(board(request));
+    const input = readInput(request);
+    return service().readUpdates(input.boardId, input.continuation);
   });
 }

@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { MondayStore, MondayStoredRecord, MondayVault } from './monday-store';
-import { MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS, MONDAY_READ_SCOPES, type MondayBoardId, type MondayReadClient, type MondayReadItem, type MondayReadResult, type MondayUpdateItem } from './monday-read';
+import { CURSOR_TTL_MS, MAX_PAGES, MAX_TOTAL_ITEMS, MAX_TOTAL_PAGES, PAGE_SIZE, MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS, MONDAY_READ_SCOPES, type MondayBoardId, type MondayReadBatch, type MondayReadCheckpoint, type MondayReadClient, type MondayReadItem, type MondayReadResult, type MondayUpdateItem } from './monday-read';
+import { getMondayBoardCapabilities, type MondayBoardCapability } from '../monday-board-catalog';
 import { withMondayConfigurationDiagnostic, type MondayConfigurationField, type MondayConfigurationReason } from './monday-diagnostics';
 import type { MondayOAuthCallbackStage } from '../monday-oauth-return';
 
@@ -16,6 +17,8 @@ export const MONDAY_AUTHORIZE_URL = 'https://auth.monday.com/oauth2/authorize';
 export const MONDAY_TOKEN_URL = 'https://auth.monday.com/oauth_ms/oauth/token';
 export const MONDAY_REVOKE_URL = 'https://auth.monday.com/oauth_ms/oauth/revoke';
 const CONNECTION_KEY = 'monday-connection-ricardo';
+const READ_COOLDOWN_KEY = 'monday-read-cooldown-ricardo';
+const MAX_PUBLIC_RETRY_SECONDS = 86_400;
 const STATE_TTL_MS = 5 * 60_000;
 // An acceptance ceiling, not an assumed provider lifetime. Actual expiry comes
 // only from exp, and an unsigned claim can shorten availability, never prove IAM.
@@ -36,16 +39,22 @@ export type MondayOAuthStatus = {
   actorId: string | null; accountId: null; accountVerified: false; configuredAccountId: string | null;
   boardAccessVerified: boolean; boardAccessReadAt: string | null; scopes: readonly string[]; expiresAt: string | null;
   connectedAt: string | null; identityReadAt: string | null; lastReadAt: string | null; updatedAt: string | null; pending: boolean;
+  // Server-only generation proof for a guarded scheduler refresh. HTTP removes
+  // this field before serializing any status response.
+  grantFingerprint?: string | null;
 };
+export type MondayReadPaging = { nextBatch: string | null; expiresAt: string | null; pagesRead: number; itemsRead: number };
+export type MondayServiceReadResult<T> = MondayReadResult<T> & { paging: MondayReadPaging };
 export type MondayOAuthCallbackParams = { state: string; code?: string; error?: string; status?: string };
 export type MondayOAuthStart = { authorizationUrl: string; expiresAt: string };
 export interface MondayOAuthService {
   status(): Promise<MondayOAuthStatus>;
   startOAuth(input: { ownerId: string; browserNonce: string }): Promise<MondayOAuthStart>;
   callback(params: MondayOAuthCallbackParams, browserNonce: string, onStage?: (stage: MondayOAuthCallbackStage) => void): Promise<MondayOAuthStatus>;
-  refresh(): Promise<MondayOAuthStatus>;
-  readBoard(boardId: MondayBoardId): Promise<MondayReadResult<MondayReadItem>>;
-  readUpdates(boardId: MondayBoardId): Promise<MondayReadResult<MondayUpdateItem>>;
+  refresh(input?: { expectedGrantFingerprint?: string }): Promise<MondayOAuthStatus>;
+  readBoard(boardId: MondayBoardId, continuation?: string): Promise<MondayReadResult<MondayReadItem> & { paging?: MondayReadPaging }>;
+  readUpdates(boardId: MondayBoardId, continuation?: string): Promise<MondayReadResult<MondayUpdateItem> & { paging?: MondayReadPaging }>;
+  getBoardCapabilities?(): readonly MondayBoardCapability[];
   disconnect(): Promise<MondayOAuthStatus>;
 }
 export type MondayOAuthOptions = {
@@ -159,6 +168,8 @@ type Connection = {
   attempt: Attempt | null;
 };
 type Authorization = { version: 1; ownerId: typeof MONDAY_OWNER_ID; binding: string; nonceHash: string; verifier: string; attemptId: string; createdAt: number; expiresAt: number };
+type Pagination = { version: 1; ownerId: typeof MONDAY_OWNER_ID; binding: string; generation: string; boardId: MondayBoardId; kind: 'board' | 'updates'; createdAtMs: number; handleHash: string; checkpoint: MondayReadCheckpoint; retryNotBeforeMs: number | null };
+type ReadCooldown = { version: 1; ownerId: typeof MONDAY_OWNER_ID; binding: string; retryNotBeforeMs: number };
 
 function checkedBoards(value: unknown, code: MondayOAuthCode): MondayBoardId[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length !== MONDAY_READ_BOARD_IDS.length || Reflect.ownKeys(value).length !== value.length + 1) fail(code);
@@ -203,7 +214,7 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
   const binding = config.enabled ? hash(JSON.stringify([config.clientId, config.expectedUserId, config.expectedAccountId, config.expectedAccountEmail, config.redirectUri])) : 'disabled';
   const stamp = () => new Date(clock()).toISOString();
   const random = () => randomBytes(32).toString('base64url');
-  const disabled: MondayOAuthStatus = { state: 'disabled', code: 'disabled', actorId: null, accountId: null, accountVerified: false, configuredAccountId: null, boardAccessVerified: false, boardAccessReadAt: null, scopes: [], expiresAt: null, connectedAt: null, identityReadAt: null, lastReadAt: null, updatedAt: null, pending: false };
+  const disabled: MondayOAuthStatus = { state: 'disabled', code: 'disabled', actorId: null, accountId: null, accountVerified: false, configuredAccountId: null, boardAccessVerified: false, boardAccessReadAt: null, scopes: [], expiresAt: null, connectedAt: null, identityReadAt: null, lastReadAt: null, updatedAt: null, pending: false, grantFingerprint: null };
   function enabled(): Extract<MondayConfiguration, { enabled: true }> { if (!config.enabled) fail('disabled', 503); return config; }
   function fresh(): Connection { return { version: 1, ownerId: MONDAY_OWNER_ID, binding, state: 'disconnected', code: null, generation: random(), tokens: null, actorId: null, boardProof: null, connectedAt: null, identityReadAt: null, lastReadAt: null, updatedAt: stamp(), attempt: null }; }
   function decode(stored: MondayStoredRecord): Connection {
@@ -241,7 +252,7 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
   }
   function project(value: Connection): MondayOAuthStatus {
     const expired = value.tokens !== null && Date.parse(value.tokens.expiresAt) <= clock();
-    return { state: expired ? 'expired' : value.state, code: expired ? 'expired' : value.code, actorId: value.actorId, accountId: null, accountVerified: false, configuredAccountId: config.enabled ? config.expectedAccountId : null, boardAccessVerified: value.tokens !== null && value.boardProof !== null, boardAccessReadAt: value.boardProof?.readAt ?? null, scopes: value.tokens ? [...value.tokens.scopes] : [], expiresAt: value.tokens?.expiresAt ?? null, connectedAt: value.connectedAt, identityReadAt: value.identityReadAt, lastReadAt: value.lastReadAt, updatedAt: value.updatedAt, pending: value.attempt !== null };
+    return { state: expired ? 'expired' : value.state, code: expired ? 'expired' : value.code, actorId: value.actorId, accountId: null, accountVerified: false, configuredAccountId: config.enabled ? config.expectedAccountId : null, boardAccessVerified: value.tokens !== null && value.boardProof !== null, boardAccessReadAt: value.boardProof?.readAt ?? null, scopes: value.tokens ? [...value.tokens.scopes] : [], expiresAt: value.tokens?.expiresAt ?? null, connectedAt: value.connectedAt, identityReadAt: value.identityReadAt, lastReadAt: value.lastReadAt, updatedAt: value.updatedAt, pending: value.attempt !== null, grantFingerprint: value.state === 'connected' && value.tokens !== null && !expired ? hash(value.generation) : null };
   }
   function terminal(value: Connection, code: MondayOAuthCode): Connection {
     return { ...value, state: value.tokens ? (Date.parse(value.tokens.expiresAt) <= clock() ? 'expired' : 'connected') : code === 'revoke_uncertain' ? 'disconnected' : 'error', code, attempt: null, updatedAt: stamp() };
@@ -302,21 +313,154 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
     if (Date.parse(readAt) > clock() + 30_000 || Date.parse(readAt) < clock() - STATE_TTL_MS) fail('board_access_unverified', 403);
     return { actorId: cfg.expectedUserId, identityReadAt, boardProof: { actorId: cfg.expectedUserId, boardIds, readAt, tokenDigest: hash(tokens.accessToken) } };
   }
-  async function read<T>(boardId: MondayBoardId, kind: 'readBoard' | 'readUpdates'): Promise<MondayReadResult<T>> {
+  function capabilities(): readonly MondayBoardCapability[] {
+    return options.readClient.getBoardCapabilities?.() ?? getMondayBoardCapabilities({}, 'unconfigured-v1', config.enabled);
+  }
+  function paginationKey(boardId: MondayBoardId, kind: 'board' | 'updates'): string { return `monday-pagination-${MONDAY_OWNER_ID}-${boardId}-${kind}`; }
+  function decodedCooldown(saved: MondayStoredRecord): ReadCooldown {
+    try {
+      const value = row(options.vault.open(saved.value, READ_COOLDOWN_KEY), 'storage_unavailable');
+      exact(value, ['version', 'ownerId', 'binding', 'retryNotBeforeMs'], [], 'storage_unavailable');
+      if (value.version !== 1 || value.ownerId !== MONDAY_OWNER_ID || value.binding !== binding || !Number.isSafeInteger(value.retryNotBeforeMs) || (value.retryNotBeforeMs as number) < 0) fail('storage_unavailable', 503);
+      return value as ReadCooldown;
+    } catch { fail('storage_unavailable', 503); }
+  }
+  async function cooldown(): Promise<number> {
+    const saved = await paginationRecord(READ_COOLDOWN_KEY); return saved ? decodedCooldown(saved).retryNotBeforeMs : 0;
+  }
+  function retryDeadline(seconds: unknown): number {
+    if (seconds !== undefined && (!Number.isSafeInteger(seconds) || (seconds as number) < 0)) fail('read_unavailable', 502);
+    const wait = Math.max(1, seconds as number | undefined ?? 1);
+    const duration = wait * 1000; const until = clock() + duration;
+    // A provider wait that cannot be represented safely must keep reads closed,
+    // never wrap, truncate or move its deadline earlier to fit a public parser.
+    return Number.isSafeInteger(duration) && Number.isSafeInteger(until) ? until : Number.MAX_SAFE_INTEGER;
+  }
+  async function saveCooldown(until: number): Promise<number> {
+    for (let retry = 0; retry < 4; retry++) {
+      const saved = await paginationRecord(READ_COOLDOWN_KEY); const previous = saved ? decodedCooldown(saved).retryNotBeforeMs : 0;
+      if (previous >= until) return previous;
+      const value: ReadCooldown = { version: 1, ownerId: MONDAY_OWNER_ID, binding, retryNotBeforeMs: Math.max(previous, until) };
+      let changed: boolean;
+      try { changed = await options.store.compareAndSet(READ_COOLDOWN_KEY, saved?.revision ?? null, options.vault.seal(value, READ_COOLDOWN_KEY)); }
+      catch { fail('storage_unavailable', 503); }
+      if (changed) return value.retryNotBeforeMs;
+    }
+    fail('storage_unavailable', 503);
+  }
+  function checkedCheckpoint(input: unknown, previous: Connection, boardId: MondayBoardId, kind: 'board' | 'updates', createdAtMs: number, expectedMapping: string): MondayReadCheckpoint {
+    const value = row(input, 'read_unavailable');
+    exact(value, ['cursor', 'boardId', 'actorId', 'kind', 'mappingVersion', 'expiresAtMs', 'seenCursors', 'seenItemIds', 'pagesRead', 'itemsRead'], ['updatesTruncated'], 'read_unavailable');
+    if (value.boardId !== boardId || value.kind !== kind || value.actorId !== previous.actorId || value.mappingVersion !== expectedMapping) fail('read_unavailable', 409);
+    if (typeof value.cursor !== 'string' || !value.cursor.length || value.cursor.length > 2048 || /[\u0000-\u001f\u007f]/.test(value.cursor)) fail('read_unavailable', 409);
+    if (!Number.isSafeInteger(createdAtMs) || createdAtMs > clock() || createdAtMs < 0 || clock() >= createdAtMs + CURSOR_TTL_MS
+      || !Number.isSafeInteger(value.expiresAtMs) || (value.expiresAtMs as number) <= clock() || (value.expiresAtMs as number) > Math.min(createdAtMs + CURSOR_TTL_MS, Date.parse(previous.tokens!.expiresAt))) fail('read_unavailable', 409);
+    if (!Number.isSafeInteger(value.pagesRead) || (value.pagesRead as number) < 1 || (value.pagesRead as number) >= MAX_TOTAL_PAGES
+      || !Number.isSafeInteger(value.itemsRead) || (value.itemsRead as number) < 0 || (value.itemsRead as number) >= MAX_TOTAL_ITEMS || (value.itemsRead as number) > (value.pagesRead as number) * PAGE_SIZE) fail('read_unavailable', 409);
+    function strings(raw: unknown, count: number, parse: (item: unknown) => string): string[] {
+      if (!Array.isArray(raw) || Object.getPrototypeOf(raw) !== Array.prototype || raw.length !== count || Reflect.ownKeys(raw).length !== count + 1) fail('read_unavailable', 409);
+      const values: string[] = [];
+      for (let index = 0; index < count; index++) {
+        const descriptor = Object.getOwnPropertyDescriptor(raw, String(index));
+        if (!descriptor?.enumerable || !('value' in descriptor)) fail('read_unavailable', 409);
+        values.push(parse(descriptor.value));
+      }
+      if (new Set(values).size !== values.length) fail('read_unavailable', 409);
+      return values;
+    }
+    const seenCursors = strings(value.seenCursors, value.pagesRead as number, item => {
+      if (typeof item !== 'string' || !item.length || item.length > 2048 || /[\u0000-\u001f\u007f]/.test(item)) fail('read_unavailable', 409); return item;
+    });
+    const seenItemIds = strings(value.seenItemIds, value.itemsRead as number, item => identifier(item, 'read_unavailable'));
+    if (seenCursors.at(-1) !== value.cursor || value.updatesTruncated !== undefined && typeof value.updatesTruncated !== 'boolean') fail('read_unavailable', 409);
+    return { cursor: value.cursor, boardId, actorId: previous.actorId!, kind, mappingVersion: expectedMapping, expiresAtMs: value.expiresAtMs as number, seenCursors, seenItemIds, pagesRead: value.pagesRead as number, itemsRead: value.itemsRead as number, ...(value.updatesTruncated === undefined ? {} : { updatesTruncated: value.updatesTruncated }) };
+  }
+  async function paginationRecord(key: string): Promise<MondayStoredRecord | null> {
+    try { return await options.store.read(key); } catch { fail('storage_unavailable', 503); }
+  }
+  async function paginationCas(key: string, revision: MondayStoredRecord['revision'] | null, value: Pagination | null): Promise<void> {
+    let changed: boolean;
+    try { changed = await options.store.compareAndSet(key, revision, value === null ? null : options.vault.seal(value, key)); }
+    catch { fail('storage_unavailable', 503); }
+    if (!changed) fail('read_unavailable', 409);
+  }
+  function decodedPagination(saved: MondayStoredRecord, key: string, previous: Connection, boardId: MondayBoardId, kind: 'board' | 'updates', continuation: string): Pagination {
+    try {
+      const value = row(options.vault.open(saved.value, key), 'read_unavailable');
+      exact(value, ['version', 'ownerId', 'binding', 'generation', 'boardId', 'kind', 'createdAtMs', 'handleHash', 'checkpoint', 'retryNotBeforeMs'], [], 'read_unavailable');
+      if (value.version !== 1 || value.ownerId !== MONDAY_OWNER_ID || value.binding !== binding || value.generation !== previous.generation || value.boardId !== boardId || value.kind !== kind
+        || !equal(opaque(value.handleHash, 'read_unavailable'), hash(continuation))) fail('read_unavailable', 409);
+      const mappingVersion = capabilities().find(capability => capability.id === boardId)?.mappingVersion;
+      if (!mappingVersion) fail('read_unavailable', 409);
+      const checkpoint = checkedCheckpoint(value.checkpoint, previous, boardId, kind, value.createdAtMs as number, mappingVersion);
+      if (value.retryNotBeforeMs !== null && (!Number.isSafeInteger(value.retryNotBeforeMs) || (value.retryNotBeforeMs as number) < (value.createdAtMs as number) || (value.retryNotBeforeMs as number) > checkpoint.expiresAtMs)) fail('read_unavailable', 409);
+      return { ...value, checkpoint } as Pagination;
+    } catch { fail('read_unavailable', 409); }
+  }
+  async function read<T>(boardId: MondayBoardId, method: 'readBoard' | 'readUpdates', continuation?: string): Promise<MondayServiceReadResult<T>> {
     enabled(); if (!(MONDAY_RECORD_BOARD_IDS as readonly string[]).includes(boardId)) fail('read_unavailable', 403);
+    if (continuation !== undefined) opaque(continuation, 'read_unavailable');
     const result = await current(); const previous = result.record;
     if (previous.attempt) fail('operation_in_progress', 409);
     if (!previous.tokens || previous.state !== 'connected') fail('not_connected', 409);
     if (Date.parse(previous.tokens.expiresAt) <= clock()) fail('expired', 409);
+    const kind = method === 'readBoard' ? 'board' : 'updates'; const key = paginationKey(boardId, kind);
+    const saved = await paginationRecord(key);
+    const position = continuation === undefined ? null : saved ? decodedPagination(saved, key, previous, boardId, kind, continuation) : fail('read_unavailable', 409);
+    const retryNotBeforeMs = Math.max(await cooldown(), position?.retryNotBeforeMs ?? 0);
+    if (retryNotBeforeMs > clock()) {
+      return { status: 'blocked', reason: 'rate_limited', retryAfterSeconds: Math.min(MAX_PUBLIC_RETRY_SECONDS, Math.ceil((retryNotBeforeMs - clock()) / 1000)), boardId, mappingVersion: position?.checkpoint.mappingVersion ?? capabilities().find(capability => capability.id === boardId)!.mappingVersion, readAt: stamp(), pages: 0, items: [],
+        paging: position ? { nextBatch: continuation!, expiresAt: new Date(position.checkpoint.expiresAtMs).toISOString(), pagesRead: position.checkpoint.pagesRead, itemsRead: position.checkpoint.itemsRead } : { nextBatch: null, expiresAt: null, pagesRead: 0, itemsRead: 0 } };
+    }
+    const createdAtMs = position?.createdAtMs ?? clock();
     const attempt: Attempt = { id: random(), kind: 'read', deadline: clock() + timeoutMs + 1000 };
     if (!await cas(result.revision, { ...previous, attempt, updatedAt: stamp() })) fail('operation_in_progress', 409);
     try {
-      const response = await bounded<MondayReadResult<MondayReadItem | MondayUpdateItem>>(signal => options.readClient[kind]({ boardId, actorId: previous.actorId!, accessToken: previous.tokens!.accessToken, expiresAt: previous.tokens!.expiresAt, scopes: [...previous.tokens!.scopes], signal }));
-      await finish(attempt.id, value => ({ ...value, code: null, lastReadAt: stamp() }));
-      return response as MondayReadResult<T>;
+      // Compare-and-delete consumes a continuation once before any dispatch.
+      // Starting again replaces the same fixed slot, never a browser chosen key.
+      if (saved) await paginationCas(key, saved.revision, null);
+      const batch = await bounded<MondayReadBatch<MondayReadItem | MondayUpdateItem>>(async signal => {
+        const input = { boardId, actorId: previous.actorId!, accessToken: previous.tokens!.accessToken, expiresAt: previous.tokens!.expiresAt, scopes: [...previous.tokens!.scopes], signal };
+        if (method === 'readBoard' && options.readClient.readBoardBatch) return options.readClient.readBoardBatch(input, position?.checkpoint);
+        if (method === 'readUpdates' && options.readClient.readUpdatesBatch) return options.readClient.readUpdatesBatch(input, position?.checkpoint);
+        if (position) fail('read_unavailable', 409);
+        return { result: await options.readClient[method](input), checkpoint: null };
+      });
+      const response = batch.result;
+      if (!Number.isSafeInteger(response.pages) || response.pages < 0 || response.pages > MAX_PAGES || !Array.isArray(response.items) || response.items.length > MAX_PAGES * PAGE_SIZE || response.boardId !== boardId) fail('read_unavailable', 502);
+      const readAt = iso(response.readAt, 'read_unavailable');
+      const pagesRead = (position?.checkpoint.pagesRead ?? 0) + response.pages;
+      const itemsRead = (position?.checkpoint.itemsRead ?? 0) + response.items.length;
+      if (pagesRead > MAX_TOTAL_PAGES || itemsRead > MAX_TOTAL_ITEMS) fail('read_unavailable', 502);
+      // Provider quotas apply to this owner/configuration across all record
+      // boards and both read kinds. Persist the actual wait even when there is
+      // no cursor, or its five-minute lifetime is shorter than the cooldown.
+      const providerRetryDeadline = response.reason === 'rate_limited' ? await saveCooldown(retryDeadline(response.retryAfterSeconds)) : null;
+      let paging: MondayReadPaging = { nextBatch: null, expiresAt: null, pagesRead, itemsRead };
+      if (batch.checkpoint) {
+        // The reader starts its five-minute interval after the lease/store
+        // work. Preserve that exact interval rather than assuming no clock tick
+        // occurred between the service claim and the first provider request.
+        const origin = position ? createdAtMs : Math.max(createdAtMs, batch.checkpoint.expiresAtMs - CURSOR_TTL_MS);
+        const checkpoint = checkedCheckpoint(batch.checkpoint, previous, boardId, kind, origin, response.mappingVersion);
+        if (checkpoint.pagesRead !== pagesRead || checkpoint.itemsRead !== itemsRead || position && checkpoint.expiresAtMs !== position.checkpoint.expiresAtMs) fail('read_unavailable', 502);
+        const live = (await raw()).record;
+        if (live.attempt?.id !== attempt.id || live.generation !== previous.generation) fail('connection_changed', 409);
+        const handle = random();
+        const privateWait = providerRetryDeadline ?? (response.reason === 'offline' ? clock() + 1000 : null);
+        await paginationCas(key, null, { version: 1, ownerId: MONDAY_OWNER_ID, binding, generation: previous.generation, boardId, kind, createdAtMs: origin, handleHash: hash(handle), checkpoint,
+          retryNotBeforeMs: privateWait === null ? null : Math.min(checkpoint.expiresAtMs, privateWait) });
+        paging = { nextBatch: handle, expiresAt: new Date(checkpoint.expiresAtMs).toISOString(), pagesRead, itemsRead };
+      }
+      await finish(attempt.id, value => ({ ...value, code: null, lastReadAt: response.pages > 0 ? readAt : value.lastReadAt }));
+      // The provider cursor and encrypted checkpoint never enter this object.
+      const publicWait = providerRetryDeadline === null ? response.retryAfterSeconds : Math.max(1, Math.ceil((providerRetryDeadline - clock()) / 1000));
+      return { status: response.status, boardId, mappingVersion: response.mappingVersion, readAt, pages: response.pages, items: response.items as T[], ...(response.reason === undefined ? {} : { reason: response.reason }), ...(publicWait === undefined ? {} : { retryAfterSeconds: Math.min(MAX_PUBLIC_RETRY_SECONDS, publicWait) }), paging };
     } catch (error) {
       if (error instanceof MondayOAuthError && error.code === 'connection_changed') throw error;
-      await finish(attempt.id, value => terminal(value, 'read_unavailable')); fail('read_unavailable', 502);
+      await finish(attempt.id, value => terminal(value, 'read_unavailable'));
+      if (error instanceof MondayOAuthError && error.code === 'storage_unavailable') throw error;
+      fail('read_unavailable', 502);
     }
   }
   return {
@@ -388,14 +532,30 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
         catch (cleanupError) { reportStage('persist_connection'); throw cleanupError; }
       }
     },
-    async refresh() {
+    async refresh(input) {
+      let expected: string | undefined;
+      if (input !== undefined) {
+        try {
+          const checked = row(input, 'connection_changed'); exact(checked, ['expectedGrantFingerprint'], [], 'connection_changed'); expected = opaque(checked.expectedGrantFingerprint, 'connection_changed');
+        } catch { fail('connection_changed', 409); }
+      }
       const cfg = enabled(); const result = await current(); const previous = result.record;
       if (previous.attempt) fail('operation_in_progress', 409);
       if (!previous.tokens || !['connected', 'expired'].includes(previous.state)) fail('not_connected', 409);
+      if (expected !== undefined) {
+        if (!equal(expected, hash(previous.generation)) || previous.state !== 'connected' || previous.code !== null) fail('connection_changed', 409);
+        if (Date.parse(previous.tokens.expiresAt) <= clock()) fail('expired', 409);
+      }
       const attempt: Attempt = { id: random(), kind: 'refresh', deadline: clock() + timeoutMs * 3 + 1000 };
       // Remove both tokens durably before dispatch; a crash cannot retry a
       // refresh token whose rotation outcome is unknown.
       if (!await cas(result.revision, { ...fresh(), generation: previous.generation, state: 'disconnected', code: 'operation_in_progress', attempt })) fail('operation_in_progress', 409);
+      if (expected !== undefined && Date.parse(previous.tokens.expiresAt) <= clock()) {
+        // No provider request has started. An expiry while persistence was
+        // awaited can safely restore this known unconsumed pair under our
+        // existing lease; uncertainty after dispatch still discards both tokens.
+        return finish(attempt.id, () => ({ ...previous, attempt: null }));
+      }
       try {
         const tokens = parsedTokens(await post(MONDAY_TOKEN_URL, { grant_type: 'refresh_token', client_id: cfg.clientId, client_secret: cfg.clientSecret, refresh_token: previous.tokens.refreshToken }), clock(), previous.tokens);
         const identity = await verify(tokens);
@@ -405,8 +565,9 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
         return finish(attempt.id, value => terminal(value, 'refresh_uncertain'));
       }
     },
-    readBoard(boardId) { return read<MondayReadItem>(boardId, 'readBoard'); },
-    readUpdates(boardId) { return read<MondayUpdateItem>(boardId, 'readUpdates'); },
+    readBoard(boardId, continuation) { return read<MondayReadItem>(boardId, 'readBoard', continuation); },
+    readUpdates(boardId, continuation) { return read<MondayUpdateItem>(boardId, 'readUpdates', continuation); },
+    getBoardCapabilities: capabilities,
     async disconnect() {
       const cfg = enabled(); const result = await current(); const previous = result.record;
       if (previous.attempt?.kind === 'revoke') fail('operation_in_progress', 409);

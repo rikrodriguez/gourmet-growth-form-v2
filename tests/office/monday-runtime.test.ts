@@ -88,6 +88,20 @@ describe('optional Monday runtime with synthetic manual configuration', () => {
     assert(!JSON.stringify(runtime).includes(credentials.MONDAY_CLIENT_SECRET));
   });
 
+  it('prepares renewal disabled with no timers, provider, database, or activation flag reads', async t => {
+    let fetches = 0; let timers = 0;
+    t.mock.method(globalThis, 'fetch', async () => { fetches++; throw new Error('synthetic unexpected provider request'); });
+    t.mock.method(globalThis, 'setTimeout', (() => { timers++; throw new Error('synthetic unexpected renewal timer'); }) as unknown as typeof setTimeout);
+    const env = Object.defineProperty(fixture(), 'MONDAY_RENEWAL_ENABLED', { get() { throw new Error('synthetic forbidden activation flag read'); } });
+    const runtime = createMondayRuntime(env, MONDAY_OAUTH_ORIGIN, forbiddenPool);
+    assert.equal(runtime.configured, true); assert(runtime.renewalScheduler);
+    assert.equal(runtime.renewalScheduler.status().state, 'disabled');
+    runtime.renewalScheduler.start();
+    assert.deepEqual(await runtime.renewalScheduler.tick(), { state: 'disabled', reason: null, nextCheckAt: null, lastAttemptAt: null });
+    runtime.renewalScheduler.stop();
+    assert.equal(fetches, 0); assert.equal(timers, 0);
+  });
+
   it('admits only a capped server mapping with exactly the five approved board keys', () => {
     for (const value of [undefined, '', JSON.stringify(mapping()), JSON.stringify(Object.fromEntries(MONDAY_READ_BOARD_IDS.map(id => [id, []])))]) {
       const runtime = createMondayRuntime(fixture({ MONDAY_BOARD_COLUMNS_JSON: value }), MONDAY_OAUTH_ORIGIN, forbiddenPool);
