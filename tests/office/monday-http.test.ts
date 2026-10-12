@@ -6,7 +6,7 @@ import { parseOfficeStagingEnvironment } from '../../src/office/backend/staging'
 import { createOfficeFixtureState } from '../../src/office/backend/fixtures';
 import type { OfficeState, OfficeStore } from '../../src/office/backend/state';
 import { MondayOwnerSessions, parseMondayOwnerConfiguration, MONDAY_OWNER_COOKIE, MONDAY_OWNER_CSRF_HEADER, MONDAY_OWNER_LOGIN_COOKIE } from '../../src/office/backend/monday-owner';
-import { createMondayOAuthService, parseMondayConfiguration, MONDAY_OAUTH_CALLBACK, MONDAY_OAUTH_ORIGIN, MONDAY_TOKEN_URL, MONDAY_REVOKE_URL } from '../../src/office/backend/monday-oauth';
+import { createMondayOAuthService, parseMondayConfiguration, MondayOAuthError, MONDAY_OAUTH_CALLBACK, MONDAY_OAUTH_ORIGIN, MONDAY_TOKEN_URL, MONDAY_REVOKE_URL } from '../../src/office/backend/monday-oauth';
 import { createMondayReadClient, MONDAY_READ_BOARD_IDS, MONDAY_READ_SCOPES } from '../../src/office/backend/monday-read';
 import { MemoryMondayStore, MondayVault } from '../../src/office/backend/monday-store';
 import { MONDAY_CALLBACK_PATH, MONDAY_OAUTH_NONCE_COOKIE } from '../../src/office/backend/monday-http';
@@ -38,7 +38,7 @@ function cookie(response: { headers: Record<string, unknown> }, name: string) {
   return (found as string).split(';')[0];
 }
 function json(value: unknown) { return new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } }); }
-async function fixture(t: TestContext, disabled = false) {
+async function fixture(t: TestContext, disabled = false, fault?: 'token_http' | 'token_scope' | 'identity' | 'boards') {
   let now = AT;
   const clock = () => now;
   const calls: Array<{ url: string; query?: string }> = [];
@@ -51,14 +51,15 @@ async function fixture(t: TestContext, disabled = false) {
     assert.equal(init?.redirect, 'error');
     if (target === MONDAY_REVOKE_URL) return json({ success: true });
     if (target === MONDAY_TOKEN_URL) {
+      if (fault === 'token_http') return new Response(JSON.stringify({ error: 'synthetic-private-provider-error' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
       const access = `${Buffer.from('{"alg":"synthetic-only"}').toString('base64url')}.${Buffer.from(JSON.stringify({ exp: Math.floor(now / 1000) + 3600, tag: calls.length })).toString('base64url')}.c3ludGhldGlj`;
-      return json({ access_token: access, refresh_token: `synthetic-refresh-${calls.length}`, token_type: 'Bearer', scope: MONDAY_READ_SCOPES.join(' ') });
+      return json({ access_token: access, refresh_token: `synthetic-refresh-${calls.length}`, token_type: 'Bearer', scope: fault === 'token_scope' ? 'boards:read updates:read me:read boards:write' : MONDAY_READ_SCOPES.join(' ') });
     }
     assert.equal(target, 'https://api.monday.com/v2');
-    if (value.query === 'query OfficeMondayIdentity { me { id email } }') return json({ data: { me: { id: '78158865', email: 'info@gourmet-corp.com' } } });
+    if (value.query === 'query OfficeMondayIdentity { me { id email } }') return json({ data: { me: { id: fault === 'identity' ? '78158866' : '78158865', email: 'info@gourmet-corp.com' } } });
     if (String(value.query).startsWith('query OfficeMondayBoardAccess(')) {
       assert.deepEqual(value.variables, { boardIds: [...MONDAY_READ_BOARD_IDS] });
-      return json({ data: { boards: MONDAY_READ_BOARD_IDS.map(id => ({ id })) } });
+      return json({ data: { boards: (fault === 'boards' ? MONDAY_READ_BOARD_IDS.slice(0, 4) : MONDAY_READ_BOARD_IDS).map(id => ({ id })) } });
     }
     assert.ok(String(value.query).startsWith('query OfficeMondayBoardRead(') || String(value.query).startsWith('query OfficeMondayUpdatesRead('));
     const variables = value.variables as { boardIds: string[] };
@@ -227,7 +228,7 @@ test('missing, wrong or duplicated callback nonce cannot exchange or consume leg
   const url = `${MONDAY_CALLBACK_PATH}?state=${flow.state}&code=synthetic-code`;
   for (const value of [undefined, `${MONDAY_OAUTH_NONCE_COOKIE}=${'a'.repeat(43)}`, `${flow.nonceCookie}; ${flow.nonceCookie}`]) {
     const result = await f.api.inject({ url, headers: { ...f.callbackHeaders, ...(value ? { cookie: value } : {}) } });
-    assert.equal(result.statusCode, 303); assert.equal(result.headers.location, '/office/monday?oauth=error');
+    assert.equal(result.statusCode, 303); assert.equal(result.headers.location, `/office/monday?oauth=error&stage=${value === `${MONDAY_OAUTH_NONCE_COOKIE}=${'a'.repeat(43)}` ? 'callback_state' : 'callback_nonce'}&reason=oauth_state_invalid`);
     assert.equal(result.headers['set-cookie'], undefined);
   }
   assert.equal(f.calls.length, 0);
@@ -255,7 +256,7 @@ test('an unbound callback rejection preserves the browser nonce for a legitimate
     headers: { ...f.callbackHeaders, cookie: callbackCookies() },
   });
   applySetCookie(rejected);
-  assert.equal(rejected.headers.location, '/office/monday?oauth=error');
+  assert.equal(rejected.headers.location, '/office/monday?oauth=error&stage=callback_query&reason=oauth_state_invalid');
   const pending = await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders });
   assert.equal(pending.json().pending, true);
   assert.equal(f.calls.length, 0);
@@ -286,7 +287,7 @@ test('duplicate or overlong callback scope rejects without consuming legitimate 
   for (const scopeQuery of ['scope=boards%3Aread&scope=me%3Aread', `scope=${'s'.repeat(1025)}`]) {
     const f = await fixture(t); const flow = await f.begin();
     const result = await f.api.inject({ url: `${MONDAY_CALLBACK_PATH}?state=${flow.state}&code=synthetic-code&${scopeQuery}`, headers: { ...f.callbackHeaders, cookie: flow.nonceCookie } });
-    assert.equal(result.headers.location, '/office/monday?oauth=error');
+    assert.equal(result.headers.location, '/office/monday?oauth=error&stage=callback_query&reason=oauth_state_invalid');
     assert.equal(result.headers['set-cookie'], undefined);
     assert.equal(f.calls.length, 0);
     const status = await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders });
@@ -299,7 +300,7 @@ test('callback scope control characters are rejected without consuming legitimat
   for (const scopeQuery of ['scope=%0A', 'scope=%00', 'scope=%7F']) {
     const f = await fixture(t); const flow = await f.begin();
     const result = await f.api.inject({ url: `${MONDAY_CALLBACK_PATH}?state=${flow.state}&code=synthetic-code&${scopeQuery}`, headers: { ...f.callbackHeaders, cookie: flow.nonceCookie } });
-    assert.equal(result.headers.location, '/office/monday?oauth=error');
+    assert.equal(result.headers.location, '/office/monday?oauth=error&stage=callback_query&reason=oauth_state_invalid');
     assert.equal(result.headers['set-cookie'], undefined);
     assert.equal(f.calls.length, 0);
     const status = await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders });
@@ -332,14 +333,14 @@ test('pending authorization permits a new attempt only after lease expiry withou
 test('replaying a completed callback fails without a second code exchange', async t => {
   const f = await fixture(t); const flow = await f.complete();
   const replay = await f.api.inject({ url: `${MONDAY_CALLBACK_PATH}?state=${flow.state}&code=synthetic-code`, headers: { ...f.callbackHeaders, cookie: flow.nonceCookie } });
-  assert.equal(replay.headers.location, '/office/monday?oauth=error');
+  assert.equal(replay.headers.location, '/office/monday?oauth=error&stage=callback_state&reason=oauth_state_invalid');
   assert.equal(f.calls.filter(call => call.url === MONDAY_TOKEN_URL).length, 1);
 });
 test('callback duplicates and arbitrary query fields are rejected without reflecting their values', async t => {
   const f = await fixture(t); const flow = await f.begin();
   for (const query of [`state=${flow.state}&state=${flow.state}&code=synthetic-code`, `state=${flow.state}&code=synthetic-code&access_token=synthetic-sensitive`, 'code=synthetic-sensitive']) {
     const result = await f.api.inject({ url: `${MONDAY_CALLBACK_PATH}?${query}`, headers: { ...f.callbackHeaders, cookie: flow.nonceCookie } });
-    assert.equal(result.headers.location, '/office/monday?oauth=error'); assert.ok(!result.body.includes('synthetic-sensitive'));
+    assert.equal(result.headers.location, '/office/monday?oauth=error&stage=callback_query&reason=oauth_state_invalid'); assert.ok(!result.body.includes('synthetic-sensitive'));
     assert.equal(result.headers['set-cookie'], undefined);
   }
   assert.equal(f.calls.length, 0);
@@ -347,7 +348,7 @@ test('callback duplicates and arbitrary query fields are rejected without reflec
 test('provider refusal and expired state return a fixed error redirect without token requests', async t => {
   const f = await fixture(t); const flow = await f.begin();
   const refused = await f.api.inject({ url: `${MONDAY_CALLBACK_PATH}?state=${flow.state}&error=access_denied&error_description=synthetic-private-message`, headers: { ...f.callbackHeaders, cookie: flow.nonceCookie } });
-  assert.equal(refused.headers.location, '/office/monday?oauth=error'); assert.ok(!refused.body.includes('synthetic-private-message'));
+  assert.equal(refused.headers.location, '/office/monday?oauth=error&stage=provider_decision&reason=oauth_denied'); assert.ok(!refused.body.includes('synthetic-private-message'));
   assert.equal(cookie(refused, MONDAY_OAUTH_NONCE_COOKIE), `${MONDAY_OAUTH_NONCE_COOKIE}=`);
   assert.match(String(refused.headers['set-cookie']), /Max-Age=0/u);
   const refusedStatus = await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders });
@@ -355,7 +356,7 @@ test('provider refusal and expired state return a fixed error redirect without t
   assert.equal(refusedStatus.json().code, 'oauth_denied');
   const second = await f.begin(); f.setTime(AT + 300_000);
   const expired = await f.api.inject({ url: `${MONDAY_CALLBACK_PATH}?state=${second.state}&code=synthetic-code`, headers: { ...f.callbackHeaders, cookie: second.nonceCookie } });
-  assert.equal(expired.headers.location, '/office/monday?oauth=error'); assert.equal(f.calls.length, 0);
+  assert.equal(expired.headers.location, '/office/monday?oauth=error&stage=callback_state&reason=oauth_state_expired'); assert.equal(f.calls.length, 0);
 });
 test('owner reads accept only allowlisted board IDs and return provenance outside DEMO transactions', async t => {
   const f = await fixture(t); const flow = await f.complete();
@@ -379,4 +380,70 @@ test('dependency failures return a safe HTTP code without reflecting error detai
   f.monday.oauthService!.status = async () => { throw new Error('synthetic-private-database-token-message'); };
   const result = await f.api.inject({ url: '/office-api/monday/status', headers: owner.ownerHeaders });
   assert.equal(result.statusCode, 503); assert.deepEqual(result.json(), { error: 'OFFICE_STORAGE_UNAVAILABLE' });
+});
+
+test('callback diagnostic separates query, browser nonce and bound state failures without reflecting input', async t => {
+  const f = await fixture(t); const flow = await f.begin();
+  const cases = [
+    { url: `${MONDAY_CALLBACK_PATH}?code=synthetic-private-code`, headers: f.callbackHeaders, stage: 'callback_query' },
+    { url: `${MONDAY_CALLBACK_PATH}?state=${flow.state}&code=synthetic-private-code`, headers: f.callbackHeaders, stage: 'callback_nonce' },
+    { url: `${MONDAY_CALLBACK_PATH}?state=${'a'.repeat(43)}&code=synthetic-private-code`, headers: { ...f.callbackHeaders, cookie: flow.nonceCookie }, stage: 'callback_state' },
+  ];
+  for (const scenario of cases) {
+    const response = await f.api.inject(scenario);
+    assert.equal(response.statusCode, 303);
+    assert.equal(response.headers.location, `/office/monday?oauth=error&stage=${scenario.stage}&reason=oauth_state_invalid`);
+    assert.equal(response.headers['set-cookie'], undefined);
+    for (const secret of [flow.state, flow.nonceCookie, 'synthetic-private-code']) {
+      assert.ok(!String(response.headers.location).includes(secret)); assert.ok(!response.body.includes(secret));
+    }
+  }
+  assert.equal(f.calls.length, 0);
+  assert.equal((await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders })).json().pending, true);
+});
+
+test('callback diagnostic reflects only closed internal stages and known error codes', async t => {
+  const f = await fixture(t); const flow = await f.begin();
+  // The observer is internal metadata; provider and exception contents never
+  // become return parameters, even if a dependency offers arbitrary strings.
+  for (const known of [true, false]) {
+    f.monday.oauthService!.callback = async (_params, _nonce, onStage) => {
+      onStage?.('token_exchange');
+      onStage?.('synthetic-private-stage' as never);
+      if (known) throw new MondayOAuthError('token_invalid', 502);
+      throw new Error('synthetic-private-error-token-url');
+    };
+    const response = await f.api.inject({ url: `${MONDAY_CALLBACK_PATH}?state=${flow.state}&code=synthetic-private-code`, headers: { ...f.callbackHeaders, cookie: flow.nonceCookie } });
+    assert.equal(response.headers.location, `/office/monday?oauth=error&stage=token_exchange&reason=${known ? 'token_invalid' : 'callback_failed'}`);
+    assert.equal(response.headers['set-cookie'], undefined);
+    assert.ok(!response.body.includes('synthetic-private'));
+  }
+  assert.equal(f.calls.length, 0);
+});
+
+test('callback diagnostic carries verified failure phases through HTTP while never granting reads', async t => {
+  const cases = [
+    { fault: 'token_http', stage: 'token_exchange', reason: 'token_invalid', calls: 1 },
+    { fault: 'token_scope', stage: 'token_response', reason: 'scope_mismatch', calls: 1 },
+    { fault: 'identity', stage: 'identity_check', reason: 'identity_mismatch', calls: 2 },
+    { fault: 'boards', stage: 'board_access_check', reason: 'board_access_unverified', calls: 3 },
+  ] as const;
+  for (const scenario of cases) {
+    const f = await fixture(t, false, scenario.fault); const flow = await f.begin();
+    const response = await f.api.inject({ url: `${MONDAY_CALLBACK_PATH}?state=${flow.state}&code=synthetic-private-code&scope=boards%3Aread`, headers: { ...f.callbackHeaders, cookie: flow.nonceCookie } });
+    assert.equal(response.statusCode, 303);
+    assert.equal(response.headers.location, `/office/monday?oauth=error&stage=${scenario.stage}&reason=${scenario.reason}`);
+    assert.match(String(response.headers['set-cookie']), /Max-Age=0/u);
+    const status = (await f.api.inject({ url: '/office-api/monday/status', headers: flow.ownerHeaders })).json();
+    assert.equal(status.pending, false); assert.equal(status.state, 'error'); assert.equal(status.code, scenario.reason);
+    assert.equal(status.actorId, null); assert.equal(status.boardAccessVerified, false); assert.deepEqual(status.scopes, []);
+    assert.equal(f.calls.length, scenario.calls);
+    assert.equal(f.calls.filter(call => call.url === MONDAY_TOKEN_URL).length, 1);
+    const read = await f.api.inject({ method: 'POST', url: '/office-api/monday/read-board', headers: flow.ownerHeaders, payload: { boardId: MONDAY_READ_BOARD_IDS[0] } });
+    assert.equal(read.statusCode, 409); assert.equal(read.json().error, 'not_connected');
+    assert.equal(f.calls.length, scenario.calls);
+    for (const value of [String(response.headers.location), response.body, JSON.stringify(status)]) {
+      for (const privateValue of [flow.state, flow.nonceCookie, 'synthetic-private-code', 'synthetic-private-provider-error', 'synthetic-refresh-', 'synthetic-client-secret', 'boards:write']) assert.ok(!value.includes(privateValue));
+    }
+  }
 });

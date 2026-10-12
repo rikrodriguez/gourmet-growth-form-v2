@@ -4,6 +4,7 @@ import test from 'node:test';
 import { MemoryMondayStore, MondayVault, type MondayStore, type MondayStoredRecord } from '../../src/office/backend/monday-store';
 import { MONDAY_READ_BOARD_IDS, MONDAY_READ_SCOPES, type MondayIdentity, type MondayReadClient, type MondayReadInput } from '../../src/office/backend/monday-read';
 import { createMondayOAuthService, parseMondayConfiguration, MONDAY_OAUTH_CALLBACK, MONDAY_OAUTH_ORIGIN, MONDAY_AUTHORIZED_USER_ID, MONDAY_AUTHORIZED_USER_EMAIL, MONDAY_CONFIGURED_ACCOUNT_ID, MONDAY_AUTHORIZE_URL, MONDAY_TOKEN_URL, MONDAY_REVOKE_URL, MondayOAuthError, type MondayConfiguration, type MondayOAuthOptions } from '../../src/office/backend/monday-oauth';
+import type { MondayOAuthCallbackStage } from '../../src/office/monday-oauth-return';
 
 const NOW = Date.parse('2026-10-11T12:00:00.000Z');
 const NONCE = Buffer.alloc(32, 17).toString('base64url');
@@ -66,6 +67,106 @@ async function connectionRecord(fixture: Setup) {
   const stored = await fixture.store.read('monday-connection-ricardo'); assert.ok(stored);
   return { stored, value: fixture.vault.open(stored.value, 'monday-connection-ricardo') as Record<string, unknown> };
 }
+
+const CALLBACK_STAGES: MondayOAuthCallbackStage[] = ['callback_state', 'provider_decision', 'persist_connection', 'token_exchange', 'token_response', 'identity_check', 'board_access_check', 'persist_connection'];
+const PHASE_CANARY = 'synthetic-sensitive-phase-canary';
+function tracedCallback(fixture: Pick<Setup, 'service'>, params: Parameters<Setup['service']['callback']>[0], observer: (stage: MondayOAuthCallbackStage) => void) {
+  return fixture.service.callback(params, NONCE, observer);
+}
+
+test('callback phase observer reports only enums for successful bound consent', async () => {
+  const fixture = setup(); const { state } = await begin(fixture); const stages: MondayOAuthCallbackStage[] = [];
+  const result = await tracedCallback(fixture, { state, code: PHASE_CANARY }, stage => stages.push(stage));
+  assert.deepEqual(stages, CALLBACK_STAGES);
+  assert.equal(result.state, 'connected'); assert.equal(result.code, null); assert.equal(result.pending, false);
+  assert.deepEqual(result.scopes, MONDAY_READ_SCOPES); assert.equal(result.scopes.length, 3);
+  const { value } = await connectionRecord(fixture);
+  assert.deepEqual((value.boardProof as { boardIds: string[] }).boardIds, MONDAY_READ_BOARD_IDS);
+  assert.equal(MONDAY_READ_BOARD_IDS.length, 5);
+  assert.equal(fixture.calls.length, 1); assert.equal(fixture.identityCalls(), 1); assert.equal(fixture.verificationCalls(), 1);
+  for (const sensitive of [state, NONCE, PHASE_CANARY, ENV.MONDAY_CLIENT_SECRET, grant(NOW).access_token as string]) assert.ok(!JSON.stringify(stages).includes(sensitive));
+});
+test('callback phase observer retains each original failure stage after terminal cleanup', async () => {
+  const cases = [
+    ['callback_state', 'oauth_state_invalid'], ['provider_decision', 'oauth_denied'], ['token_exchange', 'code_exchange_uncertain'],
+    ['token_response', 'token_invalid'], ['identity_check', 'identity_mismatch'], ['board_access_check', 'board_access_unverified'],
+  ] as const;
+  for (const [stage, code] of cases) {
+    const fixture = setup(); const { state } = await begin(fixture); const stages: MondayOAuthCallbackStage[] = [];
+    if (stage === 'token_exchange') fixture.setProvider(async () => { throw new Error(PHASE_CANARY); });
+    if (stage === 'token_response') fixture.setProvider(async () => json(grant(NOW, 'invalid', { access_token: PHASE_CANARY })));
+    if (stage === 'identity_check') fixture.setIdentity(async () => ({ id: '999', email: `${PHASE_CANARY}@invalid.test`, readAt: new Date(NOW).toISOString() }));
+    if (stage === 'board_access_check') fixture.setBoardAccess(async () => ({ boardIds: MONDAY_READ_BOARD_IDS.slice(0, 4), readAt: new Date(NOW).toISOString() }));
+    const params = stage === 'callback_state' ? { state: 'malformed', code: PHASE_CANARY } : stage === 'provider_decision' ? { state, error: PHASE_CANARY } : { state, code: PHASE_CANARY };
+    if (stage === 'callback_state') await assert.rejects(tracedCallback(fixture, params, value => stages.push(value)), errorCode(code));
+    else {
+      const result = await tracedCallback(fixture, params, value => stages.push(value));
+      assert.equal(result.code, code); assert.equal(result.pending, false);
+    }
+    assert.equal(stages.at(-1), stage);
+    assert.ok(stages.every(value => CALLBACK_STAGES.includes(value)));
+    for (const sensitive of [state, NONCE, PHASE_CANARY, ENV.MONDAY_CLIENT_SECRET]) assert.ok(!JSON.stringify(stages).includes(sensitive));
+    const calls = fixture.calls.length;
+    if (stage !== 'callback_state') await assert.rejects(tracedCallback(fixture, { state, code: PHASE_CANARY }, () => {}), errorCode('oauth_state_invalid'));
+    assert.equal(fixture.calls.length, calls);
+  }
+});
+test('callback phase observer reports persist_connection when exchange reservation loses CAS', async () => {
+  const fixture = setup(); const { state } = await begin(fixture); const stages: MondayOAuthCallbackStage[] = [];
+  const conflicting: MondayStore = { read: key => fixture.store.read(key), compareAndSet: (key, revision, value) => key === 'monday-connection-ricardo' ? Promise.resolve(false) : fixture.store.compareAndSet(key, revision, value) };
+  const service = createMondayOAuthService({ ...fixture.options, store: conflicting });
+  await assert.rejects(tracedCallback({ service }, { state, code: PHASE_CANARY }, stage => stages.push(stage)), errorCode('connection_changed'));
+  assert.deepEqual(stages, ['callback_state', 'provider_decision', 'persist_connection']);
+  assert.equal(fixture.calls.length, 0);
+});
+test('callback phase observer reports persist_connection when successful finalization loses CAS', async () => {
+  const fixture = setup(); const { state } = await begin(fixture); const stages: MondayOAuthCallbackStage[] = [];
+  const conflicting: MondayStore = { read: key => fixture.store.read(key), async compareAndSet(key, revision, record) {
+    if (key === 'monday-connection-ricardo' && record !== null && (fixture.vault.open(record, key) as { state: string }).state === 'connected') return false;
+    return fixture.store.compareAndSet(key, revision, record);
+  } };
+  const service = createMondayOAuthService({ ...fixture.options, store: conflicting });
+  await assert.rejects(tracedCallback({ service }, { state, code: PHASE_CANARY }, stage => stages.push(stage)), errorCode('connection_changed'));
+  assert.deepEqual(stages, CALLBACK_STAGES); assert.equal(stages.at(-1), 'persist_connection');
+  assert.equal(fixture.calls.length, 1);
+});
+test('callback phase observer reports persist_connection when terminal cleanup fails', async () => {
+  for (const denied of [false, true]) {
+    const fixture = setup(); const { state } = await begin(fixture); const stages: MondayOAuthCallbackStage[] = [];
+    fixture.setProvider(async () => { throw new Error(PHASE_CANARY); });
+    const unavailable: MondayStore = { read: key => fixture.store.read(key), async compareAndSet(key, revision, record) {
+      if (key === 'monday-connection-ricardo' && record !== null && (fixture.vault.open(record, key) as { attempt: unknown }).attempt === null) throw new Error(PHASE_CANARY);
+      return fixture.store.compareAndSet(key, revision, record);
+    } };
+    const service = createMondayOAuthService({ ...fixture.options, store: unavailable });
+    await assert.rejects(tracedCallback({ service }, denied ? { state, error: PHASE_CANARY } : { state, code: PHASE_CANARY }, stage => stages.push(stage)), errorCode('storage_unavailable'));
+    assert.equal(stages.at(-1), 'persist_connection');
+    assert.equal(fixture.calls.length, denied ? 0 : 1);
+    assert.ok(!JSON.stringify(stages).includes(PHASE_CANARY));
+  }
+});
+test('callback phase observer exceptions cannot change success or terminal failure', async () => {
+  for (const failing of [false, true]) {
+    const fixture = setup(); const { state } = await begin(fixture); const stages: MondayOAuthCallbackStage[] = [];
+    if (failing) fixture.setProvider(async () => json(grant(NOW, 'invalid', { scope: 'boards:write' })));
+    const result = await tracedCallback(fixture, { state, code: PHASE_CANARY }, stage => { stages.push(stage); throw new Error(PHASE_CANARY); });
+    assert.equal(result.state, failing ? 'error' : 'connected'); assert.equal(result.code, failing ? 'scope_mismatch' : null); assert.equal(result.pending, false);
+    assert.equal(stages.at(-1), failing ? 'token_response' : 'persist_connection');
+    assert.equal(fixture.calls.length, 1); assert.equal(fixture.identityCalls(), failing ? 0 : 1); assert.equal(fixture.verificationCalls(), failing ? 0 : 1);
+    assert.ok(!JSON.stringify(stages).includes(PHASE_CANARY));
+  }
+});
+test('callback phase observer remains request local after a timed out transport resolves late', async () => {
+  const fixture = setup({ requestTimeoutMs: 5 }); const { state } = await begin(fixture); const stages: MondayOAuthCallbackStage[] = [];
+  const gate = deferred<Response>(); fixture.setProvider(() => gate.promise);
+  const result = await tracedCallback(fixture, { state, code: PHASE_CANARY }, stage => stages.push(stage));
+  assert.equal(result.code, 'code_exchange_uncertain'); assert.equal(result.pending, false); assert.equal(stages.at(-1), 'token_exchange');
+  const finishedStages = [...stages]; gate.resolve(json(grant(NOW))); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(stages, finishedStages); assert.equal(fixture.calls.length, 1);
+  fixture.setProvider(async () => json(grant(NOW, 'second'))); const next = await begin(fixture); const secondStages: MondayOAuthCallbackStage[] = [];
+  assert.equal((await tracedCallback(fixture, { state: next.state, code: PHASE_CANARY }, stage => secondStages.push(stage))).state, 'connected');
+  assert.deepEqual(secondStages, CALLBACK_STAGES); assert.deepEqual(stages, finishedStages); assert.equal(fixture.calls.length, 2);
+});
 
 test('configuration defaults disabled without reading any credential-bearing property', () => {
   for (const flag of [undefined, '', 'false']) {

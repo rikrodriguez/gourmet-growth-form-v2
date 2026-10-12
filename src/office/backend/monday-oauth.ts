@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { MondayStore, MondayStoredRecord, MondayVault } from './monday-store';
 import { MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS, MONDAY_READ_SCOPES, type MondayBoardId, type MondayReadClient, type MondayReadItem, type MondayReadResult, type MondayUpdateItem } from './monday-read';
 import { withMondayConfigurationDiagnostic, type MondayConfigurationField, type MondayConfigurationReason } from './monday-diagnostics';
+import type { MondayOAuthCallbackStage } from '../monday-oauth-return';
 
 export const MONDAY_OWNER_ID = 'ricardo' as const;
 // This release authorizes one pilot identity. The account ID is corroborated
@@ -41,7 +42,7 @@ export type MondayOAuthStart = { authorizationUrl: string; expiresAt: string };
 export interface MondayOAuthService {
   status(): Promise<MondayOAuthStatus>;
   startOAuth(input: { ownerId: string; browserNonce: string }): Promise<MondayOAuthStart>;
-  callback(params: MondayOAuthCallbackParams, browserNonce: string): Promise<MondayOAuthStatus>;
+  callback(params: MondayOAuthCallbackParams, browserNonce: string, onStage?: (stage: MondayOAuthCallbackStage) => void): Promise<MondayOAuthStatus>;
   refresh(): Promise<MondayOAuthStatus>;
   readBoard(boardId: MondayBoardId): Promise<MondayReadResult<MondayReadItem>>;
   readUpdates(boardId: MondayBoardId): Promise<MondayReadResult<MondayUpdateItem>>;
@@ -280,14 +281,16 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
       try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown; } catch { fail('token_invalid', 502); }
     });
   }
-  async function verify(tokens: Tokens): Promise<{ actorId: string; identityReadAt: string; boardProof: BoardProof }> {
+  async function verify(tokens: Tokens, onStage?: (stage: MondayOAuthCallbackStage) => void): Promise<{ actorId: string; identityReadAt: string; boardProof: BoardProof }> {
     const cfg = enabled();
+    onStage?.('identity_check');
     const identity = row(await bounded(signal => options.readClient.getIdentity(tokens.accessToken, signal)), 'identity_mismatch');
     exact(identity, ['id', 'email', 'readAt'], [], 'identity_mismatch');
     if (identifier(identity.id, 'identity_mismatch') !== cfg.expectedUserId || email(identity.email, 'identity_mismatch') !== cfg.expectedAccountEmail) fail('identity_mismatch', 403);
     const identityReadAt = iso(identity.readAt, 'identity_mismatch');
     if (Date.parse(identityReadAt) > clock() + 30_000 || Date.parse(identityReadAt) < clock() - STATE_TTL_MS) fail('identity_mismatch', 403);
     let proof: Row;
+    onStage?.('board_access_check');
     try { proof = row(await bounded(signal => options.readClient.verifyBoardAccess(tokens.accessToken, signal)), 'board_access_unverified'); }
     catch { fail('board_access_unverified', 403); }
     exact(proof, ['boardIds', 'readAt'], [], 'board_access_unverified');
@@ -331,7 +334,11 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
       for (const [key, value] of Object.entries({ client_id: cfg.clientId, redirect_uri: cfg.redirectUri, response_type: 'code', scope: MONDAY_READ_SCOPES.join(' '), state, code_challenge: hash(verifier), code_challenge_method: 'S256' })) url.searchParams.set(key, value);
       return { authorizationUrl: url.toString(), expiresAt: new Date(expiresAt).toISOString() };
     },
-    async callback(params, browserNonce) {
+    async callback(params, browserNonce, onStage) {
+      const reportStage = (stage: MondayOAuthCallbackStage) => {
+        try { onStage?.(stage); } catch { /* Request-local diagnostics never change OAuth. */ }
+      };
+      reportStage('callback_state');
       const cfg = enabled(); const checked = row(params, 'oauth_state_invalid'); exact(checked, ['state'], ['code', 'error', 'status'], 'oauth_state_invalid');
       const state = opaque(checked.state, 'oauth_state_invalid'); const browserHash = nonceHash(browserNonce);
       if (checked.status !== undefined) callbackField(checked.status, 100);
@@ -355,17 +362,27 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
       if (authorization.expiresAt <= clock()) { await current(); fail('oauth_state_expired'); }
       const connection = await current();
       if (connection.record.attempt?.id !== authorization.attemptId || connection.record.attempt.kind !== 'authorize') fail('oauth_state_invalid');
-      if (checked.error !== undefined || checked.code === undefined) return finish(authorization.attemptId, value => terminal(value, 'oauth_denied'));
+      reportStage('provider_decision');
+      if (checked.error !== undefined || checked.code === undefined) {
+        try { return await finish(authorization.attemptId, value => terminal(value, 'oauth_denied')); }
+        catch (error) { reportStage('persist_connection'); throw error; }
+      }
       const attempt: Attempt = { id: authorization.attemptId, kind: 'exchange', deadline: clock() + timeoutMs * 3 + 1000 };
+      reportStage('persist_connection');
       if (!await cas(connection.revision, { ...connection.record, attempt, updatedAt: stamp() })) fail('connection_changed', 409);
+      reportStage('token_exchange');
       try {
-        const tokens = parsedTokens(await post(MONDAY_TOKEN_URL, { grant_type: 'authorization_code', client_id: cfg.clientId, client_secret: cfg.clientSecret, code: checked.code, redirect_uri: cfg.redirectUri, code_verifier: authorization.verifier }), clock());
-        const identity = await verify(tokens);
+        const response = await post(MONDAY_TOKEN_URL, { grant_type: 'authorization_code', client_id: cfg.clientId, client_secret: cfg.clientSecret, code: checked.code, redirect_uri: cfg.redirectUri, code_verifier: authorization.verifier });
+        reportStage('token_response');
+        const tokens = parsedTokens(response, clock());
+        const identity = await verify(tokens, reportStage);
+        reportStage('persist_connection');
         return await finish(attempt.id, value => ({ ...value, ...identity, state: 'connected', code: null, generation: random(), tokens, connectedAt: stamp(), lastReadAt: null }));
       } catch (error) {
         if (error instanceof MondayOAuthError && error.code === 'connection_changed') throw error;
         const code = error instanceof MondayOAuthError ? error.code : 'code_exchange_uncertain';
-        return finish(attempt.id, value => terminal(value, code));
+        try { return await finish(attempt.id, value => terminal(value, code)); }
+        catch (cleanupError) { reportStage('persist_connection'); throw cleanupError; }
       }
     },
     async refresh() {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { MondayReadItem, MondayReadResult, MondayUpdateItem } from './backend/monday-read';
+import { parseMondayOAuthReturn } from './monday-oauth-return';
 
 type OwnerSession = { available: boolean; authenticated: false } | { available: true; authenticated: true; principal: 'ricardo'; csrfToken: string; expiresAt: string };
 type OwnerLogin = { csrfToken: string; expiresAt: string; principal?: 'ricardo' };
@@ -151,6 +152,7 @@ export function MondayOwnerPage() {
   const [busy, setBusy] = useState<string | null>('initial');
   const [error, setError] = useState<string | null>(null);
   const [loginDiagnostic, setLoginDiagnostic] = useState<LoginDiagnostic | null>(null);
+  const [returnDiagnostic] = useState(() => parseMondayOAuthReturn(window.location.search));
   const csrfToken = useRef<string | null>(null);
   const operation = useRef(false);
   const loginForm = useRef<HTMLFormElement>(null);
@@ -240,6 +242,7 @@ export function MondayOwnerPage() {
     </form></section>}
     {session?.authenticated && <section className="wide-panel" aria-label="Conexión Monday del propietario">
       <div className="panel-heading" style={{ flexWrap: 'wrap' }}><h2>Conexión de la identidad Info</h2><button className="button button-secondary" disabled={disabled} onClick={() => change('/owner/logout')}>Cerrar sesión del propietario</button></div>
+      {returnDiagnostic && <p data-testid="monday-oauth-return-diagnostic" style={{ overflowWrap: 'anywhere' }}><span>Diagnóstico del retorno OAuth (informativo).</span>{' '}<code>stage={returnDiagnostic.stage} | code={returnDiagnostic.reason}</code></p>}
       {connection && <>
         <h3 data-testid="monday-connection-state">{STATE_LABELS[connection.state]}</h3>
         {connection.state === 'disabled' && <p>Monday desactivado. La configuración y el consentimiento están pendientes.</p>}

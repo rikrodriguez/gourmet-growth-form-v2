@@ -317,3 +317,116 @@ test('the authorized Info integration shows only confirmed state and bounded rea
   expect(monday.calls.filter(call => call.path === `${api}/read-board`)).toHaveLength(1);
   expect(monday.calls.filter(call => call.path === `${api}/read-updates`)).toHaveLength(1);
 });
+
+function syntheticCallbackOwner(monday: MondayHarness, confirmed: ReturnType<typeof connection>) {
+  let authenticated = false;
+  monday.respond('GET', `${api}/owner/session`, () => ({ body: authenticated ? ownerSession : { available: true, authenticated: false } }));
+  monday.respond('GET', `${api}/owner/login`, { body: { csrfToken, expiresAt } });
+  monday.respond('POST', `${api}/owner/login`, route => {
+    expectOwnerCsrf(route);
+    authenticated = true;
+    return { body: { principal: 'ricardo', csrfToken, expiresAt } };
+  });
+  monday.respond('GET', `${api}/status`, { body: confirmed });
+}
+
+async function expectPrivateCallbackLogin(page: Page, monday: MondayHarness, password: string) {
+  expect(monday.calls.filter(call => call.method === 'POST')).toEqual([{ method: 'POST', path: `${api}/owner/login` }]);
+  await expect(page.getByLabel('Contraseña del propietario', { exact: true })).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText(password);
+  await expect(page.locator('body')).not.toContainText(csrfToken);
+  await expectNoPersistedPassword(page, password);
+  await expectFits(page);
+}
+
+test('callback phase marker remains informational after synthetic owner login', async ({ page, monday }) => {
+  const password = 'SYNTHETIC_CALLBACK_OWNER_PASSWORD_ONLY';
+  syntheticCallbackOwner(monday, { ...connection('disconnected'), pending: true });
+  await page.goto('/office/monday?oauth=error&stage=token_response&reason=scope_mismatch');
+  await expect(page.getByTestId('monday-oauth-return-diagnostic')).toHaveCount(0);
+  expect((await submitSyntheticOwner(page, password)).status()).toBe(200);
+  await expect(page.getByTestId('monday-connection-state')).toHaveText('Desconectado');
+  await expect(page.getByText('Consentimiento pendiente. El estado conectado aún no está confirmado.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeDisabled();
+  const marker = page.getByTestId('monday-oauth-return-diagnostic');
+  await expect(marker).toBeVisible();
+  await expect(marker).toHaveText('Diagnóstico del retorno OAuth (informativo). stage=token_response | code=scope_mismatch');
+  await expect(page.getByTestId('monday-reading')).toHaveCount(0);
+  expect(monday.calls.filter(call => call.path === `${api}/status`).length).toBeGreaterThan(0);
+  await expectPrivateCallbackLogin(page, monday, password);
+});
+
+test('a valid callback error marker keeps the connection confirmed by the API', async ({ page, monday }) => {
+  monday.respond('GET', `${api}/owner/session`, { body: ownerSession });
+  monday.respond('GET', `${api}/status`, { body: connection() });
+  await page.goto('/office/monday?oauth=error&stage=token_response&reason=scope_mismatch');
+  await expect(page.getByTestId('monday-connection-state')).toHaveText('Conectado');
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeEnabled();
+  await expect(page.getByTestId('monday-oauth-return-diagnostic')).toHaveText('Diagnóstico del retorno OAuth (informativo). stage=token_response | code=scope_mismatch');
+  await expect(page.getByTestId('monday-reading')).toHaveCount(0);
+  expect(monday.calls.every(call => call.method === 'GET' && [`${api}/owner/session`, `${api}/status`].includes(call.path))).toBe(true);
+  await expectFits(page);
+});
+
+test('a forged callback complete marker grants neither owner session nor data access', async ({ page, monday }) => {
+  monday.respond('GET', `${api}/owner/session`, { body: { available: true, authenticated: false } });
+  monday.respond('GET', `${api}/owner/login`, { body: { csrfToken, expiresAt } });
+  await page.goto('/office/monday?oauth=complete');
+  await expect(page.getByRole('button', { name: 'Entrar como propietario', exact: true })).toBeEnabled();
+  await expect(page.getByTestId('monday-connection-state')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('monday-oauth-return-diagnostic')).toHaveCount(0);
+  expect(monday.calls.every(call => call.method === 'GET' && [`${api}/owner/session`, `${api}/owner/login`].includes(call.path))).toBe(true);
+  await expectFits(page);
+});
+
+test('a forged callback complete marker cannot connect an authenticated disconnected owner', async ({ page, monday }) => {
+  monday.respond('GET', `${api}/owner/session`, { body: ownerSession });
+  monday.respond('GET', `${api}/status`, { body: connection('disconnected') });
+  await page.goto('/office/monday?oauth=complete');
+  await expect(page.getByTestId('monday-connection-state')).toHaveText('Desconectado');
+  await expect(page.getByRole('button', { name: 'Conectar Monday', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeDisabled();
+  await expect(page.getByTestId('monday-oauth-return-diagnostic')).toHaveCount(0);
+  expect(monday.calls.every(call => call.method === 'GET' && [`${api}/owner/session`, `${api}/status`].includes(call.path))).toBe(true);
+  await expectFits(page);
+});
+
+const callbackRawSentinel = 'SYNTHETIC_PRIVATE_CALLBACK_QUERY_MUST_NOT_APPEAR';
+const invalidCallbackMarkers = [
+  { name: 'unknown stage', query: `oauth=error&stage=${callbackRawSentinel}&reason=scope_mismatch` },
+  { name: 'unknown reason', query: `oauth=error&stage=token_response&reason=${callbackRawSentinel}` },
+  { name: 'unknown outcome', query: `oauth=${callbackRawSentinel}&stage=token_response&reason=scope_mismatch` },
+  { name: 'case-altered stage', query: 'oauth=error&stage=TOKEN_RESPONSE&reason=scope_mismatch' },
+  { name: 'case-altered reason', query: 'oauth=error&stage=token_response&reason=SCOPE_MISMATCH' },
+  { name: 'padded enum', query: 'oauth=error&stage=token_response%20&reason=scope_mismatch' },
+  { name: 'padded reason', query: 'oauth=error&stage=token_response&reason=scope_mismatch%20' },
+  { name: 'missing stage', query: 'oauth=error&reason=scope_mismatch' },
+  { name: 'missing reason', query: 'oauth=error&stage=token_response' },
+  { name: 'missing outcome', query: 'stage=token_response&reason=scope_mismatch' },
+  { name: 'duplicate outcome', query: 'oauth=error&oauth=error&stage=token_response&reason=scope_mismatch' },
+  { name: 'duplicate stage', query: 'oauth=error&stage=token_response&stage=token_response&reason=scope_mismatch' },
+  { name: 'duplicate reason', query: 'oauth=error&stage=token_response&reason=scope_mismatch&reason=scope_mismatch' },
+  { name: 'encoded duplicate key', query: 'oauth=error&%6fauth=error&stage=token_response&reason=scope_mismatch' },
+  { name: 'extra query field', query: `oauth=error&stage=token_response&reason=scope_mismatch&token=${callbackRawSentinel}` },
+  { name: 'raw provider description', query: `oauth=error&stage=token_response&reason=scope_mismatch&error_description=${callbackRawSentinel}` },
+  { name: 'complete with error fields', query: 'oauth=complete&stage=token_response&reason=scope_mismatch' },
+] as const;
+
+for (const invalid of invalidCallbackMarkers) test(`callback marker ignores ${invalid.name} without blocking owner login or status`, async ({ page, monday }) => {
+  const password = 'SYNTHETIC_INVALID_CALLBACK_OWNER_PASSWORD_ONLY';
+  syntheticCallbackOwner(monday, connection('disconnected'));
+  await page.goto(`/office/monday?${invalid.query}`);
+  expect((await submitSyntheticOwner(page, password)).status()).toBe(200);
+  await expect(page.getByTestId('monday-connection-state')).toHaveText('Desconectado');
+  await expect(page.getByRole('button', { name: 'Conectar Monday', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(page.getByTestId('monday-oauth-return-diagnostic')).toHaveCount(0);
+  await expect(page.getByTestId('monday-reading')).toHaveCount(0);
+  expect(await page.evaluate(marker => document.documentElement.outerHTML.includes(marker), callbackRawSentinel), 'Raw callback input never enters the DOM').toBe(false);
+  expect(monday.calls.filter(call => call.path === `${api}/status`).length).toBeGreaterThan(0);
+  await expectPrivateCallbackLogin(page, monday, password);
+});

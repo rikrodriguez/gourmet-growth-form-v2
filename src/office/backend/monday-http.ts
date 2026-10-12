@@ -7,10 +7,10 @@ import { MONDAY_OWNER_CSRF_HEADER, MONDAY_OWNER_LOGIN_COOKIE, MONDAY_OWNER_COOKI
 import { MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS } from './monday-read';
 import type { MondayBoardId } from './monday-read';
 import type { MondayRuntime } from './monday-runtime';
+import { isMondayOAuthCallbackStage, mondayOAuthCallbackReason, mondayOAuthErrorReturn, type MondayOAuthCallbackStage } from '../monday-oauth-return';
 
 export const MONDAY_CALLBACK_PATH = '/office-api/monday/oauth/callback';
 export const MONDAY_OAUTH_NONCE_COOKIE = '__Secure-gourmet-monday-oauth-nonce';
-const RETURN_PATH = '/office/monday';
 const NONCE = /^[A-Za-z0-9_-]{43}$/;
 
 export function isEnabledMondayCallback(request: FastifyRequest, runtime?: MondayRuntime): boolean {
@@ -112,15 +112,25 @@ export function registerMondayRoutes(app: FastifyInstance, runtime?: MondayRunti
     // Only this GET may bypass staging Basic Auth. Host, TLS, original peer and
     // Origin checks still run globally. OAuth state + Lax nonce bind the return;
     // Strict owner cookies are deliberately unnecessary on the provider return.
-    let outcome = 'error';
+    let stage: MondayOAuthCallbackStage = 'callback_query';
+    let reason = mondayOAuthCallbackReason(null);
     try {
-      const result = await service().callback(callbackParams(request.url), browserNonce(request.headers.cookie));
+      const params = callbackParams(request.url);
+      stage = 'callback_nonce';
+      const nonce = browserNonce(request.headers.cookie);
+      stage = 'callback_state';
+      const result = await service().callback(params, nonce, next => {
+        if (isMondayOAuthCallbackStage(next)) stage = next;
+      });
       // Clear only after state and nonce were validated and the callback finished.
       // An unbound callback must not erase a legitimate browser's live nonce.
       reply.header('Set-Cookie', nonceCookie('', 0));
-      if (result.state === 'connected' && result.code === null && !result.pending) outcome = 'complete';
-    } catch { /* Fixed redirect only; no raw codes, provider errors or secrets. */ }
-    return reply.code(303).redirect(`${RETURN_PATH}?oauth=${outcome}`);
+      if (result.state === 'connected' && result.code === null && !result.pending) return reply.code(303).redirect('/office/monday?oauth=complete');
+      reason = mondayOAuthCallbackReason(result.code);
+    } catch (error) {
+      reason = mondayOAuthCallbackReason(error instanceof MondayOAuthError ? error.code : null);
+    }
+    return reply.code(303).redirect(mondayOAuthErrorReturn(stage, reason));
   });
   app.post('/office-api/monday/refresh', async request => {
     authorize(request, true); body(request, []);
