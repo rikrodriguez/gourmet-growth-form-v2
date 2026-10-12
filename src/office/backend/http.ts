@@ -11,10 +11,12 @@ import { isEnabledMondayCallback, registerMondayRoutes } from './monday-http';
 import { MondayOAuthError } from './monday-oauth';
 import { MondayReadError } from './monday-read';
 import type { MondayRuntime } from './monday-runtime';
+import { assertProvenanceRequest, projectDemoProvenance } from './provenance';
+import type { OfficeProvenanceOptions } from './provenance';
 
 const ORIGINS = new Set(['http://127.0.0.1:4175', 'http://localhost:4175', 'http://127.0.0.1:4180', 'http://localhost:4180']);
 const HOSTS = new Set([...ORIGINS].map(origin => new URL(origin).host));
-export function createOfficeApi(store: OfficeStore, options: { clock?: () => number; staging?: StagingAccess; staticRoot?: string; monday?: MondayRuntime } & SalesFlowOptions = {}) {
+export function createOfficeApi(store: OfficeStore, options: { clock?: () => number; staging?: StagingAccess; staticRoot?: string; monday?: MondayRuntime; provenance?: OfficeProvenanceOptions } & SalesFlowOptions = {}) {
   const clock = options.clock ?? Date.now;
   const sessions = new DevelopmentSessions(clock);
   const app = Fastify({ logger: false, bodyLimit: 16_384, trustProxy: false });
@@ -78,6 +80,13 @@ export function createOfficeApi(store: OfficeStore, options: { clock?: () => num
     const session = sessions.get(request.headers.cookie);
     return scopeSnapshot(projectOfficeSnapshot(await store.snapshot(), currentTime(clock)), session);
   });
+  app.get('/office-api/provenance', async request => {
+    const session = sessions.get(request.headers.cookie);
+    assertProvenanceRequest(request);
+    const now = currentTime(clock);
+    const snapshot = scopeSnapshot(projectOfficeSnapshot(await store.snapshot(), now), session);
+    return projectDemoProvenance(snapshot, session, new Date(now).toISOString(), options.provenance);
+  });
   const command = async (request: FastifyRequest) => {
     const session = sessions.get(request.headers.cookie);
     const parsed = parseOfficeCommand(request.body);
@@ -87,7 +96,7 @@ export function createOfficeApi(store: OfficeStore, options: { clock?: () => num
   };
   app.post('/office-api/commands', command);
   app.post('/office-api/command', command);
-  registerMondayRoutes(app, options.monday);
+  registerMondayRoutes(app, options.monday, clock);
   if (options.staticRoot) {
     app.register(fastifyStatic, { root: options.staticRoot, prefix: '/office/', index: false, dotfiles: 'deny', cacheControl: false });
     app.get('/', (_request, reply) => reply.redirect('/office/'));

@@ -350,7 +350,7 @@ export function MondayOwnerPage() {
   const providerWaiting = Math.max(0, Math.ceil((providerWaitUntilMs - clockMs) / 1000));
   const waiting = Math.max(providerWaiting, reading ? Math.max(0, Math.ceil((reading.waitUntilMs - clockMs) / 1000)) : 0);
   return <main className="office-main" style={{ maxWidth: 1000, padding: '24px 16px' }}>
-    <header className="panel-heading"><div><p className="eyebrow">GOURMET AI OFFICE · INTEGRACIÓN</p><h1>Monday · acceso del propietario</h1><p>Acceso de integración autorizado por Ricardo · identidad Info.</p></div></header>
+    <header className="panel-heading"><div><p className="eyebrow">GOURMET AI OFFICE · INTEGRACIÓN</p><h1>Monday · acceso del propietario</h1><p>Acceso de integración autorizado por Ricardo · identidad Info.</p><a className="provenance-link" href="/office/provenance">Procedencia</a></div></header>
     {error && <p className="inline-alert" role="alert">{error}</p>}
     {loginDiagnostic && <p data-testid="monday-owner-login-diagnostic" style={{ overflowWrap: 'anywhere' }}><code>post={loginDiagnostic.postAccepted ? 'accepted' : 'unconfirmed'} | stage={loginDiagnostic.stage} | http={loginDiagnostic.httpStatus ?? 'none'} | code={loginDiagnostic.code}</code></p>}
     {statusQueryResult && <p data-testid="monday-status-update-result" role="status">{statusQueryResult.kind === 'confirmed' ? `Estado guardado consultado: ${at(statusQueryResult.checkedAt)}` : 'La consulta del estado guardado no se confirmó.'}</p>}

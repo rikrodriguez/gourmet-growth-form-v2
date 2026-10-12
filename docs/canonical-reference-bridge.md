@@ -8,7 +8,7 @@ Cada llamada recibe un `BridgeScope` con `organizationId`, `actorId` y `partitio
 
 El registro `sources` se configura desde código confiable del servidor y declara cada `sourceSystem` y su partición `demo` o `external`. No hay fuentes, particiones ni fallbacks implícitos. Una fuente externa no puede entrar en DEMO ni viceversa. Un llamador autorizado todavía necesita verificar procedencia antes de registrar datos: pertenecer al registro no autentica una observación. Ninguna proyección existente consume automáticamente estos vínculos.
 
-`CanonicalBridgeStore` exige lectura y `compareAndSet` atómicos, valores JSON separados de los objetos del llamador y persistencia duradera para una integración real. `MemoryCanonicalBridgeStore` es la implementación de referencia no duradera. Este lote no añade PostgreSQL, rutas HTTP, hooks de runtime, imports ni efectos externos.
+`CanonicalBridgeStore` exige lectura y `compareAndSet` atómicos y valores JSON separados de los objetos del llamador. `PostgresCanonicalBridgeStore(pool, { sources })` utiliza el pool existente y conserva el ledger y su auditoría en un esquema separado. No aplica migraciones, crea conexiones adicionales, importa datos ni cierra el pool del llamador. `MemoryCanonicalBridgeStore` se conserva como referencia para pruebas; el runtime no recurre a memoria si falta PostgreSQL o la tabla preparada.
 
 Cada agregado conserva un ledger de comandos y recibos con digests encadenados; las lecturas reconstruyen y validan sus versiones y vínculos. El límite de preparación es 1000 comandos y 1 MiB de JSON por agregado. Superarlo falla sin escribir ni truncar historial; escalar almacenamiento y retención exige un contrato posterior. Estos digests detectan inconsistencias locales y no autentican la fuente ni protegen frente a un administrador que reescriba todo el ledger.
 
@@ -93,7 +93,25 @@ async function syntheticExample() {
 1. Acordar la fuente de intake, la identidad del evento canónico y quién declara cada vínculo; no asumir que un tablero o `Recipient` es la autoridad.
 2. Definir cardinalidad, sustituciones y versiones permitidas, incluyendo varias cotizaciones/facturas, y cómo se resuelven conflictos humanos de forma atribuible.
 3. Elegir revisiones de origen estables, normalización/digest y verificación de evidencia; definir también retención de identificadores y procedencia.
-4. Proveer autenticación/roles del servidor, registro de fuentes confiable y store duradero con CAS; comprobar aislamiento y carreras antes de exponer una ruta.
+4. Vincular autenticación/roles del servidor y registro de fuentes confiable a la autoridad de organización real; aprobar por separado la aplicación de la migración preparada. El adapter PostgreSQL ya ofrece CAS duradero y pruebas de aislamiento, carreras y reinicio.
 5. Revisar separadamente cualquier import o nuevo mapping. Mantener DEMO y externo separados en consumidores y métricas; un vínculo sólo acredita una asociación explícita, nunca un resultado comercial.
 
 Estas decisiones tienen interfaces preparadas, pero ninguna queda resuelta ni activada por este lote. La cotización aceptada, cobro, proveedor y evento realizado requieren sus propios contratos de evidencia; no se implementan aquí.
+
+## Persistencia preparada, sin migración desplegada
+
+`004_canonical_bridge.up.sql` crea `office_canonical_bridge.workspaces` y `audit_events`. El scope completo se conserva en columnas y debe coincidir con el hash de la clave y con el ledger. El CAS bloquea también el caso de fila ausente, exige avanzar una sola revisión y conservar todo el prefijo anterior. Un trigger añade la auditoría en la misma transacción; si falla, el workspace no cambia. Las lecturas reconstruyen el ledger y contrastan su auditoría. Actualización, borrado y truncamiento del historial se rechazan.
+
+La migración no figura en el inicializador de Office. Las pruebas PostgreSQL la aplican expresamente sólo en esquemas `bridge_test_<uuid>` de la base local sintética. `004_canonical_bridge.down.sql` revierte un esquema vacío; con historial poblado se niega a borrarlo. La reversión operativa segura es deshabilitar el consumidor y conservar sus datos; retirar datos requiere una decisión de retención y backup/restauración revisados por separado.
+
+## Vista de procedencia de sólo lectura
+
+`/office/provenance` muestra dos paneles independientes. `GET /office-api/provenance` exige sesión DEMO y muestra sólo la cobertura autorizada. El provider PostgreSQL utiliza exclusivamente el namespace sintético `stateId` del servidor y el actor DEMO existente, con la fuente sintética `fixture:office`; no declara una organización ni una fuente externa. Las sesiones con restricciones de casos o funciones no leen el bridge global compartido. La falta de la migración deja los vínculos no disponibles y no crea un store alternativo.
+
+`GET /office-api/monday/provenance` exige la sesión de propietario Monday y muestra únicamente estado local y fechas del grant. Una sesión DEMO o HTTP Basic por sí sola no la autoriza. No lee registros, renueva tokens ni llama al proveedor. La organización externa y el puente Monday permanecen sin configurar; disponibilidad de la conexión no acredita importación, vínculos ni operación comercial.
+
+La consulta usa `readOnlyStatus()`: un intento de worker caducado se muestra sin confirmar y sin limpiar su lease ni modificar el registro guardado. El mantenimiento del estado permanece en el camino operativo existente. La regresión con el servicio real verifica cero escrituras y cero llamadas al proveedor.
+
+La página únicamente hace GET y ofrece enlaces a las pantallas de sesión existentes. No contiene acciones de importación, vinculación, renovación o aprobación. Las referencias y revisiones visibles están acotadas a 50 por colección, con cobertura parcial explícita; desconocido nunca se presenta como cero. Ningún consumidor de métricas une los paneles.
+
+El workflow existente de verificación admite exclusivamente la rama de recuperación y `codex/canonical-reference-bridge-20261012`, con permisos de lectura. Ejecuta PostgreSQL y navegador sintéticos y construye una imagen local; no publica ni despliega la aplicación o migraciones.

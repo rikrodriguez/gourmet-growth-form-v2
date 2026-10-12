@@ -5,6 +5,7 @@ import { closeStagingResources, stagingStartupDiagnostic } from './staging-diagn
 import type { StagingStartupStage } from './staging-diagnostics';
 import { createMondayRuntime } from './monday-runtime';
 import { formatMondayStartupDiagnostic } from './monday-diagnostics';
+import { createDemoBridgeProvenanceProvider } from './canonical-bridge-runtime';
 
 let store: PostgresOfficeStore | undefined;
 let app: ReturnType<typeof createStagingOfficeApp> | undefined;
@@ -15,7 +16,7 @@ try {
   store = new PostgresOfficeStore({ mode: 'staging', database: runtime.database });
   stage = 'ui-build';
   const monday = createMondayRuntime(process.env, runtime.access.origin, store.pool);
-  app = createStagingOfficeApp(runtime, store, { monday });
+  app = createStagingOfficeApp(runtime, store, { monday, provenance: { demoBridge: createDemoBridgeProvenanceProvider(store.pool, store.stateId) } });
   stage = 'app-ready';
   await app.ready();
   stage = 'database-initialize';

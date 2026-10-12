@@ -49,6 +49,9 @@ export type MondayOAuthCallbackParams = { state: string; code?: string; error?: 
 export type MondayOAuthStart = { authorizationUrl: string; expiresAt: string };
 export interface MondayOAuthService {
   status(): Promise<MondayOAuthStatus>;
+  // Read-only presentation must never invoke lease cleanup, token rotation,
+  // initialization or another store mutation.
+  readOnlyStatus(): Promise<MondayOAuthStatus>;
   startOAuth(input: { ownerId: string; browserNonce: string }): Promise<MondayOAuthStart>;
   callback(params: MondayOAuthCallbackParams, browserNonce: string, onStage?: (stage: MondayOAuthCallbackStage) => void): Promise<MondayOAuthStatus>;
   refresh(input?: { expectedGrantFingerprint?: string }): Promise<MondayOAuthStatus>;
@@ -465,6 +468,16 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
   }
   return {
     async status() { if (!config.enabled) return { ...disabled, scopes: [] }; return project((await current()).record); },
+    async readOnlyStatus() {
+      if (!config.enabled) return { ...disabled, scopes: [] };
+      const { record } = await raw();
+      const status = project(record); const attempt = record.attempt;
+      if (!attempt || attempt.deadline > clock()) return status;
+      // An expired worker lease is uncertain. Present that conservatively while
+      // preserving the exact stored code, timestamp, attempt and revision.
+      const code: MondayOAuthCode = attempt.kind === 'refresh' ? 'refresh_uncertain' : attempt.kind === 'revoke' ? 'revoke_uncertain' : attempt.kind === 'read' ? 'read_unavailable' : attempt.kind === 'authorize' ? 'oauth_state_expired' : 'code_exchange_uncertain';
+      return { ...status, state: status.state === 'expired' ? 'expired' : 'error', code: status.state === 'expired' ? 'expired' : code, pending: false, boardAccessVerified: false, grantFingerprint: null };
+    },
     async startOAuth(input) {
       const cfg = enabled(); const checked = row(input, 'oauth_state_invalid'); exact(checked, ['ownerId', 'browserNonce'], [], 'oauth_state_invalid');
       if (checked.ownerId !== MONDAY_OWNER_ID) fail('owner_forbidden', 403);

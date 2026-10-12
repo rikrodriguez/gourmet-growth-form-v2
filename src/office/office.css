@@ -167,3 +167,48 @@ h1,h2{font-family:inherit;font-weight:700}button:focus-visible,a:focus-visible,s
   .drawer-header .icon-button { min-width: 44px; min-height: 44px; }
   .drawer-content { height: calc(100% - 88px); }
 }
+
+/* Read-only provenance keeps each source and its evidence in a separate panel. */
+.provenance-page { max-width: 1360px; margin: 0 auto; padding: 32px 24px 48px; }
+.provenance-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 20px; }
+.provenance-header h1 { font-size: clamp(27px, 3vw, 36px); line-height: 1.2; margin: 8px 0; }
+.provenance-header nav { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.provenance-link { display: inline-flex; align-items: center; min-height: 44px; color: #374365; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.provenance-link:focus-visible, .sidebar-provenance-link:focus-visible { outline: 3px solid #be7844; outline-offset: 3px; border-radius: 4px; }
+.provenance-separation { padding: 16px 18px; margin: 0 0 24px; background: #fefdfc; border: 1px solid #e3e7ed; border-radius: 14px; color: #48536c; }
+.provenance-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 24px; }
+.provenance-panel { min-width: 0; padding: 24px; background: #fff; border: 1px solid #e3e7ed; border-radius: 18px; overflow-wrap: anywhere; }
+.provenance-panel-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.provenance-panel-heading h2 { font-size: 25px; margin: 0; }
+.provenance-source-tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 6px 9px; border-radius: 8px; background: #f1fae1; color: #3e5522; }
+.provenance-source-external { background: #edf2fa; color: #415676; }
+.provenance-panel p { margin: 12px 0; }
+.provenance-panel h3 { font-size: 18px; margin: 20px 0 10px; }
+.provenance-panel h4 { font-size: 15px; margin: 0 0 12px; }
+.provenance-cut, .provenance-coverage { color: #656e82; font-size: 13px; }
+.provenance-bridge { border-top: 1px solid #e3e7ed; margin-top: 24px; padding-top: 4px; }
+.provenance-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin: 12px 0; }
+.provenance-details > div { min-width: 0; }
+.provenance-details dt { color: #656e82; font-size: 12px; font-weight: 600; }
+.provenance-details dd { margin: 4px 0 0; color: #374365; }
+.provenance-details code, .provenance-chain code, .provenance-reference code { font-size: 12px; overflow-wrap: anywhere; white-space: normal; }
+.provenance-office-evidence, .provenance-reference-list { padding: 0; margin: 16px 0; list-style: none; }
+.provenance-office-evidence > li, .provenance-reference-card, .provenance-binding-card { background: #f8f9fc; border: 1px solid #e4e8f0; border-radius: 12px; padding: 16px; margin: 12px 0; }
+.provenance-chain { display: grid; gap: 10px; padding-left: 21px; margin: 16px 0; }
+.provenance-chain > li { min-width: 0; padding-left: 4px; }
+.provenance-chain strong, .provenance-chain code, .provenance-chain span { display: block; }
+.provenance-chain span { font-size: 12px; color: #656e82; margin-top: 4px; }
+.provenance-binding-evidence summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; text-decoration: underline; text-underline-offset: 3px; }
+.provenance-reading-status { padding: 4px 0 8px; }
+.provenance-limits { font-size: 12px; color: #56617a; }
+.sidebar-provenance-link { display: inline-flex; align-items: center; gap: 12px; color: #303852; margin: 4px 14px 8px; min-height: 44px; text-decoration: none; font-weight: 500; }
+.sidebar-provenance-link svg { width: 20px; height: 20px; }
+@media (max-width: 760px) {
+  .provenance-page { padding: 20px 12px 32px; }
+  .provenance-header { display: block; }
+  .provenance-header nav { margin-top: 12px; }
+  .provenance-panels { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .provenance-panel { padding: 20px 16px; }
+  .provenance-details { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .sidebar-provenance-link { grid-column: 1 / -1; justify-self: start; margin: 0 4px; }
+}

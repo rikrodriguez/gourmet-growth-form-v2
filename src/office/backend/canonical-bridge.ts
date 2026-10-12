@@ -89,6 +89,8 @@ function commandInput(raw: unknown): BridgeCommand {
 const workspaceKey = (scope: BridgeScope) => `bridge-${hash([scope.organizationId, scope.actorId, scope.partition])}`;
 const entityId = (scope: BridgeScope, ref: BridgeSourceReference) => `entity-${hash([scope.organizationId, scope.actorId, scope.partition, ref.sourceSystem, ref.boardId, ref.itemId])}`;
 type Event = { command: BridgeCommand; atMs: number; receipt: BridgeReceipt; previousDigest: string | null; digest: string };
+export type CanonicalBridgeLedgerEvent = Event;
+export type ValidatedCanonicalBridgeValue = { scope: BridgeScope; revision: number; events: CanonicalBridgeLedgerEvent[]; lastDigest: string; lastAtMs: number; value: unknown };
 type Ledger = { schemaVersion: 1; scope: BridgeScope; revision: number; events: Event[] };
 type Projection = { sourceVersions: BridgeSourceVersion[]; bindings: BridgeBindingRevision[] };
 
@@ -112,8 +114,9 @@ export class MemoryCanonicalBridgeStore implements CanonicalBridgeStore {
 }
 
 // Internal preparation API only. The caller authenticates/authorizes scope and
-// supplies a trusted source registry. No route, importer or metrics consumer is
-// wired to this service, and the existing DEMO aggregate is never accessed.
+// supplies a trusted source registry. Its optional provenance consumer only
+// reads; no importer, write route or metrics consumer is enabled, and
+// the existing DEMO aggregate is never accessed by the bridge.
 export class CanonicalBridge {
   private readonly sources: readonly BridgeSourcePolicy[];
   private readonly clock: () => number;
@@ -274,4 +277,23 @@ export class CanonicalBridge {
     if (!row) fail('BRIDGE_REFERENCE_NOT_FOUND');
     return structuredClone(row);
   }
+}
+
+// The durable adapter shares the service's complete replay validation. This
+// validates data integrity and scope, never provider authenticity or outcomes.
+export async function validateCanonicalBridgeStoredValue(key: string, value: unknown, options: { sources: readonly BridgeSourcePolicy[] }): Promise<ValidatedCanonicalBridgeValue> {
+  try {
+    const detached = data(value, 'BRIDGE_STATE_INVALID');
+    const body = object(detached, ['schemaVersion', 'scope', 'revision', 'events'], 'BRIDGE_STATE_INVALID');
+    const scope = scopeInput(body.scope);
+    if (workspaceKey(scope) !== key) fail('BRIDGE_STATE_INVALID');
+    const store: CanonicalBridgeStore = {
+      async read() { return { revision: 1, value: detached }; },
+      async compareAndSet() { return fail('BRIDGE_STATE_INVALID'); },
+    };
+    await new CanonicalBridge(store, options).snapshot(scope);
+    const ledger = detached as Ledger;
+    const last = ledger.events.at(-1)!;
+    return structuredClone({ scope, revision: ledger.revision, events: ledger.events, lastDigest: last.digest, lastAtMs: last.atMs, value: detached });
+  } catch { return fail('BRIDGE_STATE_INVALID'); }
 }

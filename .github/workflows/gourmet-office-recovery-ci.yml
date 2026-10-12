@@ -1,11 +1,12 @@
 name: Gourmet Office Recovery Checks
 
-# This candidate only checks the approved recovery branch. It never publishes
-# an image, changes another branch, connects staging or deploys the application.
+# This workflow checks only the two approved verification branches. It never
+# publishes an image, changes another branch, connects staging or deploys.
 on:
   push:
     branches:
       - codex/gourmet-office-demo-recovery-20261010
+      - codex/canonical-reference-bridge-20261012
 
 permissions:
   contents: read
@@ -16,7 +17,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.repository == 'rikrodriguez/gourmet-growth-form-v2' && github.ref == 'refs/heads/codex/gourmet-office-demo-recovery-20261010'
+    if: github.repository == 'rikrodriguez/gourmet-growth-form-v2' && (github.ref == 'refs/heads/codex/gourmet-office-demo-recovery-20261010' || github.ref == 'refs/heads/codex/canonical-reference-bridge-20261012')
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:

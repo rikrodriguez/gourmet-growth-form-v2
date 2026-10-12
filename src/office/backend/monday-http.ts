@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { OfficeError } from './state';
+import { OfficeError, currentTime } from './state';
+import { assertProvenanceRequest, projectMondayProvenance } from './provenance';
 import { MondayOAuthError } from './monday-oauth';
 import type { MondayOAuthCallbackParams, MondayOAuthService } from './monday-oauth';
 import type { MondayOAuthStatus } from './monday-oauth';
@@ -92,7 +93,7 @@ function callbackParams(url: string): MondayOAuthCallbackParams {
   return result;
 }
 
-export function registerMondayRoutes(app: FastifyInstance, runtime?: MondayRuntime) {
+export function registerMondayRoutes(app: FastifyInstance, runtime?: MondayRuntime, clock: () => number = Date.now) {
   app.addHook('onReady', async () => { runtime?.renewalScheduler?.start(); });
   app.addHook('onClose', async () => { runtime?.renewalScheduler?.stop(); });
   const available = runtime?.enabled === true && runtime.configured && !!runtime.oauthService;
@@ -131,6 +132,11 @@ export function registerMondayRoutes(app: FastifyInstance, runtime?: MondayRunti
     const current = service();
     return { ...publicStatus(await current.status()), configured: true, allowedBoards: [...MONDAY_READ_BOARD_IDS],
       boardCapabilities: current.getBoardCapabilities?.() ?? getMondayBoardCapabilities({}, 'unconfigured-v1', true) };
+  });
+  app.get('/office-api/monday/provenance', async request => {
+    authorize(request);
+    assertProvenanceRequest(request);
+    return projectMondayProvenance(await service().readOnlyStatus(), new Date(currentTime(clock)).toISOString());
   });
   app.post('/office-api/monday/oauth/start', async (request, reply) => {
     const ownerId = authorize(request, true);
