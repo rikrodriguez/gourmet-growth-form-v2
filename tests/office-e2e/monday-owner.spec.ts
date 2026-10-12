@@ -344,14 +344,16 @@ test('callback phase marker remains informational after synthetic owner login', 
   syntheticCallbackOwner(monday, { ...connection('disconnected'), pending: true });
   await page.goto('/office/monday?oauth=error&stage=token_response&reason=scope_mismatch');
   await expect(page.getByTestId('monday-oauth-return-diagnostic')).toHaveCount(0);
+  await expect(page.getByTestId('monday-status-update-result')).toHaveCount(0);
   expect((await submitSyntheticOwner(page, password)).status()).toBe(200);
   await expect(page.getByTestId('monday-connection-state')).toHaveText('Desconectado');
-  await expect(page.getByText('Consentimiento pendiente. El estado conectado aún no está confirmado.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Operación de integración pendiente. Consulta el estado guardado.', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeDisabled();
   const marker = page.getByTestId('monday-oauth-return-diagnostic');
   await expect(marker).toBeVisible();
-  await expect(marker).toHaveText('Diagnóstico del retorno OAuth (informativo). stage=token_response | code=scope_mismatch');
+  await expect(marker).toHaveText('Diagnóstico del retorno OAuth anterior (informativo). stage=token_response | code=scope_mismatch Actualizar estado consulta el estado guardado de la conexión.');
+  await expect(page.getByTestId('monday-status-update-result')).toHaveCount(0);
   await expect(page.getByTestId('monday-reading')).toHaveCount(0);
   expect(monday.calls.filter(call => call.path === `${api}/status`).length).toBeGreaterThan(0);
   await expectPrivateCallbackLogin(page, monday, password);
@@ -364,9 +366,117 @@ test('a valid callback error marker keeps the connection confirmed by the API', 
   await expect(page.getByTestId('monday-connection-state')).toHaveText('Conectado');
   await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeEnabled();
-  await expect(page.getByTestId('monday-oauth-return-diagnostic')).toHaveText('Diagnóstico del retorno OAuth (informativo). stage=token_response | code=scope_mismatch');
+  await expect(page.getByTestId('monday-oauth-return-diagnostic')).toHaveText('Diagnóstico del retorno OAuth anterior (informativo). stage=token_response | code=scope_mismatch Actualizar estado consulta el estado guardado de la conexión.');
   await expect(page.getByTestId('monday-reading')).toHaveCount(0);
   expect(monday.calls.every(call => call.method === 'GET' && [`${api}/owner/session`, `${api}/status`].includes(call.path))).toBe(true);
+  await expectFits(page);
+});
+
+const callbackPendingCaption = /(?:Consentimiento|Operación de integración) pendiente\./;
+
+test('a successful explicit stored-status refresh preserves a clearly historical callback diagnostic', async ({ page, monday }, testInfo) => {
+  let refreshed = false;
+  monday.respond('GET', `${api}/owner/session`, { body: ownerSession });
+  monday.respond('GET', `${api}/status`, () => ({ body: {
+    ...connection('error', 'oauth_state_invalid'), pending: !refreshed,
+  } }));
+  await page.goto('/office/monday?oauth=error&stage=callback_query&reason=oauth_state_invalid');
+  const marker = page.getByTestId('monday-oauth-return-diagnostic');
+  await expect(marker).toContainText('stage=callback_query | code=oauth_state_invalid');
+  await expect(page.getByText(callbackPendingCaption)).toBeVisible();
+  await expect(page.getByTestId('monday-status-update-result')).toHaveCount(0);
+  const refresh = page.getByRole('button', { name: 'Actualizar estado', exact: true });
+  await expect(refresh).toBeEnabled();
+  refreshed = true;
+  const response = page.waitForResponse(item => new URL(item.url()).pathname === `${api}/status` && item.request().method() === 'GET');
+  await refresh.click();
+  expect((await response).status()).toBe(200);
+  await expect(page.getByText(callbackPendingCaption)).toHaveCount(0);
+  await expect(page.getByTestId('monday-connection-state')).toHaveText('Error de conexión');
+  await expect(page.getByText('Código del servicio: oauth_state_invalid', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Conectar Monday', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeDisabled();
+  await expect(marker).toContainText('stage=callback_query | code=oauth_state_invalid');
+  expect(new URL(page.url()).searchParams.get('stage')).toBe('callback_query');
+  expect(new URL(page.url()).searchParams.get('reason')).toBe('oauth_state_invalid');
+  expect(monday.calls.every(call => call.method === 'GET' && [`${api}/owner/session`, `${api}/status`].includes(call.path))).toBe(true);
+  await testInfo.attach('stored-status-refresh-observation', { contentType: 'application/json', body: JSON.stringify({
+    synthetic: true, statusHttp: 200, connectionState: 'error', connectionCode: 'oauth_state_invalid', pending: false,
+    callbackMarkerVisible: await marker.isVisible(), callbackStage: 'callback_query', callbackCode: 'oauth_state_invalid', queryMarkerPreserved: true,
+    boardReadEnabled: false, statusFeedbackVisible: await page.getByTestId('monday-status-update-result').isVisible(), externalRequests: 0,
+  }) });
+  await expect(page.getByTestId('monday-status-update-result')).toHaveText(/^Estado guardado consultado: .+ UTC$/);
+  await expect(marker).toContainText('Diagnóstico del retorno OAuth anterior (informativo).');
+  await expect(page.locator('body')).toContainText('Actualizar estado consulta el estado guardado de la conexión.');
+  await expectFits(page);
+});
+
+test('a failed explicit stored-status refresh preserves the snapshot, service error and historical callback diagnostic', async ({ page, monday }, testInfo) => {
+  let failStatus = false;
+  monday.respond('GET', `${api}/owner/session`, { body: ownerSession });
+  monday.respond('GET', `${api}/status`, () => failStatus
+    ? { status: 503, body: { error: 'storage_unavailable' } }
+    : { body: { ...connection('error', 'oauth_state_invalid'), pending: true } });
+  await page.goto('/office/monday?oauth=error&stage=callback_query&reason=oauth_state_invalid');
+  const marker = page.getByTestId('monday-oauth-return-diagnostic');
+  await expect(marker).toContainText('stage=callback_query | code=oauth_state_invalid');
+  await expect(page.getByText(callbackPendingCaption)).toBeVisible();
+  await expect(page.getByTestId('monday-status-update-result')).toHaveCount(0);
+  const refresh = page.getByRole('button', { name: 'Actualizar estado', exact: true });
+  await expect(refresh).toBeEnabled();
+  failStatus = true;
+  const response = page.waitForResponse(item => new URL(item.url()).pathname === `${api}/status` && item.request().method() === 'GET');
+  await refresh.click();
+  expect((await response).status()).toBe(503);
+  await expect(page.getByRole('alert')).toHaveText('Monday no está disponible para esta acción. La configuración o el consentimiento siguen pendientes.');
+  await expect(page.getByTestId('monday-connection-state')).toHaveText('Error de conexión');
+  await expect(page.getByText('Código del servicio: oauth_state_invalid', { exact: true })).toBeVisible();
+  await expect(page.getByText(callbackPendingCaption)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Conectar Monday', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+  await expect(marker).toContainText('stage=callback_query | code=oauth_state_invalid');
+  expect(new URL(page.url()).searchParams.get('stage')).toBe('callback_query');
+  expect(new URL(page.url()).searchParams.get('reason')).toBe('oauth_state_invalid');
+  expect(monday.calls.every(call => call.method === 'GET' && [`${api}/owner/session`, `${api}/status`].includes(call.path))).toBe(true);
+  await testInfo.attach('stored-status-refresh-observation', { contentType: 'application/json', body: JSON.stringify({
+    synthetic: true, statusHttp: 503, connectionState: 'error', connectionCode: 'oauth_state_invalid', pending: true,
+    callbackMarkerVisible: await marker.isVisible(), callbackStage: 'callback_query', callbackCode: 'oauth_state_invalid', queryMarkerPreserved: true,
+    boardReadEnabled: false, refreshErrorVisible: true, statusFeedbackVisible: await page.getByTestId('monday-status-update-result').isVisible(), externalRequests: 0,
+  }) });
+  await expect(page.getByTestId('monday-status-update-result')).toHaveText('La consulta del estado guardado no se confirmó.');
+  await expect(page.getByTestId('monday-status-update-result')).not.toContainText('Estado guardado consultado:');
+  await expect(marker).toContainText('Diagnóstico del retorno OAuth anterior (informativo).');
+  await expect(page.locator('body')).toContainText('Actualizar estado consulta el estado guardado de la conexión.');
+  await expect(page.getByText('Operación de integración pendiente. Consulta el estado guardado.', { exact: true })).toBeVisible();
+  await expectFits(page);
+});
+
+test('an explicit stored-status refresh cannot confirm consultation after owner authentication is lost', async ({ page, monday }, testInfo) => {
+  let authenticated = true;
+  monday.respond('GET', `${api}/owner/session`, () => ({ body: authenticated ? ownerSession : { available: true, authenticated: false } }));
+  monday.respond('GET', `${api}/owner/login`, { body: { csrfToken, expiresAt } });
+  monday.respond('GET', `${api}/status`, { body: { ...connection('error', 'oauth_state_invalid'), pending: true } });
+  await page.goto('/office/monday?oauth=error&stage=callback_query&reason=oauth_state_invalid');
+  await expect(page.getByTestId('monday-oauth-return-diagnostic')).toContainText('stage=callback_query | code=oauth_state_invalid');
+  await expect(page.getByTestId('monday-status-update-result')).toHaveCount(0);
+  const refresh = page.getByRole('button', { name: 'Actualizar estado', exact: true });
+  await expect(refresh).toBeEnabled();
+  const statusCallsBefore = monday.calls.filter(call => call.path === `${api}/status`).length;
+  authenticated = false;
+  await refresh.click();
+  await expect(page.getByRole('button', { name: 'Entrar como propietario', exact: true })).toBeEnabled();
+  await expect(page.getByTestId('monday-connection-state')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('monday-oauth-return-diagnostic')).toHaveCount(0);
+  expect(monday.calls.filter(call => call.path === `${api}/status`).length).toBe(statusCallsBefore);
+  expect(monday.calls.every(call => call.method === 'GET' && [`${api}/owner/session`, `${api}/owner/login`, `${api}/status`].includes(call.path))).toBe(true);
+  await testInfo.attach('stored-status-refresh-observation', { contentType: 'application/json', body: JSON.stringify({
+    synthetic: true, ownerAuthenticated: false, statusRequestsAdded: 0, connectionControlsVisible: false,
+    statusFeedbackVisible: await page.getByTestId('monday-status-update-result').isVisible(), externalRequests: 0,
+  }) });
+  await expect(page.getByTestId('monday-status-update-result')).toHaveText('La consulta del estado guardado no se confirmó.');
+  await expect(page.getByTestId('monday-status-update-result')).not.toContainText('Estado guardado consultado:');
   await expectFits(page);
 });
 

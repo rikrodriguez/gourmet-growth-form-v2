@@ -253,7 +253,10 @@ export function createMondayOAuthService(options: MondayOAuthOptions): MondayOAu
       const result = await raw(); const attempt = result.record.attempt;
       if (!attempt || attempt.deadline > clock()) return result;
       const code: MondayOAuthCode = attempt.kind === 'refresh' ? 'refresh_uncertain' : attempt.kind === 'revoke' ? 'revoke_uncertain' : attempt.kind === 'read' ? 'read_unavailable' : attempt.kind === 'authorize' ? 'oauth_state_expired' : 'code_exchange_uncertain';
-      if (await cas(result.revision, terminal(result.record, code))) continue;
+      if (await cas(result.revision, terminal(result.record, code))) {
+        const fresh = await raw(); const replacement = fresh.record.attempt;
+        if (!replacement || replacement.deadline > clock()) return fresh;
+      }
     }
     fail('operation_in_progress', 409);
   }

@@ -20,6 +20,7 @@ const ACCESS_ERROR_CODES = ['MONDAY_OWNER_UNAUTHORIZED', 'MONDAY_OWNER_LOGIN_CHA
 type AccessErrorCode = typeof ACCESS_ERROR_CODES[number];
 type LoginDiagnosticCode = AccessErrorCode | 'LOCAL_CHALLENGE_MISSING' | 'OWNER_SESSION_NOT_CONFIRMED' | 'HTTP_UNAUTHORIZED' | 'HTTP_FORBIDDEN' | 'HTTP_UNAVAILABLE' | 'HTTP_ERROR' | 'REQUEST_FAILED' | 'INVALID_RESPONSE' | 'UNCLASSIFIED_ACCESS_FAILURE';
 type LoginDiagnostic = LoginAttempt & { code: LoginDiagnosticCode };
+type StatusQueryResult = { kind: 'confirmed'; checkedAt: string } | { kind: 'failed' };
 const API = '/office-api/monday';
 const SCOPES = ['boards:read', 'updates:read', 'me:read'];
 const BOARD_IDS = ['18403945258', '18411103560', '18398057136', '18396813878', '18377848804'];
@@ -153,10 +154,11 @@ export function MondayOwnerPage() {
   const [error, setError] = useState<string | null>(null);
   const [loginDiagnostic, setLoginDiagnostic] = useState<LoginDiagnostic | null>(null);
   const [returnDiagnostic] = useState(() => parseMondayOAuthReturn(window.location.search));
+  const [statusQueryResult, setStatusQueryResult] = useState<StatusQueryResult | null>(null);
   const csrfToken = useRef<string | null>(null);
   const operation = useRef(false);
   const loginForm = useRef<HTMLFormElement>(null);
-  async function loadOwner(signal?: AbortSignal, loginAttempt?: LoginAttempt) {
+  async function loadOwner(signal?: AbortSignal, loginAttempt?: LoginAttempt, onStatusConfirmed?: () => void) {
     const current = ownerSession(await request('/owner/session', { signal, loginAttempt }));
     if (loginAttempt?.postAccepted && !current.authenticated) throw new MondayPageError('unauthorized', 'OWNER_SESSION_NOT_CONFIRMED');
     let token: string | null = null, confirmed: MondayStatus | null = null;
@@ -165,6 +167,7 @@ export function MondayOwnerPage() {
     if (signal?.aborted) return;
     csrfToken.current = token; setSession(current); setConnection(confirmed); setReading(null);
     setBoardId(confirmed?.allowedBoards[0] ?? '');
+    if (confirmed) onStatusConfirmed?.();
   }
   useEffect(() => {
     const controller = new AbortController();
@@ -173,7 +176,7 @@ export function MondayOwnerPage() {
   }, []);
   async function run(name: string, action: () => Promise<void>, loginAttempt?: LoginAttempt) {
     if (operation.current) return;
-    operation.current = true; setBusy(name); setError(null); setLoginDiagnostic(null);
+    operation.current = true; setBusy(name); setError(null); setLoginDiagnostic(null); setStatusQueryResult(null);
     try { await action(); }
     catch (error) {
       if (name === 'login' && loginAttempt) {
@@ -187,6 +190,21 @@ export function MondayOwnerPage() {
       const message = error instanceof MondayPageError ? error.message : ERROR_TEXT.offline;
       setError(name === 'login' && error instanceof MondayPageError && error.code === 'unauthorized' ? ERROR_TEXT.owner_login_failed : message);
     } finally { operation.current = false; setBusy(null); }
+  }
+  function updateStatus() {
+    void run('status', async () => {
+      let confirmed = false;
+      try {
+        await loadOwner(undefined, undefined, () => {
+          confirmed = true;
+          setStatusQueryResult({ kind: 'confirmed', checkedAt: new Date().toISOString() });
+        });
+        if (!confirmed) setStatusQueryResult({ kind: 'failed' });
+      } catch (error) {
+        setStatusQueryResult({ kind: 'failed' });
+        throw error;
+      }
+    });
   }
   async function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -232,6 +250,7 @@ export function MondayOwnerPage() {
     <header className="panel-heading"><div><p className="eyebrow">GOURMET AI OFFICE · INTEGRACIÓN</p><h1>Monday · acceso del propietario</h1><p>Acceso de integración autorizado por Ricardo · identidad Info.</p></div></header>
     {error && <p className="inline-alert" role="alert">{error}</p>}
     {loginDiagnostic && <p data-testid="monday-owner-login-diagnostic" style={{ overflowWrap: 'anywhere' }}><code>post={loginDiagnostic.postAccepted ? 'accepted' : 'unconfirmed'} | stage={loginDiagnostic.stage} | http={loginDiagnostic.httpStatus ?? 'none'} | code={loginDiagnostic.code}</code></p>}
+    {statusQueryResult && <p data-testid="monday-status-update-result" role="status">{statusQueryResult.kind === 'confirmed' ? `Estado guardado consultado: ${at(statusQueryResult.checkedAt)}` : 'La consulta del estado guardado no se confirmó.'}</p>}
     {busy === 'initial' && <p role="status">Comprobando acceso del propietario…</p>}
     {!session && busy !== 'initial' && <button className="button button-secondary" disabled={disabled} onClick={() => void run('access', () => loadOwner())}>Actualizar acceso</button>}
     {session && !session.available && <section className="wide-panel"><h2>Monday desactivado</h2><p>Monday desactivado. La configuración y el consentimiento están pendientes.</p></section>}
@@ -242,14 +261,14 @@ export function MondayOwnerPage() {
     </form></section>}
     {session?.authenticated && <section className="wide-panel" aria-label="Conexión Monday del propietario">
       <div className="panel-heading" style={{ flexWrap: 'wrap' }}><h2>Conexión de la identidad Info</h2><button className="button button-secondary" disabled={disabled} onClick={() => change('/owner/logout')}>Cerrar sesión del propietario</button></div>
-      {returnDiagnostic && <p data-testid="monday-oauth-return-diagnostic" style={{ overflowWrap: 'anywhere' }}><span>Diagnóstico del retorno OAuth (informativo).</span>{' '}<code>stage={returnDiagnostic.stage} | code={returnDiagnostic.reason}</code></p>}
+      {returnDiagnostic && <p data-testid="monday-oauth-return-diagnostic" style={{ overflowWrap: 'anywhere' }}><span>Diagnóstico del retorno OAuth anterior (informativo).</span>{' '}<code>stage={returnDiagnostic.stage} | code={returnDiagnostic.reason}</code>{' '}<span>Actualizar estado consulta el estado guardado de la conexión.</span></p>}
       {connection && <>
         <h3 data-testid="monday-connection-state">{STATE_LABELS[connection.state]}</h3>
         {connection.state === 'disabled' && <p>Monday desactivado. La configuración y el consentimiento están pendientes.</p>}
-        {connection.pending && <p className="inline-alert">Consentimiento pendiente. El estado conectado aún no está confirmado.</p>}
+        {connection.pending && <p className="inline-alert">Operación de integración pendiente. Consulta el estado guardado.</p>}
         {connection.code && <p>Código del servicio: <code>{connection.code}</code></p>}
         <dl className="approval-target"><div><dt>Actor Monday</dt><dd>{connection.actorId ?? 'Sin identidad confirmada'}</dd></div><div><dt>Cuenta configurada</dt><dd>{connection.configuredAccountId ? `${connection.configuredAccountId} · Sin verificar por OAuth` : 'Cuenta pendiente de configurar'}</dd></div><div><dt>Cuenta verificada por OAuth</dt><dd>Sin cuenta acreditada</dd></div><div><dt>Acceso a cinco tableros</dt><dd>{connection.boardAccessVerified ? 'Verificado por el servicio' : 'Sin acceso acreditado'}</dd></div><div><dt>Lectura del acceso a tableros</dt><dd>{at(connection.boardAccessReadAt)}</dd></div><div><dt>Scopes de lectura</dt><dd>{connection.scopes.join(', ') || 'Sin scopes confirmados'}</dd></div><div><dt>Lectura de identidad</dt><dd>{at(connection.identityReadAt)}</dd></div><div><dt>Conexión confirmada</dt><dd>{at(connection.connectedAt)}</dd></div><div><dt>Expiración del acceso</dt><dd>{at(connection.expiresAt)}</dd></div><div><dt>Última lectura</dt><dd>{at(connection.lastReadAt)}</dd></div></dl>
-        <div className="approval-actions"><button className="button button-secondary" disabled={disabled} onClick={() => void run('status', () => loadOwner())}>Actualizar estado</button><button className="button button-primary" disabled={disabled || !connection.configured || connection.pending || connection.state === 'connected'} onClick={connect}>Conectar Monday</button><button className="button button-secondary" disabled={disabled || !connection.configured || !['connected', 'expired'].includes(connection.state)} onClick={() => change('/refresh')}>Renovar conexión</button><button className="button button-quiet" disabled={disabled || !connection.configured || connection.state === 'disconnected' || connection.state === 'disabled'} onClick={() => change('/disconnect')}>Desconectar Monday</button></div>
+        <div className="approval-actions"><button className="button button-secondary" disabled={disabled} onClick={updateStatus}>Actualizar estado</button><button className="button button-primary" disabled={disabled || !connection.configured || connection.pending || connection.state === 'connected'} onClick={connect}>Conectar Monday</button><button className="button button-secondary" disabled={disabled || !connection.configured || !['connected', 'expired'].includes(connection.state)} onClick={() => change('/refresh')}>Renovar conexión</button><button className="button button-quiet" disabled={disabled || !connection.configured || connection.state === 'disconnected' || connection.state === 'disabled'} onClick={() => change('/disconnect')}>Desconectar Monday</button></div>
         <section className="work-section"><h3>Lectura de tableros autorizados</h3><p>La lectura conserva la procedencia y los límites indicados por el servicio.</p><label htmlFor="monday-board">Tablero autorizado</label><select id="monday-board" value={boardId} disabled={disabled || !mayRead} onChange={event => { setBoardId(event.target.value); setReading(null); }}>{connection.allowedBoards.length ? connection.allowedBoards.map(id => <option key={id} value={id}>Tablero {id}</option>) : <option value="">Sin tableros autorizados</option>}</select><div className="approval-actions"><button className="button button-secondary" disabled={disabled || !mayRead} onClick={() => read('board')}>Leer tablero</button><button className="button button-secondary" disabled={disabled || !mayRead} onClick={() => read('updates')}>Leer actualizaciones</button></div></section>
       </>}
       {reading && <section className="work-section" data-testid="monday-reading"><h3>{reading.kind === 'board' ? 'Lectura comercial del tablero' : 'Metadatos de actualizaciones'}</h3><p>{reading.result.status === 'complete' ? 'Lectura completa dentro del límite consultado' : reading.result.status === 'partial' ? 'Lectura parcial' : 'Lectura bloqueada'} · {reading.result.items.length} ítems · {reading.result.pages} páginas</p><p className="form-hint">Leído: {at(reading.result.readAt)} · Mapeo: {reading.result.mappingVersion}</p>{reading.result.reason && <p className="inline-alert">Código de lectura: {reading.result.reason}. Esta lectura no acredita datos fuera de su alcance.</p>}{reading.result.items.map(item => <article className="result-card" key={item.id}><h4>Ítem {item.id}</h4><p className="form-hint">Actualización de origen: {at(item.sourceUpdatedAt)} · Lectura: {at(item.readAt)}</p>{'columns' in item ? <dl className="approval-target">{item.columns.map(column => <div key={column.id}><dt>{FIELDS[column.field]}</dt><dd>{column.redacted ? 'Oculto por privacidad' : column.text ?? 'Sin valor confirmado'}</dd></div>)}</dl> : item.updates.map(update => <p key={update.id}>Actualización {update.id} · creación {at(update.createdAt)} · origen {at(update.sourceUpdatedAt)} · lectura {at(update.readAt)}</p>)}</article>)}</section>}

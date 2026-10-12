@@ -67,6 +67,33 @@ async function connectionRecord(fixture: Setup) {
   const stored = await fixture.store.read('monday-connection-ricardo'); assert.ok(stored);
   return { stored, value: fixture.vault.open(stored.value, 'monday-connection-ricardo') as Record<string, unknown> };
 }
+function expiryCleanupRace(fixture: Setup, conflicts: number, replacement?: 'live' | 'expired_once' | 'expired_every') {
+  let attempts = 0; let replaced = false;
+  const store: MondayStore = {
+    read: key => fixture.store.read(key),
+    async compareAndSet(key, revision, record) {
+      if (key !== 'monday-connection-ricardo') return fixture.store.compareAndSet(key, revision, record);
+      attempts++;
+      assert.notEqual(record, null);
+      assert.equal((fixture.vault.open(record, key) as { attempt: unknown }).attempt, null);
+      if (attempts <= conflicts) {
+        const latest = await fixture.store.read(key); assert.ok(latest);
+        assert.equal(await fixture.store.compareAndSet(key, latest.revision, latest.value), true);
+      }
+      const saved = await fixture.store.compareAndSet(key, revision, record);
+      if (saved && replacement && (!replaced || replacement === 'expired_every')) {
+        const latest = await fixture.store.read(key); assert.ok(latest);
+        const value = fixture.vault.open(latest.value, key) as Record<string, unknown>;
+        value.attempt = { id: OTHER_NONCE, kind: 'authorize', deadline: fixture.now() + (replacement === 'live' ? 300_000 : 0) };
+        value.code = null;
+        assert.equal(await fixture.store.compareAndSet(key, latest.revision, fixture.vault.seal(value, key)), true);
+        replaced = true;
+      }
+      return saved;
+    },
+  };
+  return { store, attempts: () => attempts };
+}
 
 const CALLBACK_STAGES: MondayOAuthCallbackStage[] = ['callback_state', 'provider_decision', 'persist_connection', 'token_exchange', 'token_response', 'identity_check', 'board_access_check', 'persist_connection'];
 const PHASE_CANARY = 'synthetic-sensitive-phase-canary';
@@ -261,6 +288,53 @@ test('state expiry consumes locally without provider requests and survives a new
   await assert.rejects(restarted.callback({ state, code: 'synthetic-code' }, NONCE), errorCode('oauth_state_expired'));
   assert.equal(fixture.calls.length, 0); assert.equal((await restarted.status()).code, 'oauth_state_expired');
   await assert.rejects(restarted.callback({ state, code: 'synthetic-code' }, NONCE), errorCode('oauth_state_invalid'));
+});
+test('pending expiry returns cleaned status when the fourth CAS succeeds after three revision conflicts', async () => {
+  const fixture = setup(); await begin(fixture); fixture.setTime(NOW + 300_000);
+  const race = expiryCleanupRace(fixture, 3);
+  const restarted = createMondayOAuthService({ ...fixture.options, store: race.store });
+  const status = await restarted.status();
+  assert.equal(status.pending, false); assert.equal(status.state, 'error'); assert.equal(status.code, 'oauth_state_expired');
+  assert.equal(race.attempts(), 4);
+  const { value } = await connectionRecord(fixture);
+  assert.equal(value.attempt, null); assert.equal(value.tokens, null);
+  assert.equal(fixture.calls.length, 0); assert.equal(fixture.identityCalls(), 0); assert.equal(fixture.verificationCalls(), 0);
+});
+test('pending expiry retains the bounded 409 when all four cleanup CAS operations conflict', async () => {
+  const fixture = setup(); await begin(fixture); fixture.setTime(NOW + 300_000);
+  const before = (await connectionRecord(fixture)).value;
+  const race = expiryCleanupRace(fixture, 4);
+  const restarted = createMondayOAuthService({ ...fixture.options, store: race.store });
+  await assert.rejects(restarted.status(), errorCode('operation_in_progress'));
+  assert.equal(race.attempts(), 4); assert.deepEqual((await connectionRecord(fixture)).value, before);
+  assert.equal(fixture.calls.length, 0);
+});
+test('pending expiry preserves and returns a new live attempt installed after fourth successful cleanup', async () => {
+  const fixture = setup(); await begin(fixture); fixture.setTime(NOW + 300_000);
+  const race = expiryCleanupRace(fixture, 3, 'live');
+  const restarted = createMondayOAuthService({ ...fixture.options, store: race.store });
+  const status = await restarted.status();
+  assert.equal(status.pending, true); assert.equal(status.code, null); assert.equal(race.attempts(), 4);
+  const { value } = await connectionRecord(fixture);
+  assert.deepEqual(value.attempt, { id: OTHER_NONCE, kind: 'authorize', deadline: NOW + 600_000 });
+  assert.equal(value.tokens, null); assert.equal(fixture.calls.length, 0);
+});
+test('pending expiry cleans a replacement whose deadline equals now within the remaining CAS budget', async () => {
+  const fixture = setup(); await begin(fixture); fixture.setTime(NOW + 300_000);
+  const race = expiryCleanupRace(fixture, 0, 'expired_once');
+  const restarted = createMondayOAuthService({ ...fixture.options, store: race.store });
+  const status = await restarted.status();
+  assert.equal(status.pending, false); assert.equal(status.code, 'oauth_state_expired'); assert.equal(race.attempts(), 2);
+  assert.equal((await connectionRecord(fixture)).value.attempt, null); assert.equal(fixture.calls.length, 0);
+});
+test('pending expiry never returns expired replacements or resets the four CAS budget', async () => {
+  const fixture = setup(); await begin(fixture); fixture.setTime(NOW + 300_000);
+  const race = expiryCleanupRace(fixture, 0, 'expired_every');
+  const restarted = createMondayOAuthService({ ...fixture.options, store: race.store });
+  await assert.rejects(restarted.status(), errorCode('operation_in_progress'));
+  assert.equal(race.attempts(), 4);
+  assert.deepEqual((await connectionRecord(fixture)).value.attempt, { id: OTHER_NONCE, kind: 'authorize', deadline: NOW + 300_000 });
+  assert.equal(fixture.calls.length, 0);
 });
 test('concurrent callbacks consume state once before a single exchange, including across services', async () => {
   const fixture = setup(); const second = createMondayOAuthService(fixture.options); const { state } = await begin(fixture);
