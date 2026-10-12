@@ -46,8 +46,12 @@ function board(request: FastifyRequest): MondayBoardId {
 }
 function callbackParams(url: string): MondayOAuthCallbackParams {
   const query = new URL(url, 'https://office.invalid').searchParams;
-  const fields = ['state', 'code', 'error', 'status', 'error_description'];
+  const fields = ['state', 'code', 'error', 'status', 'error_description', 'scope'];
   if ([...query.keys()].some(key => !fields.includes(key)) || fields.some(key => query.getAll(key).length > 1)) throw new MondayOAuthError('oauth_state_invalid', 403);
+  // Monday documents optional callback scope metadata. It never proves a grant:
+  // discard it and keep validating the actual token's exact read-only scopes.
+  const scope = query.get('scope');
+  if (scope !== null && (scope.length > 1024 || /[\u0000-\u001f\u007f]/.test(scope))) throw new MondayOAuthError('oauth_state_invalid', 403);
   // Provider descriptions are intentionally discarded, never logged/reflected.
   if ((query.get('error_description')?.length ?? 0) > 1024) throw new MondayOAuthError('oauth_state_invalid', 403);
   const state = query.get('state');
@@ -111,9 +115,12 @@ export function registerMondayRoutes(app: FastifyInstance, runtime?: MondayRunti
     let outcome = 'error';
     try {
       const result = await service().callback(callbackParams(request.url), browserNonce(request.headers.cookie));
+      // Clear only after state and nonce were validated and the callback finished.
+      // An unbound callback must not erase a legitimate browser's live nonce.
+      reply.header('Set-Cookie', nonceCookie('', 0));
       if (result.state === 'connected' && result.code === null && !result.pending) outcome = 'complete';
     } catch { /* Fixed redirect only; no raw codes, provider errors or secrets. */ }
-    return reply.header('Set-Cookie', nonceCookie('', 0)).code(303).redirect(`${RETURN_PATH}?oauth=${outcome}`);
+    return reply.code(303).redirect(`${RETURN_PATH}?oauth=${outcome}`);
   });
   app.post('/office-api/monday/refresh', async request => {
     authorize(request, true); body(request, []);
