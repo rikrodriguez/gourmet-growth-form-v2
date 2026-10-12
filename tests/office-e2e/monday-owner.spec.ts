@@ -1,4 +1,5 @@
 import { test as base, expect, type Page, type Route } from '@playwright/test';
+import { MONDAY_CALLBACK_QUERY_REASONS, parseMondayOAuthReturn } from '../../src/office/monday-oauth-return';
 
 type MockResponse = { status?: number; body: unknown };
 type MockHandler = (route: Route) => MockResponse | Promise<MockResponse>;
@@ -370,6 +371,39 @@ test('a valid callback error marker keeps the connection confirmed by the API', 
   await expect(page.getByTestId('monday-reading')).toHaveCount(0);
   expect(monday.calls.every(call => call.method === 'GET' && [`${api}/owner/session`, `${api}/status`].includes(call.path))).toBe(true);
   await expectFits(page);
+});
+
+test('closed callback query reasons render informational markers without granting connection or data access', async ({ page, monday }) => {
+  monday.respond('GET', `${api}/owner/session`, { body: ownerSession });
+  monday.respond('GET', `${api}/status`, { body: { ...connection('disconnected'), pending: true } });
+  expect(MONDAY_CALLBACK_QUERY_REASONS).toEqual([
+    'query_duplicate_state', 'query_duplicate_code', 'query_duplicate_error',
+    'query_duplicate_status', 'query_duplicate_description', 'query_duplicate_scope',
+    'query_scope_too_long', 'query_scope_control', 'query_description_too_long',
+    'query_state_missing', 'query_state_empty',
+  ]);
+  for (const reason of MONDAY_CALLBACK_QUERY_REASONS) {
+    await test.step(reason, async () => {
+      const search = `?oauth=error&stage=callback_query&reason=${reason}`;
+      expect(parseMondayOAuthReturn(search)).toEqual({ stage: 'callback_query', reason });
+      const callsBefore = monday.calls.length;
+      await page.goto(`/office/monday${search}`);
+      await expect(page.getByTestId('monday-connection-state')).toHaveText('Desconectado');
+      await expect(page.getByRole('button', { name: 'Conectar Monday', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Leer tablero', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Leer actualizaciones', exact: true })).toBeDisabled();
+      await expect(page.getByTestId('monday-reading')).toHaveCount(0);
+      await expect(page.getByTestId('monday-status-update-result')).toHaveCount(0);
+      const calls = monday.calls.slice(callsBefore);
+      expect(calls).toContainEqual({ method: 'GET', path: `${api}/owner/session` });
+      expect(calls).toContainEqual({ method: 'GET', path: `${api}/status` });
+      expect(calls.every(call => call.method === 'GET' && [`${api}/owner/session`, `${api}/status`].includes(call.path))).toBe(true);
+      const marker = page.getByTestId('monday-oauth-return-diagnostic');
+      await expect(marker).toContainText('Diagnóstico del retorno OAuth anterior (informativo).');
+      await expect(marker.locator('code')).toHaveText(`stage=callback_query | code=${reason}`);
+      await expectFits(page);
+    });
+  }
 });
 
 const callbackPendingCaption = /(?:Consentimiento|Operación de integración) pendiente\./;

@@ -7,7 +7,7 @@ import { MONDAY_OWNER_CSRF_HEADER, MONDAY_OWNER_LOGIN_COOKIE, MONDAY_OWNER_COOKI
 import { MONDAY_READ_BOARD_IDS, MONDAY_RECORD_BOARD_IDS } from './monday-read';
 import type { MondayBoardId } from './monday-read';
 import type { MondayRuntime } from './monday-runtime';
-import { isMondayOAuthCallbackStage, mondayOAuthCallbackReason, mondayOAuthErrorReturn, type MondayOAuthCallbackStage } from '../monday-oauth-return';
+import { isMondayOAuthCallbackStage, mondayOAuthCallbackReason, mondayOAuthErrorReturn, type MondayOAuthCallbackStage, MONDAY_CALLBACK_QUERY_REASONS } from '../monday-oauth-return';
 
 export const MONDAY_CALLBACK_PATH = '/office-api/monday/oauth/callback';
 export const MONDAY_OAUTH_NONCE_COOKIE = '__Secure-gourmet-monday-oauth-nonce';
@@ -44,18 +44,33 @@ function board(request: FastifyRequest): MondayBoardId {
   if (typeof id !== 'string' || !(MONDAY_RECORD_BOARD_IDS as readonly string[]).includes(id)) throw new OfficeError('FORBIDDEN_MONDAY_BOARD', 403);
   return id as MondayBoardId;
 }
+class MondayCallbackQueryError extends Error {
+  constructor(readonly reason: typeof MONDAY_CALLBACK_QUERY_REASONS[number]) {
+    super('MONDAY_CALLBACK_QUERY_REJECTED');
+  }
+}
 function callbackParams(url: string): MondayOAuthCallbackParams {
   const query = new URL(url, 'https://office.invalid').searchParams;
-  const fields = ['state', 'code', 'error', 'status', 'error_description', 'scope'];
-  if ([...query.keys()].some(key => !fields.includes(key)) || fields.some(key => query.getAll(key).length > 1)) throw new MondayOAuthError('oauth_state_invalid', 403);
+  // RFC 6749 section 4.1.2 requires ignoring unrecognized response fields.
+  // Extract only these protocol fields; discarded metadata never reaches the
+  // service, a redirect, persistence, logs or outbound requests.
+  const duplicateReasons = {
+    state: 'query_duplicate_state', code: 'query_duplicate_code', error: 'query_duplicate_error',
+    status: 'query_duplicate_status', error_description: 'query_duplicate_description', scope: 'query_duplicate_scope',
+  } as const;
+  for (const [field, reason] of Object.entries(duplicateReasons)) {
+    if (query.getAll(field).length > 1) throw new MondayCallbackQueryError(reason);
+  }
   // Monday documents optional callback scope metadata. It never proves a grant:
   // discard it and keep validating the actual token's exact read-only scopes.
   const scope = query.get('scope');
-  if (scope !== null && (scope.length > 1024 || /[\u0000-\u001f\u007f]/.test(scope))) throw new MondayOAuthError('oauth_state_invalid', 403);
+  if (scope !== null && scope.length > 1024) throw new MondayCallbackQueryError('query_scope_too_long');
+  if (scope !== null && /[\u0000-\u001f\u007f]/.test(scope)) throw new MondayCallbackQueryError('query_scope_control');
   // Provider descriptions are intentionally discarded, never logged/reflected.
-  if ((query.get('error_description')?.length ?? 0) > 1024) throw new MondayOAuthError('oauth_state_invalid', 403);
+  if ((query.get('error_description')?.length ?? 0) > 1024) throw new MondayCallbackQueryError('query_description_too_long');
   const state = query.get('state');
-  if (!state) throw new MondayOAuthError('oauth_state_invalid', 403);
+  if (state === null) throw new MondayCallbackQueryError('query_state_missing');
+  if (state === '') throw new MondayCallbackQueryError('query_state_empty');
   const result: MondayOAuthCallbackParams = { state };
   for (const key of ['code', 'error', 'status'] as const) {
     const value = query.get(key);
@@ -128,7 +143,7 @@ export function registerMondayRoutes(app: FastifyInstance, runtime?: MondayRunti
       if (result.state === 'connected' && result.code === null && !result.pending) return reply.code(303).redirect('/office/monday?oauth=complete');
       reason = mondayOAuthCallbackReason(result.code);
     } catch (error) {
-      reason = mondayOAuthCallbackReason(error instanceof MondayOAuthError ? error.code : null);
+      reason = mondayOAuthCallbackReason(error instanceof MondayCallbackQueryError ? error.reason : error instanceof MondayOAuthError ? error.code : null);
     }
     return reply.code(303).redirect(mondayOAuthErrorReturn(stage, reason));
   });

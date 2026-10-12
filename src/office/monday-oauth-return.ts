@@ -2,11 +2,18 @@ const CALLBACK_STAGES = [
   'callback_query', 'callback_nonce', 'callback_state', 'provider_decision',
   'token_exchange', 'token_response', 'identity_check', 'board_access_check', 'persist_connection',
 ] as const;
+export const MONDAY_CALLBACK_QUERY_REASONS = [
+  'query_duplicate_state', 'query_duplicate_code', 'query_duplicate_error',
+  'query_duplicate_status', 'query_duplicate_description', 'query_duplicate_scope',
+  'query_scope_too_long', 'query_scope_control', 'query_description_too_long',
+  'query_state_missing', 'query_state_empty',
+] as const;
 const CALLBACK_REASONS = [
   'disabled', 'configuration_invalid', 'oauth_state_invalid', 'oauth_state_expired',
   'oauth_denied', 'operation_in_progress', 'code_exchange_uncertain', 'token_invalid',
   'scope_mismatch', 'identity_mismatch', 'board_access_unverified', 'connection_changed',
   'storage_unavailable', 'callback_failed',
+  ...MONDAY_CALLBACK_QUERY_REASONS,
 ] as const;
 export type MondayOAuthCallbackStage = typeof CALLBACK_STAGES[number];
 export type MondayOAuthCallbackReason = typeof CALLBACK_REASONS[number];
