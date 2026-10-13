@@ -72,7 +72,14 @@ test('concurrent tabs require a new read and exact review after another tab chan
   await open(page); await bind(page); await save(page); await review(page);
   const second = await context.newPage(); await second.goto('/office/communications'); await second.getByLabel('Revisión guardada', { exact: true }).selectOption({ index: 1 }); await second.getByRole('button', { name: 'Editar borrador' }).click(); await second.getByLabel('Texto del mensaje', { exact: true }).fill('Cambio en otra pestaña'); await second.getByRole('button', { name: 'Guardar revisión exacta' }).click();
   await expect(second.getByTestId('communications-draft-text')).toHaveText('Cambio en otra pestaña'); await page.bringToFront();
-  await expect(page.getByRole('checkbox', { name: /He revisado el contenido exacto de la revisión/ })).not.toBeChecked(); await page.getByRole('button', { name: 'Verificar revisión guardada' }).click();
+  // Playwright pages can all remain active (https://playwright.dev/docs/pages).
+  // Whether visibility cleared consent or not, the obsolete review must fail
+  // closed: either the fresh preflight or the server revision guard rejects it.
+  if (await page.getByRole('checkbox', { name: /He revisado el contenido exacto de la revisión/ }).isChecked()) {
+    await page.getByRole('button', { name: 'Aprobar revisión 1 sin enviar' }).click();
+  } else {
+    await page.getByRole('button', { name: 'Verificar revisión guardada' }).click();
+  }
   await expect(page.getByTestId('communications-outbox-item')).toHaveCount(0); await expect(page.getByRole('alert').first()).toBeVisible(); await expect(page.getByRole('button', { name: 'Aprobar revisión 1 sin enviar' })).toBeDisabled(); await second.close();
 });
 
