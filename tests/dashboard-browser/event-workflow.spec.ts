@@ -108,8 +108,17 @@ test('one exact synthetic identity spans all event views, with reachable brief a
     }
     await capture(page, testInfo, stage);
   }
-  for (const name of ['Propuestas', 'Enlaces de pago', 'Calendario', 'Tastings', 'Proveedores', 'Logística']) {
+  for (const name of ['Propuestas', 'Eventos', 'Enlaces de pago', 'Calendario', 'Tastings', 'Proveedores', 'Logística']) {
     await navigate(page, name);
+    if (name === 'Propuestas' || name === 'Eventos') {
+      // Main quote navigation must close Guardadas before an explicit DEMO selection.
+      await expect(page.getByTestId('dashboard-quotes-saved')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('dashboard-persisted-quotes')).toContainText('Sin conexión operativa configurada');
+      await expect(workspace(page)).toHaveCount(0);
+      await expect(page.getByTestId('persisted-quote-workspace')).toHaveCount(0);
+      await page.getByTestId('dashboard-quotes-demo').click();
+      await expect(page.getByTestId('dashboard-persisted-quotes')).toHaveCount(0);
+    }
     await expect(workspace(page)).toHaveCount(1);
     await expect(workspace(page).locator('.gew-case')).toContainText('DEMO-EVT-042');
     await noOverflow(page);
