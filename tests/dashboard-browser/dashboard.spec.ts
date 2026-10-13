@@ -217,3 +217,51 @@ test('keyboard navigation has named controls, visible focus, and separate Office
   await page.keyboard.press('Home'); await expect(page.getByRole('tab', { name: 'Mi oficina', exact: true })).toBeFocused();
   await page.getByRole('link', { name: 'Dashboard', exact: true }).click(); await expect(page.getByTestId('approved-metric-opportunities')).toBeVisible(); await noOverflow(page);
 });
+
+test('Propuestas and Eventos default to closed Guardadas without implicit sessions or quote reads', async ({ page }) => {
+  const calls: string[] = [];
+  page.on('request', request => { if (request.url().includes('/api/office/event-quotes')) calls.push(`${request.method()} ${new URL(request.url()).pathname}`); });
+  await open(page);
+  for (const name of ['Propuestas', 'Eventos']) {
+    await navigate(page, name);
+    await expect(page.getByTestId('dashboard-quotes-saved')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('dashboard-persisted-quotes')).toContainText('Sin conexión operativa configurada');
+    await expect(page.getByTestId('event-workspace')).toHaveCount(0);
+    await expect(page.getByTestId('persisted-quote-workspace')).toHaveCount(0);
+    await page.getByTestId('dashboard-verify-quotes').click();
+    await expect(page.getByTestId('dashboard-verify-quotes')).toBeEnabled();
+    await expect(page.getByTestId('dashboard-persisted-quotes')).toContainText('cotizaciones guardadas permanecen cerradas');
+    await expect(page.getByTestId('dashboard-quote-event')).toHaveCount(0);
+    await noOverflow(page);
+  }
+  expect(calls).toEqual([]);
+});
+
+test('DEMO is explicit, separate from Guardadas, and main quote navigation returns closed', async ({ page }) => {
+  await open(page); await navigate(page, 'Eventos');
+  await page.getByTestId('dashboard-quotes-demo').click();
+  await expect(page.getByTestId('event-workspace')).toContainText('DEMO-EVT-042');
+  await expect(page.getByTestId('dashboard-persisted-quotes')).toHaveCount(0);
+  await expect(page).toHaveURL(/#events\/consulta$/);
+  await navigate(page, 'Propuestas');
+  await expect(page.getByTestId('dashboard-persisted-quotes')).toBeVisible();
+  await expect(page.getByTestId('event-workspace')).toHaveCount(0);
+  await page.goBack();
+  await expect(page.getByTestId('event-workspace')).toBeVisible();
+  await page.goForward();
+  await expect(page.getByTestId('dashboard-persisted-quotes')).toBeVisible();
+  await expect(page.getByTestId('event-workspace')).toHaveCount(0);
+});
+
+test('explicit legacy demo route remains reachable but plain routes never choose it', async ({ page }) => {
+  await page.goto('/office/dashboard#quotes/revision');
+  await expect(page.getByTestId('event-workspace')).toBeVisible();
+  await expect(page.getByTestId('dashboard-quotes-demo')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('dashboard-quotes-saved').click();
+  await expect(page).toHaveURL(/#quotes$/);
+  await expect(page.getByTestId('dashboard-persisted-quotes')).toBeVisible();
+  await expect(page.getByTestId('event-workspace')).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByTestId('dashboard-quotes-saved')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('event-workspace')).toHaveCount(0);
+});

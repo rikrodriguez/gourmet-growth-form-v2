@@ -45,6 +45,7 @@ function BoundWorkspace({ client, eventId }: PersistedQuoteWorkspaceProps) {
   const reviewKey = view ? exactQuoteReviewKey(view) : null;
   const writable = !!status?.enabled && !!status.session.canWrite && !expired && status.session.expiresAtMs > Date.now()
     && !!status.catalog && status.catalog.validUntilMs > Date.now() && !needsReload && !busy;
+  const readOnly = !!status && !expired && !status.session.canWrite && !!status.catalog;
   const approveBlocked = !writable || dirty || reviewed !== reviewKey || verified !== reviewKey || quoteApprovalBlocked(view, status);
 
   function clearPrivateState() {
@@ -122,7 +123,8 @@ function BoundWorkspace({ client, eventId }: PersistedQuoteWorkspaceProps) {
     <div className="gew-safety"><span>No envío ni cobro · aprobación exclusivamente interna</span><span>Fecha y lugar propuestos · reserva sin confirmar</span></div>
     <div className="gew-live" role="status" aria-live="polite">{busy ?? (view ? `Revisión guardada ${view.record.revision}. ${labels[view.currentQuoteStatus]}.` : status ? 'Completa la consulta manual para crear el expediente.' : 'Acceso pendiente de verificar.')}</div>
     {error && <p className="gew-notice gew-notice-danger" role="alert">{error}</p>}
-    {(!status?.enabled || expired) && !busy && <div className="gew-notice gew-notice-warning">Operación bloqueada. Se requiere identidad existente, permisos y catálogo vigente autorizado en el servidor. Recarga después de resolverlo.</div>}
+    {readOnly && !busy && <p className="gew-notice">Solo lectura. Puedes revisar el expediente guardado; guardar, generar y aprobar permanecen bloqueados.</p>}
+    {(!status?.enabled || expired) && !readOnly && !busy && <div className="gew-notice gew-notice-warning">Operación bloqueada. Se requiere identidad existente, permisos y catálogo vigente autorizado en el servidor. Recarga después de resolverlo.</div>}
     {status?.session.mode === 'test' && <p className="gew-notice">Ámbito de prueba aislado. Los datos y precios de prueba no autorizan una operación comercial.</p>}
     <div className="gew-actions"><button type="button" className="gew-button" onClick={() => void reload()} disabled={!!busy}>Recargar expediente</button></div>
     {status && <div className="gew-columns"><div><Card title={savedBrief ? `Brief manual · versión ${savedBrief.version}` : 'Consulta manual y brief'}>

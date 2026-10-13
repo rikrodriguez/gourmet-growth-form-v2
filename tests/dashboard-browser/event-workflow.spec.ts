@@ -31,6 +31,8 @@ async function openEvent(page: Page) {
   await page.goto('/office/dashboard');
   await expect(page.getByTestId('approved-metric-opportunities')).toBeVisible();
   await navigate(page, 'Eventos');
+  await expect(page.getByTestId('dashboard-persisted-quotes')).toBeVisible();
+  await page.getByTestId('dashboard-quotes-demo').click();
   await expect(workspace(page)).toBeVisible();
 }
 async function noOverflow(page: Page) {
@@ -252,7 +254,7 @@ test('draft and planning edits persist across sidebar views and history, while a
   await workspace(page).getByLabel('Zona propuesta', { exact: true }).fill('San Isidro');
   await navigate(page, 'Dashboard');
   await expect(workspace(page)).toHaveCount(0);
-  await navigate(page, 'Propuestas'); await tab(page, 'Revisión exacta');
+  await navigate(page, 'Propuestas'); await page.getByTestId('dashboard-quotes-demo').click(); await tab(page, 'Revisión exacta');
   await expect(workspace(page).getByLabel('Asunto', { exact: true })).toHaveValue('Revisión temporal conservada');
   await expect(attestations(page).nth(0)).toBeChecked();
   await page.goBack();

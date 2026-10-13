@@ -48,9 +48,9 @@ test('unimplemented catalog remains disabled while proposals and payment simulat
   assert.match(html, /disabled="" title="Catálogo: pendiente de implementación"/);
   assert.match(html, /<span>Propuestas<\/span>/);
   assert.match(html, /<span>Enlaces de pago<\/span>/);
-  const quote = render(<DashboardPage initialSnapshot={await fixture()} initialSection="quotes" />);
+  const quote = render(<DashboardPage initialSnapshot={await fixture()} initialSection="quotes" initialEventMode="demo" />);
   assert.match(quote, /Cotización · QUOTE-042/); assert.match(quote, /v1 · obsoleta/);
-  const payment = render(<DashboardPage initialSnapshot={await fixture()} initialSection="payments" />);
+  const payment = render(<DashboardPage initialSnapshot={await fixture()} initialSection="payments" initialEventMode="demo" />);
   assert.match(payment, /URL real<\/dt><dd>No generada/);
   assert.doesNotMatch(payment, /href="https:/);
 });
@@ -179,7 +179,7 @@ test('approved shell navigation focuses new headings and route parsing only acce
   assert.match(shell, /headingRef.current\?\.focus\(\)/);
   assert.match(shell, /<h1 ref=\{headingRef\} tabIndex=\{-1\}/);
   assert.match(source, /popstate/); assert.match(source, /hashchange/);
-  assert.match(source, /visible=\{eventTab !== undefined\}/);
+  assert.match(source, /visible=\{eventTab !== undefined && eventMode === 'demo'\}/);
   assert.equal(sectionFromHash('#quotes/revision'), 'quotes');
   assert.equal(sectionFromHash('#events/brief'), 'events');
   assert.equal(sectionFromHash('#payments'), 'payments');

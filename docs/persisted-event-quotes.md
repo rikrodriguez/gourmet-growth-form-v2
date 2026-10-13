@@ -1,6 +1,6 @@
 # Expediente y cotización persistentes: composición explícita
 
-Este lote añade código funcional con persistencia real probada en PostgreSQL aislado. No registra rutas en el servidor de Office, staging ni Dashboard existente. La vista nueva es un componente explícito que reutiliza los estilos aprobados; los ejemplos anteriores siguen siendo DEMO y no adquieren autoridad comercial.
+Este lote añade código funcional con persistencia real probada en PostgreSQL aislado. No registra rutas en los servidores existentes de Office o staging. El Dashboard monta el componente en Propuestas/Eventos con acceso cerrado por defecto, según [dashboard-persisted-quotes.md](dashboard-persisted-quotes.md). Reutiliza los estilos aprobados; los ejemplos anteriores siguen siendo DEMO y no adquieren autoridad comercial.
 
 ## Vertical implementada
 
@@ -47,8 +47,10 @@ Con Node24 y la base aislada del README:
 
 Los tests event-quote-* cubren cálculo, contexto, permisos, CSRF, cifrado, concurrencia, rollback, replay, archivo inerte, revisiones e inicio de un proceso independiente que recupera la aprobación y los mismos bytes. El harness de navegador usa React→HTTP→PostgreSQL con datos únicamente sintéticos, y borra solo su namespace temporal al finalizar.
 
-En el executor local se verifican las pruebas de dominio/HTTP/UI SSR/cliente y PostgreSQL. Chromium falla al arrancar por `socket() failed: Operation not permitted`; la interacción y las capturas de esta nueva vista quedan pendientes. Docker tampoco está disponible, por lo que sus cuatro contratos y la imagen necesitan CI. El workflow propuesto añade solo el harness al CI ya existente, sin ampliar triggers, permisos, secretos ni publicación de imágenes. Los resultados anteriores de CI no validan este nuevo lote.
+En el executor local se verifican las pruebas de dominio/HTTP/UI SSR/cliente y PostgreSQL. Chromium falla al arrancar por `socket() failed: Operation not permitted`; la interacción y las capturas de esta nueva vista quedan pendientes. Docker tampoco está disponible, por lo que sus cuatro contratos y la imagen necesitan CI. El workflow existente ya ejecuta el harness, sin ampliar triggers, permisos, secretos ni publicación de imágenes; el nuevo montaje no modifica ese workflow. Los resultados anteriores de CI no validan este nuevo lote.
 
 ## Inputs necesarios para operación comercial
 
-Catálogo autorizado, moneda y reglas tributarias/anticipo/servicio/logística/vigencia; propietario y usuarios con acceso; identidad y vault duraderos configurados mediante canal seguro; revisión/aplicación de migración y autorización de despliegue. Sin ello, el módulo permanece sin registrar y bloqueado para uso comercial. No se requieren cuentas de Gmail, Monday, pagos o Regus para desarrollar y probar esta vertical.
+La fuente única para preparar los campos y límites es [catalogue-contract.md](catalogue-contract.md), con su esquema JSON sin precios de ejemplo.
+
+Catálogo autorizado, moneda y reglas tributarias/anticipo/servicio/logística/vigencia; propietario y usuarios con acceso; identidad y vault duraderos configurados mediante canal seguro; revisión/aplicación de migración y autorización de despliegue. Sin ello, el módulo permanece cerrado en la interfaz y la API sin registrar en los servidores existentes. No se requieren cuentas de Gmail, Monday, pagos o Regus para desarrollar y probar esta vertical.
