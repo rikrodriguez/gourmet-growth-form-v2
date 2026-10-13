@@ -2,7 +2,7 @@ import React from 'react';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { AttachmentList, CommunicationsHistory, CommunicationsPage, CommunicationsSessionState, SavedDraftReview, SourceSnapshotCard } from '../../src/office/CommunicationsPage';
+import { AttachmentList, CommunicationsField, CommunicationsHistory, CommunicationsPage, CommunicationsSessionState, SavedDraftReview, SourceSnapshotCard } from '../../src/office/CommunicationsPage';
 import { communicationsClient, CommunicationsClientError, draftBlockReason, followUpAllowed, latestDrafts, validateCommunicationsReview, verifyDraftContext } from '../../src/office/communications-client';
 import { createCommunicationsWorkflow } from '../../src/office/backend/communications';
 import { communicationsFixtureObservations } from '../../src/office/backend/communications-fixture';
@@ -170,4 +170,36 @@ test('transport honors 512 KiB draft payloads, rejects oversized UTF-8 bodies an
     await assert.rejects(communicationsClient.read(signal), (failure: unknown) => failure instanceof CommunicationsClientError && failure.status === status && failure.code === error);
   }
   assert.equal(calls, 3);
+});
+
+
+test('explicit field labels stay separate from prefilled textarea and select content', () => {
+  for (const [id, label, control] of [
+    ['communications-body-text', 'Texto del mensaje', <textarea value="Texto ya guardado" onChange={noop} />],
+    ['communications-body-html', 'HTML del mensaje (no se renderiza)', <textarea value="<p>HTML guardado</p>" onChange={noop} />],
+    ['communications-purpose', 'Propósito', <select value="reply" onChange={noop}><option value="reply">Respuesta</option><option value="follow_up" disabled>Seguimiento</option></select>],
+    ['communications-saved-revision', 'Revisión guardada', <select value="revision-1" onChange={noop}><option value="revision-1">Asunto guardado · revisión 1</option></select>],
+  ] as const) {
+    const markup = renderToStaticMarkup(<CommunicationsField id={id} label={label}>{control}</CommunicationsField>);
+    const labels = [...markup.matchAll(/<label for="([^"]+)">([^<]*)<\/label>/g)];
+    assert.equal(labels.length, 1);
+    assert.equal(labels[0][1], id);
+    assert.equal(labels[0][2], label);
+    assert.match(markup, new RegExp(`</label><(?:textarea|select)[^>]* id="${id}"`));
+    assert.equal((markup.match(new RegExp(` id="${id}"`, 'g')) ?? []).length, 1);
+    assert.doesNotMatch(markup, /<label[^>]*>[^<]*<(?:textarea|select)/);
+  }
+});
+
+test('real revision and association selectors have explicit stable label-control associations', async () => {
+  const t = await setup();
+  const markup = renderToStaticMarkup(<CommunicationsPage initialView={t.result()} />);
+  for (const [id, label, testId] of [
+    ['communications-association', 'Vínculo vigente para el borrador', 'communications-association-select'],
+    ['communications-saved-revision', 'Revisión guardada', 'communications-saved-select'],
+  ]) {
+    assert.ok(markup.includes(`<label for="${id}">${label}</label><select`));
+    assert.match(markup, new RegExp(`<select[^>]*data-testid="${testId}"[^>]*id="${id}"`));
+    assert.equal((markup.match(new RegExp(` id="${id}"`, 'g')) ?? []).length, 1);
+  }
 });

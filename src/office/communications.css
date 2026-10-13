@@ -59,6 +59,7 @@
 .communications-history-list > li > .communications-tag { margin: 4px 0 4px 10px; }
 .communications-message-text { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-family: inherit; font-size: 14px; line-height: 1.7; background: #f5f7fb; color: #303d56; padding: 18px; border-radius: 10px; border: 1px solid #e0e6ee; max-width: 100%; margin: 10px 0 18px; }
 .communications-field { display: grid; gap: 7px; font-size: 13px; font-weight: 600; margin: 18px 0; min-width: 0; }
+.communications-field > label { font: inherit; }
 .communications-field input, .communications-field textarea, .communications-field select { display: block; width: 100%; max-width: 100%; min-width: 0; min-height: 44px; border: 1px solid #bac5d4; background: #fff; color: #283650; border-radius: 9px; padding: 10px 12px; font: inherit; font-weight: 400; }
 .communications-field textarea { resize: vertical; line-height: 1.6; }
 .communications-check { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; min-height: 44px; font-size: 14px; }
