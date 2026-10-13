@@ -64,8 +64,8 @@ test('explicit open uses native POST, exact server Location, isolated redirect a
  destinationApp.get('/*',async(request,reply)=>{
   destinations.push({url:destinationOrigin+request.url,method:request.method,data:request.body??null,headers:request.headers});
   return reply.header('Cache-Control','no-store').header('Referrer-Policy','no-referrer')
-   .header('Content-Security-Policy',"default-src 'none'").type('text/html')
-   .send('<!doctype html><title>Destino sintético aislado</title><p>Prueba local. Ningún proveedor fue contactado.</p>');
+   .header('Content-Security-Policy',"default-src 'none'").type('text/html; charset=utf-8')
+   .send('<!doctype html><meta charset="utf-8"><title>Destino sintético aislado</title><p>Prueba local. Ningún proveedor fue contactado.</p>');
  });
  context.on('request',request=>{
   const url=new URL(request.url());
