@@ -1,12 +1,13 @@
 name: Gourmet Office Recovery Checks
 
-# This workflow checks only the two approved verification branches. It never
+# This workflow checks only the three approved verification branches. It never
 # publishes an image, changes another branch, connects staging or deploys.
 on:
   push:
     branches:
       - codex/gourmet-office-demo-recovery-20261010
       - codex/canonical-reference-bridge-20261012
+      - feat/office-communications-review-20261013
 
 permissions:
   contents: read
@@ -17,7 +18,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.repository == 'rikrodriguez/gourmet-growth-form-v2' && (github.ref == 'refs/heads/codex/gourmet-office-demo-recovery-20261010' || github.ref == 'refs/heads/codex/canonical-reference-bridge-20261012')
+    if: github.repository == 'rikrodriguez/gourmet-growth-form-v2' && (github.ref == 'refs/heads/codex/gourmet-office-demo-recovery-20261010' || github.ref == 'refs/heads/codex/canonical-reference-bridge-20261012' || github.ref == 'refs/heads/feat/office-communications-review-20261013')
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -70,6 +71,9 @@ jobs:
 
       - name: Check compiled staging authentication with isolated fixtures
         run: npm run test:staging:e2e
+
+      - name: Check local communications review desktop and mobile (16 cases)
+        run: npm run test:communications:e2e
 
       - name: Build the local staging runtime image without publishing
         run: docker build --target runtime --tag gourmet-office-ci:checked .

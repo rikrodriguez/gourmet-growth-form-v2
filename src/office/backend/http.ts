@@ -13,10 +13,12 @@ import { MondayReadError } from './monday-read';
 import type { MondayRuntime } from './monday-runtime';
 import { assertProvenanceRequest, projectDemoProvenance } from './provenance';
 import type { OfficeProvenanceOptions } from './provenance';
+import { registerFixtureCommunicationsRoutes, type FixtureCommunicationsDependencies } from './communications-http';
 
 const ORIGINS = new Set(['http://127.0.0.1:4175', 'http://localhost:4175', 'http://127.0.0.1:4180', 'http://localhost:4180']);
 const HOSTS = new Set([...ORIGINS].map(origin => new URL(origin).host));
-export function createOfficeApi(store: OfficeStore, options: { clock?: () => number; staging?: StagingAccess; staticRoot?: string; monday?: MondayRuntime; provenance?: OfficeProvenanceOptions } & SalesFlowOptions = {}) {
+export function createOfficeApi(store: OfficeStore, options: { clock?: () => number; staging?: StagingAccess; staticRoot?: string; monday?: MondayRuntime; provenance?: OfficeProvenanceOptions; communicationsFixture?: FixtureCommunicationsDependencies } & SalesFlowOptions = {}) {
+  if (options.staging && options.communicationsFixture) throw new OfficeError('COMMUNICATIONS_FIXTURE_LOCAL_ONLY', 503);
   const clock = options.clock ?? Date.now;
   const sessions = new DevelopmentSessions(clock);
   const app = Fastify({ logger: false, bodyLimit: 16_384, trustProxy: false });
@@ -97,6 +99,7 @@ export function createOfficeApi(store: OfficeStore, options: { clock?: () => num
   app.post('/office-api/commands', command);
   app.post('/office-api/command', command);
   registerMondayRoutes(app, options.monday, clock);
+  registerFixtureCommunicationsRoutes(app, options.communicationsFixture);
   if (options.staticRoot) {
     app.register(fastifyStatic, { root: options.staticRoot, prefix: '/office/', index: false, dotfiles: 'deny', cacheControl: false });
     app.get('/', (_request, reply) => reply.redirect('/office/'));
