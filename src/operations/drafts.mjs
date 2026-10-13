@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { calculateQuoteTotals, QuoteCalculationError } from './quote-calculation.mjs';
 
 // Pure local pilot functions. The caller authenticates actors and authorizes each
 // event before invoking these functions. This module has no sending or publishing
@@ -156,12 +157,14 @@ function quoteContent(input, revision = false) {
   const taxBps = integer(input.taxBps, 0, 10_000);
   const depositBps = integer(input.depositBps, 0, 10_000);
   if (revision) integer(input.expectedRevision, 1, 1_000_000, 'invalid_revision');
-  const subtotal = lines.reduce((sum, line) => sum + BigInt(line.qty) * BigInt(line.unitPriceCents), 0n);
-  const tax = (subtotal * BigInt(taxBps) + 5_000n) / 10_000n;
-  const total = subtotal + tax;
-  const deposit = (total * BigInt(depositBps) + 5_000n) / 10_000n;
-  if (total > BigInt(MAX_CENTS)) fail('quote_total_limit');
-  return { ...who, currency: 'USD', catalogVersion: input.catalogVersion, lines, taxBps, depositBps, subtotalCents: Number(subtotal), taxCents: Number(tax), totalCents: Number(total), depositCents: Number(deposit), status: 'pending_approval', financialMeaning: 'unaccepted_quote_scenario', syntheticOnly: true };
+  let totals;
+  try {
+    totals = calculateQuoteTotals({ lines, taxBps, depositBps });
+  } catch (error) {
+    if (error instanceof QuoteCalculationError) fail(error.code);
+    throw error;
+  }
+  return { ...who, currency: 'USD', catalogVersion: input.catalogVersion, lines, taxBps, depositBps, ...totals, status: 'pending_approval', financialMeaning: 'unaccepted_quote_scenario', syntheticOnly: true };
 }
 
 export function createQuoteDraft(state, input, options) {

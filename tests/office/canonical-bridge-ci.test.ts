@@ -65,7 +65,7 @@ describe('approved canonical bridge CI boundaries', () => {
       'npm run typecheck', 'npm run build', 'npm run office:build',
       'npm run test:operations', 'npm run office:db -- start', 'npm run test:office',
       'npm run test:e2e', 'npm run test:office:e2e', 'npm run test:staging:e2e',
-      'npm run test:communications:e2e', 'npm run test:dashboard:e2e',
+      'npm run test:communications:e2e', 'npm run test:dashboard:e2e', 'npm run test:event-quotes:e2e',
       'docker build --target runtime --tag gourmet-office-ci:checked .', 'npm run office:db -- stop',
     ]) assert(workflow.split('\n').some(line => line.trim() === command || line.trim() === `run: ${command}`), `Missing check: ${command}`);
     const executableLines = workflow.split('\n').filter(line => /^        run:|^          \S/.test(line));

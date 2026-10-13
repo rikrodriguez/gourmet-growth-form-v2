@@ -55,7 +55,7 @@ jobs:
           npm run build
           npm run office:build
 
-      - name: Check synthetic operations (89 cases)
+      - name: Check synthetic operations and shared integer calculations
         run: npm run test:operations
 
       - name: Start the isolated candidate PostgreSQL database
@@ -78,6 +78,9 @@ jobs:
 
       - name: Check approved dashboard and synthetic event flow desktop and mobile (52 cases)
         run: npm run test:dashboard:e2e
+
+      - name: Check isolated persisted quote React HTTP PostgreSQL flow
+        run: npm run test:event-quotes:e2e
 
       - name: Retain synthetic dashboard and event-flow screenshots for visual review
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
