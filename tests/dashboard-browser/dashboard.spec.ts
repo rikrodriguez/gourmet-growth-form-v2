@@ -33,6 +33,9 @@ async function captureSyntheticView(page: Page, testInfo: TestInfo, section: 'ov
   await expect(page.locator('.gd-skip')).not.toBeFocused();
   await expect(page.locator('.gd-skip')).toHaveCSS('clip-path', 'inset(50%)');
   await page.evaluate(() => document.fonts.ready);
+  // Capture the same top-of-page state, including sticky navigation.
+  await page.evaluate(() => { window.scrollTo(0, 0); const sidebar = document.querySelector('.ga-sidebar'); if (sidebar) sidebar.scrollTop = 0; });
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   await page.screenshot({ path: `test-results/dashboard-visual/${testInfo.project.name}-${section}.png`, fullPage: true, animations: 'disabled', caret: 'hide' });
 }
 async function seedReview(context: BrowserContext, approve = false) {
@@ -97,6 +100,8 @@ test('read-only Kanban keeps missing fields explicit and card selection cannot m
   await expect(page.getByText('Sin fecha verificada', { exact: true })).toBeVisible();
   expect(await page.getByTestId('dashboard-opportunity').first().getAttribute('draggable')).not.toBe('true');
   await noOverflow(page); expect(writes).toEqual([]);
+  const countWidth = await page.locator('.gd-section-toolbar > p').evaluate(element => element.getBoundingClientRect().width);
+  expect(countWidth).toBeGreaterThanOrEqual(140);
   await captureSyntheticView(page, testInfo, 'opportunities');
 });
 
