@@ -96,8 +96,12 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
   assert.equal(await page.getByRole('checkbox').isChecked(), false);
   const artifact = await page.request.get('http://127.0.0.1:4197/api/office/event-quotes/BROWSER-EVENT/quotes/1/artifact'); assert.equal(artifact.status(), 200); assert.match(await artifact.text(), /Cotización v1/); assert.match(artifact.headers()['content-security-policy'], /sandbox/);
+  // Full-page captures must start at the top so sticky navigation is not stitched halfway down.
+  await page.evaluate(() => window.scrollTo(0, 0)); await page.waitForFunction(() => window.scrollY === 0);
   await page.screenshot({style: '.quote-test-controls { display: none !important; }', path:fileURLToPath(new URL('../../test-results/dashboard-visual/persisted-quote-desktop.png', import.meta.url)), fullPage:true});
-  await page.setViewportSize({width:360,height:780}); assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= window.innerWidth), true); await page.screenshot({style: '.quote-test-controls { display: none !important; }', path:fileURLToPath(new URL('../../test-results/dashboard-visual/persisted-quote-mobile.png', import.meta.url)), fullPage:true});
+  await page.setViewportSize({width:360,height:780}); assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= window.innerWidth), true);
+  await page.evaluate(() => window.scrollTo(0, 0)); await page.waitForFunction(() => window.scrollY === 0);
+  await page.screenshot({style: '.quote-test-controls { display: none !important; }', path:fileURLToPath(new URL('../../test-results/dashboard-visual/persisted-quote-mobile.png', import.meta.url)), fullPage:true});
   await page.getByRole('button',{name:'Test logout',exact:true}).click(); await page.getByText(/El acceso cambió o se retiró/).waitFor();
   assert.equal(await page.getByText('browser@example.test',{exact:true}).count(),0); assert.equal(await page.getByTestId('persisted-quote-approve').count(),0);
   const afterWithdraw = quoteRequests.length;
