@@ -1,4 +1,4 @@
-import { test, expect, type Page, type BrowserContext } from '@playwright/test';
+import { test, expect, type Page, type BrowserContext, type TestInfo } from '@playwright/test';
 
 // Actual Vite UI and guarded local API/isolated PostgreSQL, not mocked successes.
 // Response interception below is limited to intentional failure/late-read tests.
@@ -8,6 +8,10 @@ async function open(page: Page) {
 }
 async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+}
+async function captureSyntheticView(page: Page, testInfo: TestInfo, section: 'overview' | 'opportunities' | 'inbox' | 'sources') {
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({ path: `test-results/dashboard-visual/${testInfo.project.name}-${section}.png`, fullPage: true, animations: 'disabled', caret: 'hide' });
 }
 async function seedReview(context: BrowserContext, approve = false) {
   const request = context.request;
@@ -27,7 +31,7 @@ async function seedReview(context: BrowserContext, approve = false) {
   return view;
 }
 
-test('dashboard is separate, synthetic, readable and does not start a session or fetch provider data', async ({ page }) => {
+test('dashboard is separate, synthetic, readable and does not start a session or fetch provider data', async ({ page }, testInfo) => {
   const apiRequests: string[] = []; const external: string[] = [];
   page.on('request', request => { const url = new URL(request.url()); if (url.pathname.startsWith('/office-api/')) apiRequests.push(`${request.method()} ${url.pathname}`); if (!['127.0.0.1', 'localhost'].includes(url.hostname)) external.push(url.origin); });
   await open(page); await expect(page.getByTestId('dashboard-provenance')).toContainText('muestra local sintética');
@@ -38,9 +42,10 @@ test('dashboard is separate, synthetic, readable and does not start a session or
   expect(apiRequests).toEqual([]); expect(external).toEqual([]);
   await expect(page.getByRole('link', { name: 'Oficina', exact: true })).toHaveAttribute('href', '/office/');
   await expect(page.locator('.approved-office-scene')).toHaveCount(0);
+  await captureSyntheticView(page, testInfo, 'overview');
 });
 
-test('read-only Kanban keeps missing fields explicit and card selection cannot mutate stages', async ({ page }) => {
+test('read-only Kanban keeps missing fields explicit and card selection cannot mutate stages', async ({ page }, testInfo) => {
   const writes: string[] = []; page.on('request', r => { if (r.method() !== 'GET') writes.push(r.method()); });
   await open(page); await page.getByRole('button', { name: 'Oportunidades', exact: true }).click();
   await expect(page.getByTestId('dashboard-opportunity')).toHaveCount(4);
@@ -48,23 +53,26 @@ test('read-only Kanban keeps missing fields explicit and card selection cannot m
   await expect(page.getByText('Sin fecha verificada', { exact: true })).toBeVisible();
   expect(await page.getByTestId('dashboard-opportunity').first().getAttribute('draggable')).not.toBe('true');
   await noOverflow(page); expect(writes).toEqual([]);
+  await captureSyntheticView(page, testInfo, 'opportunities');
 });
 
-test('inbox filters preserve mailbox identity and disclose absent social connections', async ({ page }) => {
+test('inbox filters preserve mailbox identity and disclose absent social connections', async ({ page }, testInfo) => {
   await open(page); await page.getByRole('button', { name: 'Bandeja', exact: true }).click();
   await expect(page.getByRole('article', { name: 'Detalle de la conversación' })).toContainText('info@example.test');
   await page.getByRole('button', { name: /La misma consulta en otro buzón/ }).click();
   await expect(page.getByRole('article', { name: 'Detalle de la conversación' })).toContainText('felipe@example.test');
+  await captureSyntheticView(page, testInfo, 'inbox');
   for (const channel of ['Instagram', 'Messenger']) { await page.getByRole('button', { name: new RegExp(`^${channel}`) }).click(); await expect(page.getByRole('heading', { name: `${channel} pendiente de conexión` })).toBeVisible(); await expect(page.getByText('La bandeja real no se ha consultado.', { exact: false })).toBeVisible(); }
   await page.getByRole('button', { name: /^Formulario web/ }).click(); await expect(page.getByRole('article', { name: 'Detalle de la conversación' })).toContainText('No acredita una importación'); await noOverflow(page);
 });
 
-test('sources distinguish sample cut from unverified providers and refresh does not pretend a new cut', async ({ page }) => {
+test('sources distinguish sample cut from unverified providers and refresh does not pretend a new cut', async ({ page }, testInfo) => {
   await open(page); const before = await page.getByTestId('dashboard-provenance').innerText();
   await page.getByTestId('dashboard-refresh').click(); await expect(page.getByTestId('dashboard-provenance')).toHaveText(before, { useInnerText: true });
   await page.getByRole('button', { name: 'Fuentes', exact: true }).click();
   await expect(page.getByText('Sin configurar', { exact: true })).toHaveCount(8);
   await expect(page.getByText('Sin verificación', { exact: true })).toHaveCount(8); await noOverflow(page);
+  await captureSyntheticView(page, testInfo, 'sources');
 });
 
 test('explicit queue read without a session shows unknown rather than zero and never starts one', async ({ page }) => {

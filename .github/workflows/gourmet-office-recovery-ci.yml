@@ -79,6 +79,15 @@ jobs:
       - name: Check read-only dashboard desktop and mobile (20 cases)
         run: npm run test:dashboard:e2e
 
+      - name: Retain eight synthetic dashboard screenshots for visual review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gourmet-dashboard-visual
+          path: test-results/dashboard-visual/*.png
+          retention-days: 3
+          if-no-files-found: error
+          include-hidden-files: false
+
       - name: Build the local staging runtime image without publishing
         run: docker build --target runtime --tag gourmet-office-ci:checked .
 
