@@ -1,0 +1,91 @@
+/* Isolated review surface; the approved office scene is not changed. */
+.communications-page { max-width: 1360px; margin: 0 auto; padding: 34px 28px 48px; color: #222b43; line-height: 1.55; }
+.communications-page *, .communications-page *::before, .communications-page *::after { box-sizing: border-box; }
+.communications-page h1 { margin: 6px 0; font-size: clamp(30px, 4vw, 42px); letter-spacing: -.8px; line-height: 1.15; }
+.communications-page h2 { margin: 3px 0 12px; font-size: 24px; line-height: 1.3; }
+.communications-page h3 { margin: 18px 0 10px; font-size: 18px; }
+.communications-page h4 { margin: 10px 0; font-size: 16px; }
+.communications-page h5 { margin: 0 0 10px; font-size: 15px; }
+.communications-page p { margin: 8px 0 14px; }
+.communications-page .eyebrow { margin: 0 0 5px; color: #66715c; font-size: 11px; font-weight: 650; letter-spacing: 1.3px; }
+.communications-header { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 24px; }
+.communications-header nav, .communications-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.communications-page button, .communications-header a { min-height: 44px; border: 1px solid #dbe2ed; border-radius: 10px; padding: 10px 15px; line-height: 1.4; font-size: 14px; font-weight: 600; text-decoration: none; }
+.communications-page button:disabled { cursor: not-allowed; opacity: .5; }
+.communications-page :focus-visible { outline: 3px solid #596f2b; outline-offset: 3px; }
+.communications-page .button-primary { background: #cbf967; color: #1b2313; border-color: #a4ce52; }
+.communications-page .button-quiet { background: #fff; color: #4a5870; }
+.communications-disclosure, .communications-notice, .communications-alert { padding: 15px 18px; border-radius: 12px; border: 1px solid; overflow-wrap: anywhere; }
+.communications-disclosure { background: #f1f8e5; border-color: #d6e6bd; color: #364725; }
+.communications-panel { border: 1px solid #e0e5ed; background: #fff; padding: 25px; margin: 20px 0; border-radius: 18px; box-shadow: 0 3px 15px #1e293b03; min-width: 0; }
+.communications-session, .communications-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.communications-session > div:first-child { min-width: 0; flex: 1; }
+.communications-session p { font-size: 13px; overflow-wrap: anywhere; }
+.communications-muted { color: #647087; font-size: 13px; }
+.communications-feedback:empty { display: none; }
+.communications-alert { background: #fff8ea; border-color: #e9d4a8; color: #704c0c; }
+.communications-notice { background: #eff7e8; border-color: #cfe2bc; color: #354f27; }
+.communications-accounts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.communications-accounts > article { padding: 20px; border: 1px solid #dde4ee; border-radius: 14px; background: #f6f8fc; overflow-wrap: anywhere; }
+.communications-accounts strong { display: block; margin-top: 12px; }
+.communications-accounts p { margin: 3px 0; font-size: 13px; }
+.communications-accounts small { color: #616c80; }
+.communications-tag { display: inline-block; padding: 4px 10px; border-radius: 8px; background: #eaf3dc; color: #43552e; font-size: 12px; font-weight: 650; overflow-wrap: anywhere; }
+.communications-tag-warning { color: #725311; background: #fff0c7; }
+.communications-page fieldset { border: 0; padding: 0; margin: 20px 0 0; min-width: 0; }
+.communications-page legend { font-size: 14px; font-weight: 600; padding: 0; margin-bottom: 10px; }
+.communications-candidates { display: grid; gap: 10px; }
+.communications-candidate { display: flex; align-items: flex-start; gap: 12px; padding: 16px; border: 1px solid #dae1ec; border-radius: 12px; background: #fbfcfd; cursor: pointer; }
+.communications-candidate > span { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.communications-candidate > span > span { font-size: 13px; color: #4d5d77; }
+.communications-candidate small { color: #786028; font-size: 12px; }
+.communications-selected { background: #f6faef; border-color: #83975c; }
+.communications-page input[type="checkbox"], .communications-page input[type="radio"] { width: 19px; height: 19px; min-height: 19px; flex: 0 0 19px; margin: 2px 0 0; accent-color: #496324; }
+.communications-candidate-review { padding-top: 12px; }
+.communications-source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.communications-source { border: 1px solid #e1e6ed; padding: 16px; border-radius: 12px; min-width: 0; }
+.communications-source[data-testid="communications-source-thread"], .communications-source[data-testid="communications-source-voice"] { grid-column: 1 / -1; }
+.communications-facts { margin: 10px 0; display: grid; gap: 8px; }
+.communications-facts > div { display: grid; grid-template-columns: minmax(90px, 140px) minmax(0, 1fr); gap: 10px; }
+.communications-facts dt { color: #626e81; font-size: 12px; }
+.communications-facts dd { margin: 0; overflow-wrap: anywhere; font-size: 13px; min-width: 0; }
+.communications-hash { display: block; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; color: #415572; }
+.communications-provenance { margin: 18px 0 0; border-top: 1px solid #e3e8ef; padding-top: 14px; min-width: 0; }
+.communications-provenance summary { cursor: pointer; font-size: 14px; font-weight: 600; padding: 6px 0; min-height: 40px; }
+.communications-provenance[open] > summary { margin-bottom: 12px; }
+.communications-coverage { border-left: 3px solid #d5bd73; padding: 8px 12px; background: #fcf9ef; color: #655322; font-size: 13px; }
+.communications-messages, .communications-attachments, .communications-history-list { list-style: none; padding: 0; margin: 14px 0; display: grid; gap: 12px; }
+.communications-messages > li, .communications-attachments > li, .communications-history-list > li { border: 1px solid #e2e7ee; border-radius: 10px; padding: 15px; min-width: 0; background: #fafbfd; overflow-wrap: anywhere; }
+.communications-history-list > li > .communications-tag { margin: 4px 0 4px 10px; }
+.communications-message-text { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-family: inherit; font-size: 14px; line-height: 1.7; background: #f5f7fb; color: #303d56; padding: 18px; border-radius: 10px; border: 1px solid #e0e6ee; max-width: 100%; margin: 10px 0 18px; }
+.communications-field { display: grid; gap: 7px; font-size: 13px; font-weight: 600; margin: 18px 0; min-width: 0; }
+.communications-field > label { font: inherit; }
+.communications-field input, .communications-field textarea, .communications-field select { display: block; width: 100%; max-width: 100%; min-width: 0; min-height: 44px; border: 1px solid #bac5d4; background: #fff; color: #283650; border-radius: 9px; padding: 10px 12px; font: inherit; font-weight: 400; }
+.communications-field textarea { resize: vertical; line-height: 1.6; }
+.communications-check { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; min-height: 44px; font-size: 14px; }
+.communications-warning { color: #80590c; }
+.communications-recipient-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.communications-recipient-fields .communications-field { margin-bottom: 0; }
+.communications-saved-draft { margin-top: 20px; padding: 20px; background: #fdfefd; border: 1px solid #dfe6db; border-radius: 12px; }
+.communications-saved-draft > h3 { margin-top: 0; }
+.communications-approval { margin-top: 20px; padding: 18px; border-radius: 12px; background: #f7f9f2; border: 1px solid #dce4cf; }
+.communications-empty { border: 1px dashed #cfd8e6; border-radius: 10px; padding: 22px; color: #637086; background: #fafbfd; }
+.communications-footer { text-align: center; color: #6b7484; font-size: 12px; padding-top: 10px; }
+.communications-session-state { max-width: 760px; margin: 30px auto; }
+.communications-session-state button { margin: 8px 8px 0 0; }
+@media (max-width: 760px) {
+  .communications-page { padding: 22px 12px 32px; }
+  .communications-header, .communications-session, .communications-section-heading { flex-direction: column; align-items: stretch; gap: 14px; }
+  .communications-header nav { gap: 8px; }
+  .communications-header a { font-size: 12px; padding: 10px 12px; }
+  .communications-panel { padding: 18px 14px; margin: 16px 0; border-radius: 14px; }
+  .communications-page h2 { font-size: 21px; }
+  .communications-accounts, .communications-source-grid, .communications-recipient-fields { grid-template-columns: minmax(0, 1fr); }
+  .communications-source { padding: 12px; }
+  .communications-facts > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .communications-facts { gap: 10px; }
+  .communications-saved-draft, .communications-approval { padding: 13px; }
+  .communications-message-text { padding: 13px; }
+  .communications-actions > button { flex: 1 1 180px; }
+  .communications-history-list > li > .communications-tag { display: table; margin-left: 0; }
+}

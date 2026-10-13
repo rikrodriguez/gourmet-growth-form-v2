@@ -6,6 +6,7 @@ const workflow = readFileSync(new URL('../../.github/workflows/gourmet-office-re
 const approvedBranches = [
   'codex/canonical-reference-bridge-20261012',
   'codex/gourmet-office-demo-recovery-20261010',
+  'feat/office-communications-review-20261013',
 ];
 
 // Read the actual checked-in policy, without evaluating workflow expressions or
@@ -17,7 +18,7 @@ function topLevelBlock(key: string): string {
 }
 
 describe('approved canonical bridge CI boundaries', () => {
-  it('accepts push revisions only from the two approved verification branches in the intended repository', () => {
+  it('accepts push revisions only from the three approved verification branches in the intended repository', () => {
     const triggers = topLevelBlock('on');
     assert.deepEqual([...triggers.matchAll(/^  ([\w_]+):/gm)].map(match => match[1]), ['push']);
     const pushBranches = [...triggers.matchAll(/^      - (\S+)$/gm)].map(match => match[1]).sort();
@@ -53,6 +54,7 @@ describe('approved canonical bridge CI boundaries', () => {
       'npm run typecheck', 'npm run build', 'npm run office:build',
       'npm run test:operations', 'npm run office:db -- start', 'npm run test:office',
       'npm run test:e2e', 'npm run test:office:e2e', 'npm run test:staging:e2e',
+      'npm run test:communications:e2e',
       'docker build --target runtime --tag gourmet-office-ci:checked .', 'npm run office:db -- stop',
     ]) assert(workflow.split('\n').some(line => line.trim() === command || line.trim() === `run: ${command}`), `Missing check: ${command}`);
     const executableLines = workflow.split('\n').filter(line => /^        run:|^          \S/.test(line));
