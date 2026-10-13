@@ -8,3 +8,13 @@
 @media(prefers-reduced-motion:reduce){.gourmet-event-workspace *{scroll-behavior:auto;transition:none;animation:none}}
 
 .gourmet-event-workspace .gew-pdf-preview{width:100%;min-width:0}.gourmet-event-workspace .gew-pdf-preview[hidden]{display:none}.gourmet-event-workspace .gew-pdf-preview figure{margin:0}.gourmet-event-workspace .gew-pdf-preview img{display:block;max-width:100%;width:100%;height:auto;border:1px solid #d5ddd5;background:#fff}.gourmet-event-workspace .gew-pdf-preview figcaption{font-size:12px;color:#536158;margin-top:9px}.gourmet-event-workspace .gew-pdf-text pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.65 GourmetDashboard,Inter,ui-sans-serif,sans-serif;color:#303d34;border:1px solid #dbe2dc;padding:12px;background:#fff;max-width:100%;margin:10px 0 0}
+
+/* Isolate the quote from the historical global Office table minimum width. */
+.gourmet-event-workspace .gew-table-wrap table{min-width:0;table-layout:fixed}
+.gourmet-event-workspace .gew-table-wrap th,.gourmet-event-workspace .gew-table-wrap td{min-width:0;font-size:12px;overflow-wrap:anywhere}
+.gourmet-event-workspace .gew-table-wrap thead th:first-child{width:38%}
+.gourmet-event-workspace .gew-table-wrap thead th:nth-child(2){width:14%}
+.gourmet-event-workspace .gew-table-wrap thead th:nth-child(3){width:22%}
+.gourmet-event-workspace .gew-table-wrap thead th:nth-child(4){width:26%}
+.gourmet-event-workspace .gew-table-wrap tfoot td{white-space:normal}
+.gourmet-event-workspace .gew-attachment>.gew-pdf-preview{flex:0 0 100%;width:100%;min-width:0}
