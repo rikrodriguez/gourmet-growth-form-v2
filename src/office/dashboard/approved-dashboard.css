@@ -1,0 +1,203 @@
+@font-face {
+  font-family: GourmetApproved;
+  src: url('../assets/InterVariable.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+/* Scoped to the approved shell: no page-wide typography or element resets. */
+.gourmet-approved {
+  --ga-ink: #191b1c;
+  --ga-muted: #62665e;
+  --ga-background: #f2f3f0;
+  --ga-border: #e3e4df;
+  --ga-paper: #fff;
+  --ga-sidebar-background: #f7f7f4;
+  --ga-sidebar-width: 222px;
+  --ga-font: GourmetApproved, Inter, Arial, sans-serif;
+  --ga-accent: #48735e;
+  --ga-active: #18191b;
+  --ga-positive: #22a34c;
+  --ga-cell-background: #eeeee6;
+  --ga-panel-radius: 15px;
+  --ga-panel-gap: 14px;
+  --ga-main-inline: 24px;
+  --ga-main-top: 28px;
+  display: grid;
+  grid-template-columns: var(--ga-sidebar-width) minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--ga-background);
+  color: var(--ga-ink);
+  font: 400 14px/1.4 var(--ga-font);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+.gourmet-approved *, .gourmet-approved *::before, .gourmet-approved *::after { box-sizing: border-box; }
+.gourmet-approved :where(h1, h2, h3, h4, p, ol, ul) { margin: 0; }
+.gourmet-approved :where(h1, h2, h3, h4, button, a, input, select, textarea) { font-family: inherit; }
+.gourmet-approved :where(button, a) { -webkit-tap-highlight-color: transparent; }
+.gourmet-approved button { font-size: inherit; color: inherit; }
+.gourmet-approved button:disabled { opacity: 1; cursor: not-allowed; }
+.gourmet-approved :where(button, a, summary, input, select, textarea):focus-visible { outline: 3px solid var(--ga-accent); outline-offset: 3px; }
+.gourmet-approved .ga-skip, .gourmet-approved .ga-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.gourmet-approved .ga-skip:focus { position: fixed; left: 12px; top: 12px; z-index: 100; width: auto; height: auto; min-height: 44px; padding: 12px 18px; margin: 0; clip-path: none; color: #fff; background: #191b1c; border-radius: 8px; }
+.gourmet-approved .ga-sidebar { display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; min-height: 0; overflow-y: auto; padding: 24px 17px 22px; background: var(--ga-sidebar-background); border-right: 1px solid var(--ga-border); }
+.gourmet-approved .ga-brand { margin: 0 12px 17px; font-size: 12px; line-height: 17px; letter-spacing: 2px; font-weight: 600; color: #62645f; }
+.gourmet-approved .ga-menu-toggle { display: none; }
+.gourmet-approved .ga-navigation-container { display: flex; flex-direction: column; flex: 1; }
+.gourmet-approved .ga-nav-group + .ga-nav-group { margin-top: 17px; }
+.gourmet-approved .ga-group-label { margin: 0 12px 7px; font-size: 12px; line-height: 15px; letter-spacing: 1.5px; color: #62645f; }
+.gourmet-approved .ga-nav-item { display: flex; align-items: center; gap: 8px; position: relative; width: 100%; min-height: 28px; padding: 4px 12px; margin: 1px 0; border: 0; border-radius: 9px; background: transparent; color: var(--ga-ink); font-size: 14px; line-height: 19px; font-weight: 400; text-align: left; text-decoration: none; }
+.gourmet-approved .ga-nav-item:hover:not(:disabled):not([aria-current='page']) { background: #eaece6; }
+.gourmet-approved .ga-nav-item[aria-current='page'] { background: var(--ga-active); color: #fff; font-weight: 600; }
+.gourmet-approved .ga-nav-item:disabled { color: #62665e; }
+.gourmet-approved .ga-unavailable-dot { margin-left: auto; width: 4px; height: 4px; border-radius: 50%; background: #a0a59b; }
+.gourmet-approved .ga-inbox-badge { display: grid; place-items: center; margin-left: auto; min-width: 19px; height: 19px; padding: 0 4px; border-radius: 12px; background: #cc254e; color: #fff; font-size: 12px; line-height: 19px; font-weight: 700; }
+.gourmet-approved .ga-sidebar-footer { margin-top: auto; padding: 42px 12px 0; font-size: 12px; line-height: 17px; color: #565953; }
+.gourmet-approved .ga-support { display: block; margin-bottom: 17px; color: #272a26; }
+.gourmet-approved .ga-booking { margin-bottom: 6px; padding: 9px 0; }
+.gourmet-approved .ga-booking strong { font-weight: 600; color: #242622; }
+.gourmet-approved .ga-booking > span:not(.ga-connection-dot) { display: block; font-size: 12px; }
+.gourmet-approved .ga-connection-dot { float: right; width: 10px; height: 10px; margin-top: 6px; background: #666c65; border-radius: 50%; }
+.gourmet-approved .ga-theme { display: flex; justify-content: space-between; align-items: center; margin: 10px 0 16px; }
+.gourmet-approved .ga-theme-switch { position: relative; width: 28px; height: 16px; background: #d4d6cf; border-radius: 10px; }
+.gourmet-approved .ga-theme-switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 10px; height: 10px; background: var(--ga-paper); border-radius: 50%; }
+.gourmet-approved .ga-profile { position: relative; padding-left: 32px; color: #333630; line-height: 16px; }
+.gourmet-approved .ga-avatar { position: absolute; top: 4px; left: 0; font-size: 12px; font-weight: 600; }
+.gourmet-approved .ga-profile strong { font-size: 12px; font-weight: 600; }
+.gourmet-approved .ga-profile > span:last-child { display: block; font-size: 12px; }
+.gourmet-approved .ga-sources-link { display: block; min-height: 28px; margin: 8px 0 -8px; padding: 4px 0; border: 0; background: none; color: var(--ga-accent); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.gourmet-approved .ga-main { min-width: 0; padding: var(--ga-main-top) var(--ga-main-inline) 30px; outline: none; }
+.gourmet-approved .ga-heading { display: flex; align-items: flex-start; gap: 20px; min-height: 58px; }
+.gourmet-approved .ga-heading-copy { min-width: 218px; }
+.gourmet-approved .ga-heading h1 { margin: 0; font-size: 24px; line-height: 29px; font-weight: 600; letter-spacing: -.65px; }
+.gourmet-approved .ga-heading h1:focus { outline: none; }
+.gourmet-approved .ga-heading-copy > p { margin-top: 2px; color: #65675f; font-size: 12px; line-height: 18px; }
+.gourmet-approved .ga-mode-label { flex-shrink: 0; margin-top: 11px; color: var(--ga-accent); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: .65px; }
+.gourmet-approved .ga-heading-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.gourmet-approved .ga-status { margin: 0 0 14px; font-size: 12px; color: var(--ga-muted); }
+.gourmet-approved .ga-content { min-width: 0; }
+.gourmet-approved .ga-panel { background: var(--ga-paper); border: 1px solid #e5e6e0; border-radius: var(--ga-panel-radius); }
+.gourmet-approved .ga-summary h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; letter-spacing: -.1px; }
+.gourmet-approved .ga-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ga-panel-gap); }
+.gourmet-approved .ga-metric { min-height: 126px; padding: 17px 18px 12px; }
+.gourmet-approved .ga-metric h2 { color: #5d615a; font-size: 13px; line-height: 18px; font-weight: 400; letter-spacing: 0; }
+.gourmet-approved .ga-metric-value { margin-top: 2px; font-size: 30px; line-height: 38px; font-weight: 600; letter-spacing: -.7px; }
+.gourmet-approved .ga-metric-note { margin-top: 11px; color: #686b63; font-size: 12px; line-height: 17px; text-align: center; }
+.gourmet-approved .ga-ads { min-height: 118px; margin-top: var(--ga-panel-gap); padding: 15px 16px; }
+.gourmet-approved .ga-ad-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-top: 12px; }
+.gourmet-approved .ga-ad { min-height: 53px; border-radius: 9px; background: var(--ga-cell-background); padding: 9px 12px; }
+.gourmet-approved .ga-ad-label { color: #64665f; font-size: 12px; line-height: 14px; }
+.gourmet-approved .ga-ad-value { font-size: 17px; line-height: 21px; font-weight: 600; letter-spacing: -.25px; }
+.gourmet-approved .ga-ads-unknown { margin-top: 8px; color: var(--ga-muted); font-size: 12px; }
+.gourmet-approved .ga-revenue { height: 258px; margin-top: var(--ga-panel-gap); padding: 15px 18px; }
+.gourmet-approved .ga-revenue-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.gourmet-approved .ga-period { display: flex; flex-shrink: 0; padding: 3px; border: 1px solid #e7e8e1; border-radius: 20px; background: #f1f2ed; color: #191b1c; font-size: 12px; line-height: 19px; }
+.gourmet-approved .ga-period > span { min-width: 92px; padding: 1px 12px; border-radius: 12px; text-align: center; }
+.gourmet-approved .ga-period-selected { background: var(--ga-active); color: #fff; font-weight: 600; }
+.gourmet-approved .ga-chart { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); height: 151px; margin: 22px 19px 0; padding: 0; list-style: none; }
+.gourmet-approved .ga-month { position: relative; min-width: 0; height: 151px; text-align: center; }
+.gourmet-approved .ga-chart-value { position: absolute; left: 0; right: 0; bottom: calc(var(--ga-bar-height) + 35px); color: #686b63; font-size: 12px; line-height: 14px; }
+.gourmet-approved .ga-bar { position: absolute; bottom: 27px; left: calc(50% - 18px); width: 36px; height: var(--ga-bar-height); background: #222630; border-radius: 8px; }
+.gourmet-approved .ga-month:last-child .ga-bar { background: var(--ga-positive); }
+.gourmet-approved .ga-month-label { position: absolute; bottom: 6px; left: 0; right: 0; color: #62675d; font-size: 12px; line-height: 17px; }
+.gourmet-approved .ga-revenue-unknown { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 6px; min-height: 180px; color: var(--ga-muted); text-align: center; }
+.gourmet-approved .ga-revenue-unknown strong { font-size: 28px; font-weight: 500; }
+.gourmet-approved .ga-revenue-unknown span { font-size: 12px; }
+.gourmet-approved .ga-assistants { min-height: 140px; margin-top: var(--ga-panel-gap); padding: 16px 18px 13px; }
+.gourmet-approved .ga-assistants-body { display: grid; grid-template-columns: 140px minmax(0, 1fr); column-gap: 19px; margin-top: 7px; }
+.gourmet-approved .ga-pending strong { font-size: 28px; line-height: 32px; font-weight: 600; }
+.gourmet-approved .ga-pending p { margin-top: 3px; color: #62675d; font-size: 12px; line-height: 14px; }
+.gourmet-approved .ga-agent-rows { min-width: 0; padding-top: 4px; }
+.gourmet-approved .ga-agent-line { display: grid; grid-template-columns: 228px max-content minmax(0, 1fr); align-items: center; column-gap: 10px; min-height: 24px; font-size: 12px; line-height: 20px; }
+.gourmet-approved .ga-agent-line > strong { font-weight: 600; }
+.gourmet-approved .ga-agent-status { display: inline-block; min-width: 53px; padding: 0 8px; border-radius: 4px; background: #e8f0e9; color: #386844; font-size: 12px; line-height: 14px; font-weight: 600; }
+.gourmet-approved .ga-agent-description { color: #555c52; }
+.gourmet-approved .ga-agent-note { margin-top: 4px; color: #666b60; font-size: 12px; line-height: 15px; }
+.gourmet-approved .ga-inline-action { padding: 0; border: 0; background: none; color: #4f6250; font-size: 12px; line-height: 15px; text-align: left; }
+.gourmet-approved .ga-inline-action:hover { text-decoration: underline; text-underline-offset: 3px; }
+.gourmet-approved .ga-activity { min-height: 109px; margin-top: var(--ga-panel-gap); padding: 16px 18px; }
+.gourmet-approved .ga-activity ol { margin: 3px 0 0; padding: 0; list-style: none; }
+.gourmet-approved .ga-activity li { display: flex; justify-content: space-between; align-items: baseline; gap: 18px; position: relative; min-height: 25px; padding-left: 14px; color: #191b1c; font-size: 12px; line-height: 25px; }
+.gourmet-approved .ga-activity li::before { content: ''; position: absolute; top: 11px; left: 0; width: 4px; height: 4px; background: #697a65; border-radius: 50%; }
+.gourmet-approved .ga-activity-time { flex-shrink: 0; color: #697064; font-size: 12px; }
+.gourmet-approved .ga-activity-unknown { margin-top: 9px; color: var(--ga-muted); font-size: 12px; }
+.gourmet-approved .ga-disclosure { margin: 13px 1px 0; color: #64695f; font-size: 12px; line-height: 15px; }
+
+@media (max-width: 1150px) {
+  .gourmet-approved .ga-agent-line { grid-template-columns: minmax(155px, .8fr) max-content minmax(0, 1fr); }
+  .gourmet-approved .ga-assistants { min-height: 140px; }
+  .gourmet-approved .ga-heading { flex-wrap: wrap; padding-bottom: 12px; }
+  .gourmet-approved .ga-heading-actions { margin-left: 0; }
+}
+@media (max-width: 900px) {
+  .gourmet-approved { grid-template-columns: 190px minmax(0, 1fr); }
+  .gourmet-approved .ga-sidebar { padding-left: 12px; padding-right: 12px; }
+  .gourmet-approved .ga-main { padding: 24px 18px; }
+  .gourmet-approved .ga-heading { gap: 6px 14px; }
+  .gourmet-approved .ga-mode-label { margin-top: 4px; }
+  .gourmet-approved .ga-metrics { gap: 9px; }
+  .gourmet-approved .ga-metric { padding-left: 12px; padding-right: 12px; }
+  .gourmet-approved .ga-metric-note { text-align: left; }
+  .gourmet-approved .ga-ad-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gourmet-approved .ga-assistants-body { grid-template-columns: 115px minmax(0, 1fr); gap: 12px; }
+  .gourmet-approved .ga-agent-line { grid-template-columns: minmax(0, 1fr) max-content; margin-bottom: 8px; }
+  .gourmet-approved .ga-agent-description { grid-column: 1 / -1; }
+  .gourmet-approved .ga-agent-note { margin-top: 8px; }
+}
+@media (max-width: 700px) {
+  .gourmet-approved { display: block; min-width: 0; font-size: 14px; }
+  .gourmet-approved .ga-sidebar { position: static; height: auto; min-height: 0; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--ga-border); }
+  .gourmet-approved .ga-mobile-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .gourmet-approved .ga-brand { margin: 0; }
+  .gourmet-approved .ga-menu-toggle { display: block; min-width: 76px; min-height: 44px; padding: 10px 14px; border: 1px solid #d4d6cf; border-radius: 8px; background: var(--ga-paper); font-size: 14px; }
+  .gourmet-approved .ga-navigation-container { display: none; padding-top: 16px; }
+  .gourmet-approved .ga-navigation-container[data-open='true'] { display: flex; }
+  .gourmet-approved .ga-navigation { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 12px; }
+  .gourmet-approved .ga-nav-group + .ga-nav-group { margin-top: 0; }
+  .gourmet-approved .ga-nav-item { min-height: 44px; padding: 10px 12px; }
+  .gourmet-approved .ga-group-label { font-size: 12px; letter-spacing: 1px; }
+  .gourmet-approved .ga-inbox-badge { font-size: 12px; }
+  .gourmet-approved .ga-sidebar-footer { padding-top: 26px; }
+  .gourmet-approved .ga-sidebar-footer :where(span, strong) { font-size: 12px; }
+  .gourmet-approved .ga-profile > span:last-child, .gourmet-approved .ga-booking > span:not(.ga-connection-dot) { font-size: 12px; }
+  .gourmet-approved .ga-sources-link { min-height: 44px; }
+  .gourmet-approved .ga-main { padding: 22px 16px 28px; }
+  .gourmet-approved .ga-heading { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding-bottom: 18px; }
+  .gourmet-approved .ga-heading-copy { min-width: 0; }
+  .gourmet-approved .ga-mode-label { margin: 0; font-size: 12px; }
+  .gourmet-approved .ga-heading-actions { flex-wrap: wrap; margin: 0; }
+  .gourmet-approved :where(button, a, input, select) { min-height: 44px; }
+  .gourmet-approved .ga-metrics { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .gourmet-approved .ga-metric { min-height: 114px; padding: 15px 18px; }
+  .gourmet-approved .ga-metric-note { margin-top: 5px; text-align: left; }
+  .gourmet-approved .ga-ads { padding: 16px; }
+  .gourmet-approved .ga-ad-row { gap: 9px; }
+  .gourmet-approved .ga-ad { padding: 10px; }
+  .gourmet-approved .ga-ad-label { min-height: 32px; font-size: 12px; line-height: 16px; }
+  .gourmet-approved .ga-revenue { height: auto; min-height: 258px; padding: 16px 12px 20px; }
+  .gourmet-approved .ga-revenue-heading { flex-wrap: wrap; }
+  .gourmet-approved .ga-period { font-size: 12px; }
+  .gourmet-approved .ga-period > span { min-width: 76px; padding: 3px 10px; }
+  .gourmet-approved .ga-chart { margin: 30px 0 0; }
+  .gourmet-approved .ga-chart-value { font-size: 12px; }
+  .gourmet-approved .ga-bar { left: calc(50% - 12px); width: 24px; }
+  .gourmet-approved .ga-assistants { padding: 16px; }
+  .gourmet-approved .ga-assistants-body { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .gourmet-approved .ga-pending { display: flex; align-items: center; gap: 12px; }
+  .gourmet-approved .ga-pending p { margin: 0; font-size: 12px; line-height: 17px; }
+  .gourmet-approved .ga-agent-rows { padding-top: 0; }
+  .gourmet-approved .ga-agent-line { grid-template-columns: minmax(0, 1fr) max-content; column-gap: 8px; font-size: 12px; line-height: 18px; }
+  .gourmet-approved .ga-agent-status { font-size: 12px; line-height: 18px; }
+  .gourmet-approved .ga-agent-note, .gourmet-approved .ga-inline-action { font-size: 12px; line-height: 18px; }
+  .gourmet-approved .ga-inline-action { min-height: 44px; }
+  .gourmet-approved .ga-activity { padding: 16px; }
+  .gourmet-approved .ga-activity li { display: grid; gap: 0; padding-top: 6px; line-height: 19px; }
+  .gourmet-approved .ga-activity li::before { top: 13px; }
+  .gourmet-approved .ga-activity-time { font-size: 12px; }
+  .gourmet-approved .ga-disclosure { font-size: 12px; line-height: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gourmet-approved *, .gourmet-approved *::before, .gourmet-approved *::after { scroll-behavior: auto; animation: none; transition: none; }
+}

@@ -76,10 +76,10 @@ jobs:
       - name: Check local communications review desktop and mobile (16 cases)
         run: npm run test:communications:e2e
 
-      - name: Check read-only dashboard desktop and mobile (20 cases)
+      - name: Check approved dashboard and synthetic event flow desktop and mobile (52 cases)
         run: npm run test:dashboard:e2e
 
-      - name: Retain eight synthetic dashboard screenshots for visual review
+      - name: Retain synthetic dashboard and event-flow screenshots for visual review
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gourmet-dashboard-visual

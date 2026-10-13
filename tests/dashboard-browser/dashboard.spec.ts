@@ -4,12 +4,32 @@ import { test, expect, type Page, type BrowserContext, type TestInfo } from '@pl
 // Response interception below is limited to intentional failure/late-read tests.
 async function open(page: Page) {
   await page.goto('/office/dashboard');
-  await expect(page.getByTestId('dashboard-metric-opportunities')).toBeVisible();
+  await expect(page.getByTestId('approved-metric-opportunities')).toBeVisible();
+}
+async function showNavigation(page: Page) {
+  const menu = page.getByRole('button', { name: 'Menú', exact: true });
+  if (await menu.isVisible()) await menu.click();
+}
+async function navigate(page: Page, name: string) {
+  await showNavigation(page);
+  await page.locator('.ga-sidebar').getByRole('button', { name, exact: true }).click();
+  await expect(page.getByRole('heading', { level: 1, name, exact: true })).toBeVisible();
+}
+async function openReviews(page: Page) {
+  await navigate(page, 'Revisión local');
+  await expect(page.getByTestId('dashboard-read-reviews')).toBeEnabled();
 }
 async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 }
+async function showProvenance(page: Page) {
+  const details = page.locator('.ga-read-status');
+  if ((await details.getAttribute('open')) === null) await details.locator('summary').click();
+  await expect(page.getByTestId('dashboard-provenance')).toBeVisible();
+}
 async function captureSyntheticView(page: Page, testInfo: TestInfo, section: 'overview' | 'opportunities' | 'inbox' | 'sources') {
+  const disclosure = page.locator('.ga-read-status[open]');
+  if (await disclosure.count()) await disclosure.locator('summary').click();
   await expect(page.locator('.gd-skip')).not.toBeFocused();
   await expect(page.locator('.gd-skip')).toHaveCSS('clip-path', 'inset(50%)');
   await page.evaluate(() => document.fonts.ready);
@@ -36,30 +56,42 @@ async function seedReview(context: BrowserContext, approve = false) {
 test('dashboard is separate, synthetic, readable and does not start a session or fetch provider data', async ({ page }, testInfo) => {
   const apiRequests: string[] = []; const external: string[] = [];
   page.on('request', request => { const url = new URL(request.url()); if (url.pathname.startsWith('/office-api/')) apiRequests.push(`${request.method()} ${url.pathname}`); if (!['127.0.0.1', 'localhost'].includes(url.hostname)) external.push(url.origin); });
-  await open(page); await expect(page.getByTestId('dashboard-provenance')).toContainText('muestra local sintética');
-  await expect(page.getByTestId('dashboard-metric-opportunities')).toContainText('4');
-  for (const id of ['pipeline', 'conversion']) await expect(page.getByTestId(`dashboard-metric-${id}`)).toContainText('—');
-  await expect(page.getByTestId('dashboard-revenue-history')).toContainText('—');
-  if (testInfo.project.name === 'dashboard-desktop') {
-    const revenue = await page.getByTestId('dashboard-revenue-history').boundingBox();
-    expect(revenue!.height).toBeGreaterThanOrEqual(200); expect(revenue!.height).toBeLessThanOrEqual(220);
-  } else {
-    const provenance = await page.getByTestId('dashboard-provenance').boundingBox();
-    expect(provenance!.height).toBeLessThanOrEqual(90);
-    await expect(page.getByTestId('dashboard-provenance')).toContainText('Corte:');
-    await expect(page.getByTestId('dashboard-provenance')).toContainText('Cobertura: parcial; datos reales desconocidos');
-    await expect(page.getByTestId('dashboard-provenance')).toContainText('sin conexión a proveedores');
-  }
-  await expect(page.getByTestId('dashboard-read-reviews')).toBeEnabled(); await noOverflow(page);
-  expect(apiRequests).toEqual([]); expect(external).toEqual([]);
+  await open(page); await showProvenance(page); await expect(page.getByTestId('dashboard-provenance')).toContainText('muestra local sintética');
+  await expect(page.getByTestId('approved-metric-opportunities')).toContainText('4');
+  for (const id of ['pipeline', 'conversion']) await expect(page.getByTestId(`approved-metric-${id}`)).toContainText('—');
+  await expect(page.getByTestId('approved-revenue-history')).toContainText('—');
+  await expect(page.getByTestId('approved-dashboard-disclosure')).toContainText('Datos reales desconocidos');
+  await expect(page.getByTestId('approved-revenue-bar')).toHaveCount(0);
+  await expect(page.getByTestId('dashboard-read-reviews')).toHaveCount(0);
+  await expect(page.getByTestId('dashboard-provenance')).toContainText('Corte:');
+  await expect(page.getByTestId('dashboard-provenance')).toContainText('Cobertura: parcial; datos reales desconocidos');
+  await expect(page.getByTestId('dashboard-provenance')).toContainText('sin conexión a proveedores');
+  await noOverflow(page);
+  await showNavigation(page);
   await expect(page.getByRole('link', { name: 'Oficina', exact: true })).toHaveAttribute('href', '/office/');
   await expect(page.locator('.approved-office-scene')).toHaveCount(0);
+  await openReviews(page);
+  await navigate(page, 'Dashboard');
+  const demo = page.getByTestId('dashboard-visual-mode');
+  await expect(demo).toHaveAttribute('aria-pressed', 'false');
+  await demo.click();
+  await expect(page.getByTestId('approved-dashboard-summary')).toHaveAttribute('data-visual-demo', 'true');
+  await expect(page.getByTestId('approved-metric-pipeline')).toContainText('18.400');
+  await expect(page.getByTestId('approved-metric-contacts')).toContainText('38');
+  await expect(page.getByTestId('approved-metric-conversion')).toContainText('68%');
+  await expect(page.getByTestId('approved-revenue-bar')).toHaveCount(6);
+  await expect(page.getByTestId('approved-dashboard-disclosure')).toContainText('Cifras ficticias');
+  await noOverflow(page);
   await captureSyntheticView(page, testInfo, 'overview');
+  await demo.click();
+  await expect(page.getByTestId('approved-metric-pipeline')).toContainText('—');
+  await expect(page.getByTestId('approved-revenue-bar')).toHaveCount(0);
+  expect(apiRequests).toEqual([]); expect(external).toEqual([]);
 });
 
 test('read-only Kanban keeps missing fields explicit and card selection cannot mutate stages', async ({ page }, testInfo) => {
   const writes: string[] = []; page.on('request', r => { if (r.method() !== 'GET') writes.push(r.method()); });
-  await open(page); await page.getByRole('button', { name: 'Oportunidades', exact: true }).click();
+  await open(page); await navigate(page, 'Oportunidades');
   await expect(page.getByTestId('dashboard-opportunity')).toHaveCount(4);
   await expect(page.getByText('Importe sin verificar')).toHaveCount(4);
   await expect(page.getByText('Sin fecha verificada', { exact: true })).toBeVisible();
@@ -69,7 +101,7 @@ test('read-only Kanban keeps missing fields explicit and card selection cannot m
 });
 
 test('inbox filters preserve mailbox identity and disclose absent social connections', async ({ page }, testInfo) => {
-  await open(page); await page.getByRole('button', { name: 'Bandeja', exact: true }).click();
+  await open(page); await navigate(page, 'Bandeja');
   await expect(page.getByRole('article', { name: 'Detalle de la conversación' })).toContainText('info@example.test');
   await page.getByRole('button', { name: /La misma consulta en otro buzón/ }).click();
   await expect(page.getByRole('article', { name: 'Detalle de la conversación' })).toContainText('felipe@example.test');
@@ -84,9 +116,9 @@ test('inbox filters preserve mailbox identity and disclose absent social connect
 });
 
 test('sources distinguish sample cut from unverified providers and refresh does not pretend a new cut', async ({ page }, testInfo) => {
-  await open(page); const before = await page.getByTestId('dashboard-provenance').innerText();
+  await open(page); await showProvenance(page); const before = await page.getByTestId('dashboard-provenance').innerText();
   await page.getByTestId('dashboard-refresh').click(); await expect(page.getByTestId('dashboard-provenance')).toHaveText(before, { useInnerText: true });
-  await page.getByRole('button', { name: 'Fuentes', exact: true }).click();
+  await navigate(page, 'Fuentes');
   await expect(page.getByText('Sin configurar', { exact: true })).toHaveCount(8);
   await expect(page.getByText('Sin verificación', { exact: true })).toHaveCount(8); await noOverflow(page);
   await captureSyntheticView(page, testInfo, 'sources');
@@ -94,7 +126,7 @@ test('sources distinguish sample cut from unverified providers and refresh does 
 
 test('explicit queue read without a session shows unknown rather than zero and never starts one', async ({ page }) => {
   const calls: string[] = []; page.on('request', r => { if (r.url().includes('/office-api/communications')) calls.push(`${r.method()} ${new URL(r.url()).pathname}`); });
-  await open(page); await page.getByTestId('dashboard-read-reviews').click();
+  await open(page); await openReviews(page); await page.getByTestId('dashboard-read-reviews').click();
   await expect(page.getByRole('alert')).toContainText('No hay una sesión local vigente');
   await expect(page.getByText('Sin pendientes en esta cola sintética consultada.')).toHaveCount(0);
   expect(calls).toEqual(['GET /office-api/communications']);
@@ -102,7 +134,7 @@ test('explicit queue read without a session shows unknown rather than zero and n
 
 test('queue projects real local saved draft and links to exact review without preserving approval or selection', async ({ page, context }) => {
   const view = await seedReview(context); const before = view.workflow.revision;
-  await open(page); await page.getByTestId('dashboard-read-reviews').click();
+  await open(page); await openReviews(page); await page.getByTestId('dashboard-read-reviews').click();
   await expect(page.getByText('Necesita revisión', { exact: false })).toBeVisible();
   await expect(page.getByText('aurora@example.test · Buzón felipe@example.test')).toBeVisible();
   const latest = await (await context.request.get('/office-api/communications', { headers: { Origin: 'http://127.0.0.1:4175' } })).json();
@@ -116,7 +148,7 @@ test('queue projects real local saved draft and links to exact review without pr
 });
 
 test('failed refresh removes a previously verified approval instead of leaving readiness visible', async ({ page, context }) => {
-  await seedReview(context, true); await open(page); await page.getByTestId('dashboard-read-reviews').click();
+  await seedReview(context, true); await open(page); await openReviews(page); await page.getByTestId('dashboard-read-reviews').click();
   await expect(page.getByText('Aprobado en la muestra · no enviado', { exact: false })).toBeVisible();
   await page.route('**/office-api/communications', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'fixture_read_unavailable' }) }));
   await page.getByTestId('dashboard-read-reviews').click(); await expect(page.getByRole('alert')).toContainText('pendientes son desconocidos');
@@ -125,7 +157,7 @@ test('failed refresh removes a previously verified approval instead of leaving r
 });
 
 test('pagehide withdraws data and a late read cannot repopulate the queue', async ({ page, context }) => {
-  await seedReview(context); await open(page);
+  await seedReview(context); await open(page); await openReviews(page);
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); let entered!: () => void; const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
   let settled!: () => void; const settledPromise = new Promise<void>(resolve => { settled = resolve; });
   await page.route('**/office-api/communications', async route => { const response = await route.fetch(); entered(); await gate; try { await route.fulfill({ response }); } catch { /* Page withdrawal may have aborted the read. */ } finally { settled(); } });
@@ -139,11 +171,11 @@ test('pagehide withdraws data and a late read cannot repopulate the queue', asyn
 });
 
 test('15-minute display expiry clears queue and requires an explicit new load', async ({ page, context }) => {
-  await seedReview(context); await page.clock.install(); await open(page); await page.getByTestId('dashboard-read-reviews').click();
+  await seedReview(context); await page.clock.install(); await open(page); await openReviews(page); await page.getByTestId('dashboard-read-reviews').click();
   await expect(page.getByText('Necesita revisión', { exact: false })).toBeVisible();
   await page.clock.runFor(15 * 60_000 + 1000);
   await expect(page.getByRole('status')).toContainText('vista venció'); await expect(page.getByRole('link', { name: /Revisar en Comunicaciones:/ })).toHaveCount(0);
-  await page.getByTestId('dashboard-refresh').click(); await expect(page.getByTestId('dashboard-metric-opportunities')).toBeVisible(); await expect(page.getByText('Aún no consultada.', { exact: false })).toBeVisible();
+  await page.getByTestId('dashboard-refresh').click(); await expect(page.getByTestId('dashboard-read-reviews')).toBeEnabled(); await expect(page.getByText('Aún no consultada.', { exact: false })).toBeVisible();
 });
 
 test('keyboard navigation has named controls, visible focus, and separate Office route with preserved operational tabs', async ({ page }, testInfo) => {
@@ -153,16 +185,30 @@ test('keyboard navigation has named controls, visible focus, and separate Office
   await page.keyboard.press('Enter'); await expect(page.locator('#gd-main')).toBeFocused();
   await expect(page.locator('.gd-skip')).toHaveCSS('clip-path', 'inset(50%)');
   if (testInfo.project.name === 'dashboard-mobile') {
-    const navigation = page.locator('.gd-sidebar nav .gd-nav-item');
-    const positions = await navigation.evaluateAll(items => items.map(item => ({ top: (item as HTMLElement).offsetTop, left: (item as HTMLElement).offsetLeft })));
-    await page.getByRole('button', { name: 'Fuentes', exact: true }).click();
-    expect(await navigation.evaluateAll(items => items.map(item => ({ top: (item as HTMLElement).offsetTop, left: (item as HTMLElement).offsetLeft })))).toEqual(positions);
+    await expect(page.getByRole('button', { name: 'Menú', exact: true })).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('.ga-navigation-container')).not.toBeVisible();
+    await showNavigation(page);
+    await expect(page.getByRole('button', { name: 'Cerrar menú', exact: true })).toHaveAttribute('aria-expanded', 'true');
+    await noOverflow(page);
+    for (const control of await page.locator('.ga-sidebar').getByRole('button').all()) {
+      if (await control.isVisible()) expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    }
   }
+  await navigate(page, 'Oportunidades');
+  await expect(page).toHaveURL(/#opportunities$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Oportunidades', exact: true })).toBeFocused();
+  await navigate(page, 'Fuentes');
+  await expect(page).toHaveURL(/#sources$/);
+  await page.goBack();
+  await expect(page.getByRole('heading', { level: 1, name: 'Oportunidades', exact: true })).toBeFocused();
+  await page.goForward();
+  await expect(page.getByRole('heading', { level: 1, name: 'Fuentes', exact: true })).toBeFocused();
+  await showNavigation(page);
   await page.getByRole('link', { name: 'Oficina', exact: true }).click();
   await expect(page.locator('.approved-office-scene')).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Operaciones', exact: true })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Dashboard', exact: true })).toHaveAttribute('href', '/office/dashboard');
   await page.getByRole('tab', { name: 'Mi oficina', exact: true }).focus(); await page.keyboard.press('End'); await expect(page.getByRole('tab', { name: 'Historial', exact: true })).toBeFocused();
   await page.keyboard.press('Home'); await expect(page.getByRole('tab', { name: 'Mi oficina', exact: true })).toBeFocused();
-  await page.getByRole('link', { name: 'Dashboard', exact: true }).click(); await expect(page.getByTestId('dashboard-metric-opportunities')).toBeVisible(); await noOverflow(page);
+  await page.getByRole('link', { name: 'Dashboard', exact: true }).click(); await expect(page.getByTestId('approved-metric-opportunities')).toBeVisible(); await noOverflow(page);
 });

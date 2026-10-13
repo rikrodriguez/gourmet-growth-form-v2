@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { DashboardInbox, DashboardKanban, DashboardPage, DashboardReadGate, DashboardReviewPanel, DashboardSources } from '../../src/office/DashboardPage';
+import { DashboardInbox, DashboardKanban, DashboardPage, DashboardReadGate, DashboardReviewPanel, DashboardSources, sectionFromHash } from '../../src/office/DashboardPage';
 import { dashboardFixtureSource } from '../../src/office/dashboard/source';
 import type { ApprovalQueue } from '../../src/office/dashboard/contracts';
 
@@ -21,34 +21,38 @@ test('dashboard starts with an honest local loading state and no queue read or i
   assert.doesNotMatch(html, /<form|localStorage|<img|<iframe/);
 });
 
-test('dashboard overview separates its actual sample count from unknown financial performance', async () => {
+test('approved overview separates source sample count from unknown financials and opt-in design data', async () => {
   const snapshot = await fixture();
   const html = render(<DashboardPage initialSnapshot={snapshot} />);
   assert.match(html, /<h1[^>]*>Dashboard<\/h1>/);
-  assert.equal((html.match(/data-testid="dashboard-metric-/g) ?? []).length, 3);
-  assert.match(html, /data-testid="dashboard-metric-opportunities"/);
+  assert.equal((html.match(/data-testid="approved-metric-/g) ?? []).length, 3);
+  assert.match(html, /data-testid="approved-metric-opportunities"/);
   assert.match(html, /Oportunidades de muestra/);
-  assert.match(html, /<strong class="gd-metric-value">4<\/strong>/);
-  assert.equal((html.match(/<strong class="gd-metric-value">—<\/strong>/g) ?? []).length, 2);
-  assert.match(html, /Evolución mensual/);
-  assert.match(html, /Ingresos reales sin verificar/);
-  assert.match(html, /Sin cuenta ni periodo verificados/);
+  assert.match(html, /<p class="ga-metric-value">4<\/p>/);
+  assert.equal((html.match(/<p class="ga-metric-value">—<\/p>/g) ?? []).length, 2);
+  assert.match(html, /Ingresos reservados sin verificar/);
+  assert.match(html, /Sin cuenta ni atribución verificadas/);
   assert.match(html, /Corte:/); assert.match(html, /Cobertura:/); assert.match(html, /UTC/);
   assert.match(html, /datos reales desconocidos/);
-  assert.match(html, /Ingresos y gasto real: —/);
-  assert.match(html, /Aún no consultada/);
-  assert.match(html, /No se inicia ninguna sesión automáticamente/);
+  assert.doesNotMatch(html, /data-testid="dashboard-read-reviews"/);
   assert.match(html, /href="\/office\/"/);
   assert.match(html, /href="\/office\/communications"/);
-  assert.doesNotMatch(html, /LIVE|En vivo|Agente activo|drag|<canvas/);
+  assert.doesNotMatch(html, /18\.400|68%|LIVE|En vivo|Agente activo|<canvas/);
+  const demo = render(<DashboardPage initialSnapshot={snapshot} initialVisualDemo />);
+  assert.match(demo, /18\.400/); assert.match(demo, /Cifras ficticias en unidades DEMO/);
+  assert.doesNotMatch(demo, /data-testid="dashboard-read-reviews"/);
 });
 
-test('pending catalog, payments and calendar are clearly noninteractive', async () => {
+test('unimplemented catalog remains disabled while proposals and payment simulation are discoverable', async () => {
   const html = render(<DashboardPage initialSnapshot={await fixture()} />);
-  for (const title of ['Catálogo', 'Pagos', 'Calendario']) {
-    assert.match(html, new RegExp(`<div class="gd-pending-nav"><span>${title}</span><small>Pendiente</small></div>`));
-    assert.doesNotMatch(html, new RegExp(`<button[^>]*>${title}</button>`));
-  }
+  assert.match(html, /disabled="" title="Catálogo: pendiente de implementación"/);
+  assert.match(html, /<span>Propuestas<\/span>/);
+  assert.match(html, /<span>Enlaces de pago<\/span>/);
+  const quote = render(<DashboardPage initialSnapshot={await fixture()} initialSection="quotes" />);
+  assert.match(quote, /Cotización · QUOTE-042/); assert.match(quote, /v1 · obsoleta/);
+  const payment = render(<DashboardPage initialSnapshot={await fixture()} initialSection="payments" />);
+  assert.match(payment, /URL real<\/dt><dd>No generada/);
+  assert.doesNotMatch(payment, /href="https:/);
 });
 
 test('Kanban contains four semantic columns, safe sample cards, counts, missing amounts and stage ages', async () => {
@@ -151,31 +155,39 @@ test('dashboard implementation has no storage, command, provider or approval cap
 test('all initial section previews retain the shell, provenance and correct active navigation', async () => {
   const snapshot = await fixture();
   for (const [section, heading, navigation] of [
-    ['summary', 'Dashboard', 'Resumen'],
+    ['summary', 'Dashboard', 'Dashboard'],
     ['opportunities', 'Oportunidades', 'Oportunidades'],
     ['inbox', 'Bandeja', 'Bandeja'],
     ['sources', 'Fuentes', 'Fuentes'],
+    ['reviews', 'Revisión local', 'Revisión local'],
   ] as const) {
     const html = render(<DashboardPage initialSnapshot={snapshot} initialSection={section} />);
     assert.match(html, new RegExp(`<h1[^>]*>${heading}</h1>`));
     assert.match(html, /data-testid="dashboard-provenance"/);
     assert.match(html, /0 envíos · sin conexión a proveedores/);
-    assert.match(html, new RegExp(`aria-current="page"[\\s\\S]*?<span>${navigation}</span>`));
+    assert.match(html, /aria-current="page"/);
+    assert.match(html, new RegExp(navigation));
     assert.equal((html.match(/aria-current="page"/g) ?? []).length, 1);
-    assert.equal(html.includes('data-testid="dashboard-read-reviews"'), section === 'summary');
+    assert.equal(html.includes('data-testid="dashboard-read-reviews"'), section === 'reviews');
   }
 });
 
 
-test('in-content navigation moves focus to the new heading without stealing sidebar focus', () => {
+test('approved shell navigation focuses new headings and route parsing only accepts local known sections', () => {
   const source = readFileSync(new URL('../../src/office/DashboardPage.tsx', import.meta.url), 'utf8');
-  assert.match(source, /const navigateSection = \(next: Section\) => \{ focusAfterNavigation.current = true; setSection\(next\); \}/);
-  assert.match(source, /headingRef.current\?\.focus\(\)/);
-  assert.match(source, /<h1 ref=\{headingRef\} tabIndex=\{-1\}/);
-  assert.match(source, /onSection=\{navigateSection\}/);
-  assert.match(source, /onClick=\{\(\) => setSection\(item.id\)\}/);
+  const shell = readFileSync(new URL('../../src/office/dashboard/ApprovedDashboardLayout.tsx', import.meta.url), 'utf8');
+  assert.match(shell, /headingRef.current\?\.focus\(\)/);
+  assert.match(shell, /<h1 ref=\{headingRef\} tabIndex=\{-1\}/);
+  assert.match(source, /popstate/); assert.match(source, /hashchange/);
+  assert.match(source, /visible=\{eventTab !== undefined\}/);
+  assert.equal(sectionFromHash('#quotes/revision'), 'quotes');
+  assert.equal(sectionFromHash('#events/brief'), 'events');
+  assert.equal(sectionFromHash('#payments'), 'payments');
+  assert.equal(sectionFromHash(''), 'summary');
+  assert.equal(sectionFromHash('#javascript:alert(1)'), null);
+  assert.equal(sectionFromHash('#https://external.invalid'), null);
+  assert.equal(sectionFromHash('#unknown'), null);
 });
-
 
 test('unconfigured empty channel badges show unknown instead of a real inbox zero', async () => {
   const html = render(<DashboardInbox snapshot={await fixture()} />);

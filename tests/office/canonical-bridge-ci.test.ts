@@ -47,7 +47,7 @@ describe('approved canonical bridge CI boundaries', () => {
     const actions = [...workflow.matchAll(/^        uses: (\S+)(?: #.*)?$/gm)].map(match => match[1]);
     assert.equal(actions.length, 3);
     for (const action of actions) assert.match(action, /^actions\/(?:checkout|setup-node|upload-artifact)@[a-f0-9]{40}$/, 'Actions must remain revision-pinned');
-    const upload = workflow.match(/      - name: Retain eight synthetic dashboard screenshots for visual review\n([\s\S]*?)(?=\n      - name:)/)?.[1];
+    const upload = workflow.match(/      - name: Retain synthetic dashboard and event-flow screenshots for visual review\n([\s\S]*?)(?=\n      - name:)/)?.[1];
     assert.equal(upload?.trim(), [
       'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2',
       '        with:',
@@ -56,7 +56,7 @@ describe('approved canonical bridge CI boundaries', () => {
       '          retention-days: 3',
       '          if-no-files-found: error',
       '          include-hidden-files: false',
-    ].join('\n'), 'Only the eight synthetic view PNGs may be retained; no traces, cookies or hidden files');
+    ].join('\n'), 'Only synthetic dashboard and event-flow PNGs may be retained; no traces, cookies or hidden files');
   });
 
   it('runs the existing checks with isolated development PostgreSQL and a local image build', () => {

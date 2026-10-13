@@ -1,20 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { ApprovalQueue, Channel, Conversation, DashboardReadSource, DashboardReviewSource, DashboardSnapshot, Metric, Stage } from './dashboard/contracts';
-import { CHANNELS, STAGES, dashboardMetrics, formatMoney, stageAgeDays } from './dashboard/model';
+import type { ApprovalQueue, Channel, Conversation, DashboardReadSource, DashboardReviewSource, DashboardSnapshot, Stage } from './dashboard/contracts';
+import { CHANNELS, STAGES, formatMoney, stageAgeDays } from './dashboard/model';
 import { dashboardErrorText, dashboardFixtureSource, dashboardReviewSource } from './dashboard/source';
-import { OfficeIcon, type OfficeIconName } from './OfficeIcon';
+import { OfficeIcon } from './OfficeIcon';
+import { DashboardShell, ApprovedDashboardSummary, type Section } from './dashboard/ApprovedDashboardLayout';
+import { EventWorkspace } from './dashboard/EventWorkspace';
+import type { EventWorkflowTab } from './dashboard/event-workflow';
 
 const VIEW_LIFETIME_MS = 15 * 60 * 1000;
 const STAGE_ORDER: Stage[] = ['new', 'qualifying', 'proposal', 'confirmed'];
 const CHANNEL_ORDER: Channel[] = ['email', 'web', 'instagram', 'messenger'];
 const COVERAGE = { complete: 'Completa', partial: 'Parcial', unknown: 'Desconocida' };
-type Section = 'summary' | 'opportunities' | 'inbox' | 'sources';
-const SECTIONS: { id: Section; label: string; icon: OfficeIconName }[] = [
-  { id: 'summary', label: 'Resumen', icon: 'dashboard' },
-  { id: 'opportunities', label: 'Oportunidades', icon: 'list' },
-  { id: 'inbox', label: 'Bandeja', icon: 'file' },
-  { id: 'sources', label: 'Fuentes', icon: 'settings' },
-];
 const date = (value: string | null, full = false) => {
   if (!value || !Number.isFinite(Date.parse(value))) return 'Sin fecha verificada';
   return new Intl.DateTimeFormat('es', { dateStyle: 'medium', ...(full ? { timeStyle: 'short' as const } : {}), timeZone: 'UTC' }).format(new Date(value)) + (full ? ' UTC' : '');
@@ -39,15 +35,6 @@ function Empty({ title, children }: { title: string; children: React.ReactNode }
   return <div className="gd-empty"><span className="gd-empty-mark" aria-hidden="true">○</span><h3>{title}</h3><p>{children}</p></div>;
 }
 function Label({ children }: { children: React.ReactNode }) { return <span className="gd-label">{children}</span>; }
-function MetricCard({ metric }: { metric: Metric }) {
-  const value = metric.value === null ? '—' : metric.unit === 'money' && metric.currency ? formatMoney(metric.value, metric.currency) : `${metric.value}${metric.unit === 'percent' ? '%' : ''}`;
-  return <article className={`gd-metric gd-metric-${metric.id}`} data-testid={`dashboard-metric-${metric.id}`}>
-    <div className="gd-metric-heading"><h2>{metric.label}</h2><span aria-hidden="true">{metric.value === null ? '−' : '○'}</span></div>
-    <strong className="gd-metric-value">{value}</strong>
-    <p>{metric.note}</p><span className="gd-metric-coverage">Cobertura: {COVERAGE[metric.coverage].toLowerCase()}</span>
-  </article>;
-}
-
 export function DashboardKanban({ snapshot }: { snapshot: DashboardSnapshot }) {
   return <div className="gd-kanban" aria-label="Oportunidades por etapa, solo lectura">{STAGE_ORDER.map((stage, index) => {
     const opportunities = snapshot.opportunities.filter(item => item.stage === stage);
@@ -100,23 +87,39 @@ export function DashboardReviewPanel({ queue, busy, error, notice, onRead }: { q
   </section>;
 }
 
-function Summary({ snapshot, onSection, review }: { snapshot: DashboardSnapshot; onSection: (section: Section) => void; review: React.ReactNode }) {
-  const metrics = dashboardMetrics(snapshot).filter(item => ['opportunities', 'pipeline', 'conversion'].includes(item.id));
-  return <><div className="gd-metrics">{metrics.map(metric => <MetricCard metric={metric} key={metric.id} />)}</div>
-    <section className="gd-ads-panel" aria-labelledby="gd-ads-title"><div className="gd-ads-heading"><h2 id="gd-ads-title">Publicidad</h2><span className="gd-pill">Sin configurar</span></div><div className="gd-ads-stats"><div><span>Inversión publicitaria</span><strong>—</strong><small>Sin cuenta ni periodo verificados</small></div><div><span>Consultas atribuidas</span><strong>—</strong><small>Sin atribución verificada</small></div><div><span>Retorno publicitario</span><strong>—</strong><small>Sin gasto ni ingresos verificados</small></div></div></section>
-    <section className="gd-panel gd-revenue" aria-labelledby="gd-revenue-title" data-testid="dashboard-revenue-history"><div className="gd-panel-heading"><div><Label>Evolución mensual</Label><h2 id="gd-revenue-title">Ingresos cobrados</h2></div><span className="gd-pill">Pagos pendientes de conectar</span></div><div className="gd-revenue-empty"><div className="gd-revenue-lines" aria-hidden="true"><span /><span /><span /></div><div className="gd-revenue-message"><strong data-testid="dashboard-revenue-unknown">—</strong><h3>Ingresos reales sin verificar</h3><p>La evolución mensual aparecerá cuando exista una fuente de pagos verificada.</p></div></div><div className="gd-panel-bottom"><span>Fuente: pagos sin conectar · Cobertura desconocida</span><span>Una oportunidad confirmada no acredita un cobro.</span></div></section>
-    <div className="gd-summary-grid">{review}<section className="gd-panel gd-activity"><div className="gd-panel-heading"><div><Label>Actividad del ejemplo</Label><h2>Actividad reciente</h2></div><OfficeIcon name="history" size={19} /></div>{snapshot.activity.length ? <ol>{snapshot.activity.slice(0, 4).map(item => <li key={item.id}><span className={`gd-activity-icon gd-activity-${item.kind}`}><OfficeIcon name={item.kind === 'review' ? 'approval' : item.kind === 'proposal' ? 'file' : 'plus'} size={15} /></span><div><p>{item.label}</p><time dateTime={item.at}>{date(item.at, true)}</time></div></li>)}</ol> : <p className="gd-muted">Sin actividad en esta muestra.</p>}<p className="gd-activity-note">Registro sintético. No es actividad en tiempo real.</p></section></div>
-    <section className="gd-panel gd-pending gd-pending-wide"><div><Label>Por conectar</Label><h2>Áreas pendientes</h2><p className="gd-panel-intro">Estas áreas necesitan fuentes verificadas antes de mostrar resultados.</p></div><ul><li><OfficeIcon name="file" size={18} /><div><strong>Catálogo</strong><span>Productos, menús y precios</span></div><span className="gd-pill">Pendiente</span></li><li><OfficeIcon name="analytics" size={18} /><div><strong>Pagos</strong><span>Ingresos y gasto real: —</span></div><span className="gd-pill">Pendiente</span></li><li><OfficeIcon name="calendar" size={18} /><div><strong>Calendario</strong><span>Disponibilidad sin verificar</span></div><span className="gd-pill">Pendiente</span></li></ul><button className="gd-text-button" type="button" onClick={() => onSection('sources')}>Ver cobertura de las fuentes <span aria-hidden="true">↗</span></button></section>
-  </>;
-}
 
-export type DashboardPageProps = { source?: DashboardReadSource; reviewSource?: DashboardReviewSource; initialSnapshot?: DashboardSnapshot; initialSection?: Section };
-export function DashboardPage({ source = dashboardFixtureSource, reviewSource = dashboardReviewSource, initialSnapshot, initialSection = 'summary' }: DashboardPageProps) {
+export const DASHBOARD_SECTIONS: Section[] = ['summary', 'opportunities', 'inbox', 'quotes', 'events', 'calendar', 'tastings', 'logistics', 'payments', 'suppliers', 'followups', 'knowledge', 'sources', 'reviews', 'communications'];
+export function sectionFromHash(hash: string): Section | null {
+  const key = hash.replace(/^#/, '').split('/')[0];
+  if (!key) return 'summary';
+  return DASHBOARD_SECTIONS.includes(key as Section) ? key as Section : null;
+}
+const EVENT_TABS: Partial<Record<Section, EventWorkflowTab>> = { events: 'consulta', quotes: 'cotizacion', payments: 'cobro', calendar: 'operaciones', tastings: 'tastings', logistics: 'operaciones', suppliers: 'operaciones' };
+function sectionForEventTab(tab: EventWorkflowTab): Section { return ({ consulta: 'events', brief: 'events', cotizacion: 'quotes', revision: 'quotes', cobro: 'payments', operaciones: 'calendar', tastings: 'tastings' } as const)[tab]; }
+const DEMO_PROPOSAL_ARTIFACT = { href: new URL('./assets/demo/DEMO-EVT-042-propuesta-v2.pdf', import.meta.url).pathname, fileName: 'DEMO-EVT-042-propuesta-v2.pdf', sha256: '370eaa2e3668c3836e6e7c496b47b57b75d000682f260ffce868e803df57e630', byteLength: 12697, previewHref: new URL('./assets/demo/DEMO-EVT-042-propuesta-v2-page-1.png', import.meta.url).pathname, previewSha256: '76aff590db6ca01d91a1053f32612a6f9d6678dfa52ba8e814500336b9d885a0', previewByteLength: 178239 };
+const TITLES: Partial<Record<Section, [string, string]>> = {
+  summary: ['Dashboard', 'Todo el negocio, en una sola vista.'], opportunities: ['Oportunidades', 'Etapas de la muestra comercial. Solo lectura.'], inbox: ['Bandeja', 'Cada canal y buzón conserva su identidad.'], reviews: ['Revisión local', 'Consulta explícita y revisión exacta en Comunicaciones.'],
+  sources: ['Fuentes', 'Origen, cobertura y última verificación.'], events: ['Eventos', 'Un expediente para consulta, propuesta y operación.'], quotes: ['Propuestas', 'Versiones, contenido exacto y revisión humana.'], payments: ['Enlaces de pago', 'Preparación, simulación y verificación de cobro separadas.'], calendar: ['Calendario', 'Fechas propuestas y reservas pendientes de verificar.'], tastings: ['Tastings', 'Coordinación Regus por ciudad y zona.'], logistics: ['Logística', 'Preparación del mismo evento y dependencias pendientes.'], suppliers: ['Proveedores', 'Candidato, disponibilidad, aceptación y asignación son distintos.'], followups: ['Seguimientos', 'Pendientes del expediente, sin envíos automáticos.'], knowledge: ['Conocimiento', 'Reglas y fuentes que limitan cada borrador.'],
+};
+
+export type DashboardPageProps = { source?: DashboardReadSource; reviewSource?: DashboardReviewSource; initialSnapshot?: DashboardSnapshot; initialSection?: Section; initialVisualDemo?: boolean };
+export function DashboardPage({ source = dashboardFixtureSource, reviewSource = dashboardReviewSource, initialSnapshot, initialSection = 'summary', initialVisualDemo = false }: DashboardPageProps) {
   const [section, setSection] = useState<Section>(initialSection);
-  const headingRef = useRef<HTMLHeadingElement>(null);
-  const focusAfterNavigation = useRef(false);
-  const navigateSection = (next: Section) => { focusAfterNavigation.current = true; setSection(next); };
-  useEffect(() => { if (focusAfterNavigation.current) { focusAfterNavigation.current = false; headingRef.current?.focus(); } }, [section]);
+  const [eventSessionEpoch, setEventSessionEpoch] = useState(0);
+  const [focusHeadingOnSectionChange, setFocusHeadingOnSectionChange] = useState(true);
+  const [visualDemo, setVisualDemo] = useState(initialVisualDemo);
+  const [activeEventTab, setActiveEventTab] = useState<EventWorkflowTab>(EVENT_TABS[initialSection] ?? 'consulta');
+  const navigateSection = (next: Section) => {
+    if (!DASHBOARD_SECTIONS.includes(next)) return;
+    setFocusHeadingOnSectionChange(true); setSection(next);
+    if (EVENT_TABS[next]) setActiveEventTab(EVENT_TABS[next]!);
+    if (typeof window !== 'undefined' && window.location.hash !== `#${next}`) window.history.pushState(null, '', `#${next}`);
+  };
+  useEffect(() => {
+    const sync = () => { const next = sectionFromHash(window.location.hash); if (next) { setFocusHeadingOnSectionChange(true); setSection(next); const tab = window.location.hash.split('/')[1]; if (['consulta', 'brief', 'cotizacion', 'revision', 'cobro', 'operaciones', 'tastings'].includes(tab)) setActiveEventTab(tab as EventWorkflowTab); else if (EVENT_TABS[next]) setActiveEventTab(EVENT_TABS[next]!); } };
+    sync(); window.addEventListener('popstate', sync); window.addEventListener('hashchange', sync);
+    return () => { window.removeEventListener('popstate', sync); window.removeEventListener('hashchange', sync); };
+  }, []);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(initialSnapshot ?? null);
   const [receivedAt, setReceivedAt] = useState<number | null>(initialSnapshot ? Date.now() : null);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'paused' | 'error'>(initialSnapshot ? 'ready' : 'loading');
@@ -131,10 +134,10 @@ export function DashboardPage({ source = dashboardFixtureSource, reviewSource = 
   const mounted = useRef(false);
   const clearQueue = useCallback(() => { queueGate.current.cancel(); setQueue(null); setQueueBusy(false); setQueueError(null); setQueueNotice(null); }, []);
   const withdraw = useCallback((reason: string) => {
-    snapshotGate.current.cancel(); clearQueue(); setSnapshot(null); setReceivedAt(null); setPhase('paused'); setError(null); setNotice(reason);
+    setEventSessionEpoch(epoch => epoch + 1); snapshotGate.current.cancel(); clearQueue(); setSnapshot(null); setReceivedAt(null); setPhase('paused'); setError(null); setNotice(reason);
   }, [clearQueue]);
   const load = useCallback(async () => {
-    clearQueue(); const request = snapshotGate.current.start(); setSnapshot(null); setReceivedAt(null); setPhase('loading'); setError(null); setNotice(null);
+    setEventSessionEpoch(epoch => epoch + 1); clearQueue(); const request = snapshotGate.current.start(); setSnapshot(null); setReceivedAt(null); setPhase('loading'); setError(null); setNotice(null);
     try { const result = await source.read(request.signal); if (!mounted.current || !request.current()) return; setSnapshot(result); setReceivedAt(Date.now()); setPhase('ready'); }
     catch (failure) { if (!mounted.current || !request.current()) return; clearQueue(); setSnapshot(null); setPhase('error'); setError(dashboardErrorText(failure)); }
   }, [source, clearQueue]);
@@ -156,15 +159,27 @@ export function DashboardPage({ source = dashboardFixtureSource, reviewSource = 
   }, [withdraw]);
   useEffect(() => { if (receivedAt === null) return; const timer = window.setTimeout(() => withdraw('La vista venció después de 15 minutos. Vuelve a cargar la muestra; la cola requiere una consulta nueva.'), Math.max(0, receivedAt + VIEW_LIFETIME_MS - Date.now())); return () => window.clearTimeout(timer); }, [receivedAt, withdraw]);
   useEffect(() => { if (!queue) return; const timer = window.setTimeout(() => { clearQueue(); setQueueNotice('La consulta venció. Vuelve a consultar la cola para ver el estado actual.'); }, Math.max(0, Date.parse(queue.expiresAt) - Date.now())); return () => window.clearTimeout(timer); }, [queue, clearQueue]);
-  const titles: Record<Section, [string, string]> = { summary: ['Dashboard', 'Visión general de oportunidades, mensajes y revisión.'], opportunities: ['Oportunidades', 'Etapas de la muestra comercial. Solo lectura, sin mover tarjetas.'], inbox: ['Bandeja', 'Mensajes de ejemplo por canal. Ninguna cuenta real consultada.'], sources: ['Fuentes', 'Origen, cobertura y estado de verificación de cada fuente.'] };
-  return <div className="gourmet-dashboard"><a className="gd-skip" href="#gd-main">Saltar al contenido</a><aside className="gd-sidebar"><a className="gd-brand" href="/office/" aria-label="Gourmet, ir a la oficina"><span className="gd-brand-mark" aria-hidden="true">g.</span><span>gourmet<small>ESPACIO DE TRABAJO</small></span></a><div className="gd-workspace-label"><span className="gd-workspace-icon" aria-hidden="true">G</span><span>Gourmet Workspace<small>Vista local de ejemplo</small></span></div><nav aria-label="Navegación del dashboard"><span className="gd-nav-group">VISIÓN GENERAL</span>{SECTIONS.map(item => <button key={item.id} type="button" className="gd-nav-item" aria-current={section === item.id ? 'page' : undefined} onClick={() => setSection(item.id)}><OfficeIcon name={item.icon} size={18} /><span>{item.label}</span>{section === item.id && <span className="gd-nav-selected" aria-hidden="true">•</span>}</button>)}<span className="gd-nav-group">TU OPERACIÓN</span><a className="gd-nav-item" href="/office/"><OfficeIcon name="home" size={18} /><span>Oficina</span><span aria-hidden="true">↗</span></a><a className="gd-nav-item" href="/office/communications"><OfficeIcon name="approval" size={18} /><span>Comunicaciones</span><span aria-hidden="true">↗</span></a><span className="gd-nav-group gd-pending-nav-heading">PRÓXIMAMENTE</span><div className="gd-pending-nav"><span>Catálogo</span><small>Pendiente</small></div><div className="gd-pending-nav"><span>Pagos</span><small>Pendiente</small></div><div className="gd-pending-nav"><span>Calendario</span><small>Pendiente</small></div></nav><div className="gd-sidebar-bottom"><span className="gd-read-only-symbol"><OfficeIcon name="check" size={16} /></span><div><strong>Solo lectura</strong><span>0 acciones externas</span></div></div></aside>
-    <div className="gd-workspace"><header className="gd-topbar"><span>Workspace <span aria-hidden="true">/</span> <strong>Dashboard</strong></span><div><span className="gd-pill gd-pill-green">Datos sintéticos</span><span className="gd-topbar-monogram" aria-hidden="true">G</span></div></header><main id="gd-main" className="gd-main" tabIndex={-1}><div className="gd-page-heading"><div><h1 ref={headingRef} tabIndex={-1}>{titles[section][0]}</h1><p>{titles[section][1]}</p></div><button type="button" className="gd-button gd-button-light" onClick={() => void load()} disabled={phase === 'loading'} data-testid="dashboard-refresh"><OfficeIcon name="refresh" size={16} />{phase === 'loading' ? 'Cargando…' : snapshot ? 'Actualizar muestra' : 'Cargar muestra'}</button></div>
-      <div className="gd-evidence" data-testid="dashboard-provenance"><div><span className="gd-evidence-dot" aria-hidden="true" /><strong>Fuente:</strong> muestra local sintética</div><div><strong>Corte:</strong> {snapshot ? date(snapshot.asOf, true) : 'Sin consulta vigente'}</div><div><strong>Cobertura:</strong> {snapshot ? 'parcial; datos reales desconocidos' : 'sin verificar'}</div><div className="gd-evidence-end">0 envíos · sin conexión a proveedores</div></div>
-      {snapshot && <p className="gd-period">Periodo del ejemplo: {date(snapshot.periodStart)} – {date(snapshot.asOf)} · Horas en UTC</p>}
-      {error && <div className="gd-error" role="alert"><strong>No se pudo cargar la vista.</strong><p>{error}</p><p>Se retiraron los datos y la cola anterior. Vuelve a cargar cuando quieras intentarlo.</p></div>}
-      {notice && <div className="gd-notice" role="status">{notice}</div>}
-      {phase === 'loading' && <div className="gd-loading" role="status"><span className="gd-loading-mark" aria-hidden="true">g.</span><h2>Preparando tu vista</h2><p>Leyendo la muestra local, sin consultar proveedores.</p></div>}
-      {snapshot && <div className="gd-content" key={section}>{section === 'summary' && <Summary snapshot={snapshot} onSection={navigateSection} review={<DashboardReviewPanel queue={queue} busy={queueBusy} error={queueError} notice={queueNotice} onRead={() => void readQueue()} />} />}{section === 'opportunities' && <><div className="gd-section-toolbar"><p><strong>{snapshot.opportunities.length}</strong> oportunidades de ejemplo</p><span className="gd-pill">Sin arrastrar ni modificar</span></div><DashboardKanban snapshot={snapshot} /><p className="gd-section-note">Todos los contactos, eventos e importes de estas tarjetas son sintéticos. Las etapas no prueban ventas ni pagos reales.</p></>}{section === 'inbox' && <DashboardInbox snapshot={snapshot} />}{section === 'sources' && <><DashboardSources snapshot={snapshot} /><div className="gd-source-disclosure"><h2>Cobertura y límites</h2><p>El corte corresponde únicamente a esta muestra local sintética y parcial, no a una sincronización del negocio. Los datos reales son desconocidos: no se consulta ningún proveedor ni se realizan envíos.</p><p>Una fuente pendiente no equivale a cero actividad. Los ingresos, la conversión, el gasto publicitario y la disponibilidad real permanecen sin verificar. Esta vista no consulta cuentas ni activa agentes.</p><p>Las lecturas caducan a los 15 minutos y se retiran al ocultar o salir de la página. Para volver a ver la información, pulsa Cargar muestra. La cola siempre se consulta por separado.</p></div></>}</div>}
-      <footer className="gd-footer"><span>Gourmet <span aria-hidden="true">·</span> Dashboard</span><span>Ejemplo local · Solo lectura</span></footer>
-    </main></div></div>;
+  const eventTab = EVENT_TABS[section];
+  const title = TITLES[section] ?? ['Dashboard', 'Todo el negocio, en una sola vista.'];
+  const review = <DashboardReviewPanel queue={queue} busy={queueBusy} error={queueError} notice={queueNotice} onRead={() => void readQueue()} />;
+  const context = <details className="ga-read-status"><summary>Datos sintéticos · Corte y cobertura</summary><div data-testid="dashboard-provenance"><span>Fuente: muestra local sintética</span><span>Corte: {snapshot ? date(snapshot.asOf, true) : 'Sin consulta vigente'}</span><span>Cobertura: {snapshot ? 'parcial; datos reales desconocidos' : 'sin verificar'}</span><span>0 envíos · sin conexión a proveedores</span></div></details>;
+  return <DashboardShell focusHeadingOnSectionChange={focusHeadingOnSectionChange} section={section} onNavigate={navigateSection} title={title[0]} subtitle={title[1]} visualDemo={section === 'summary' && visualDemo} enabledSections={DASHBOARD_SECTIONS} actions={<div className="ga-local-actions">
+    {section === 'summary' && <button type="button" aria-pressed={visualDemo} onClick={() => setVisualDemo(value => !value)} data-testid="dashboard-visual-mode">{visualDemo ? 'Ver datos fuente' : 'Vista DEMO'}</button>}
+    <button type="button" onClick={() => void load()} disabled={phase === 'loading'} data-testid="dashboard-refresh">{phase === 'loading' ? 'Cargando…' : snapshot ? 'Actualizar muestra' : 'Cargar muestra'}</button>
+  </div>}>
+    <div className="gourmet-dashboard gd-module-status">{error && <div className="gd-error" role="alert"><strong>No se pudo cargar la vista.</strong><p>{error}</p><p>Se retiraron los datos y la cola anterior. Vuelve a cargar cuando quieras intentarlo.</p></div>}{notice && <div className="gd-notice" role="status">{notice}</div>}{phase === 'loading' && <div className="gd-loading" role="status"><h2>Preparando tu vista</h2><p>Leyendo la muestra local, sin consultar proveedores.</p></div>}</div>
+    {snapshot && <>
+      {section === 'summary' && <ApprovedDashboardSummary visualDemo={visualDemo} sampleOpportunityCount={snapshot.opportunities.length} onOpenInbox={() => navigateSection('inbox')} />}
+      <div className="gourmet-dashboard gd-approved-module">
+        {section === 'opportunities' && <><div className="gd-section-toolbar"><p><strong>{snapshot.opportunities.length}</strong> oportunidades de ejemplo</p><button className="gd-button gd-button-light" type="button" onClick={() => navigateSection('quotes')}>Abrir expediente DEMO-EVT-042</button></div><DashboardKanban snapshot={snapshot} /><p className="gd-section-note">Las tarjetas son una muestra independiente. No se asocian al expediente DEMO-EVT-042 por coincidencia de nombre; no prueban ventas ni pagos reales.</p></>}
+        {section === 'inbox' && <DashboardInbox snapshot={snapshot} />}
+        {section === 'reviews' && review}
+        {section === 'sources' && <><DashboardSources snapshot={snapshot} /><div className="gd-source-disclosure"><h2>Cobertura y límites</h2><p>El corte corresponde únicamente a esta muestra local sintética y parcial, no a una sincronización del negocio. Los datos reales son desconocidos: no se consulta ningún proveedor ni se realizan envíos.</p><p>Una fuente pendiente no equivale a cero actividad. Ingresos, conversión, gasto publicitario y disponibilidad real permanecen sin verificar. La vista DEMO muestra un escenario visual independiente; no sustituye estas lecturas ni la cola local de revisión.</p><p>Las lecturas y el expediente temporal caducan a los 15 minutos y se retiran al ocultar o salir de la página. Para volver, pulsa Cargar muestra. La cola requiere una consulta explícita por separado.</p><p>Periodo de la muestra: {date(snapshot.periodStart)} – {date(snapshot.asOf)} · Horas en UTC.</p></div></>}
+        {section === 'knowledge' && <section className="gd-panel"><h2>Reglas de Gourmet</h2><p className="gd-panel-intro">Reglas representadas en el escenario local; no son una configuración publicada de agentes.</p><ul className="gd-rules"><li>No inventar precios, fechas, disponibilidad ni promesas.</li><li>Cada borrador requiere aprobación exacta de cuenta, destinatarios, contenido, adjuntos y contexto.</li><li>Un enlace preparado no equivale a generado, compartido ni pagado.</li><li>Reuniones y tastings en Regus de la ciudad/zona; centro, sala, coste, permiso de alimentos y reserva se verifican por separado.</li><li>El cierre humano habilita sourcing; un candidato a chef no es un proveedor aceptado.</li><li>Catálogo y precios reales pendientes de una fuente autorizada.</li></ul></section>}
+        {section === 'followups' && <section className="gd-panel"><h2>Seguimientos del expediente</h2><p className="gd-panel-intro">Plan representado, sin programación ni envíos. Cada mensaje se prepara y aprueba por separado.</p><ul className="gd-rules"><li>Confirmar fecha, lugar y restricciones del evento.</li><li>Revisar propuesta v2 y adjunto después del cambio de 20 a 24 invitados.</li><li>Verificar el estado de cobro si la consulta falla; no cobrar ni enviar otra vez por un timeout.</li><li>Coordinar centro Regus y permiso de alimentos antes de confirmar el tasting.</li></ul><button className="gd-button gd-button-dark" type="button" onClick={() => navigateSection('events')}>Abrir expediente</button></section>}
+      </div>
+      <EventWorkspace key={eventSessionEpoch} visible={eventTab !== undefined} activeTab={activeEventTab} onTabChange={tab => { setFocusHeadingOnSectionChange(false); const next = sectionForEventTab(tab); setActiveEventTab(tab); setSection(next); if (typeof window !== 'undefined' && window.location.hash !== `#${next}/${tab}`) window.history.pushState(null, '', `#${next}/${tab}`); }} proposalArtifact={DEMO_PROPOSAL_ARTIFACT} />
+    </>}
+    {context}
+  </DashboardShell>;
 }

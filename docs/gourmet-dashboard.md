@@ -1,113 +1,113 @@
-# Gourmet Dashboard: commercial overview, separate from Office
+# Gourmet Dashboard y expediente de evento
 
-This slice adds `/office/dashboard` beside the existing `/office/` scene and
-`/office/communications` exact-review screen. The Office header's Dashboard
-shortcut is a route link. Its previous internal dashboard tab is now called
-**Operaciones**, with the same tab IDs, order and keyboard behavior. The approved
-Office scene, images and original stylesheet are unchanged.
+## Referencia visual vigente
 
-## Reference and implemented layout
+La pantalla completa aceptada por el propietario el 13 de octubre de 2026 es
+`docs/design-approved/gourmet-dashboard-20261013.png`. El JSON adjunto fija sus
+hashes, dimensiones y tokens. Sustituye las propuestas visuales anteriores.
 
-Reference supplied by the owner: screenshots IMG_3959–IMG_3969 and
-https://www.instagram.com/reel/Dd-XLmMzU4_/ . The reference demonstrates a CRM UX;
-it does not establish a provider, architecture or real integration capability.
+El marco React usa fondo blanco/gris, sidebar compacto, tres tarjetas, cuatro
+celdas de publicidad, gráfico de seis barras, asistentes y actividad breve.
+La tipografía y los tokens CSS son reutilizables mediante `brandName` y variables
+`--ga-*`. Inter es la fuente elegida en la propuesta aceptada; no se afirma haber
+identificado la fuente ni recuperado el CSS original del video.
 
-The layout follows the reference's grouped narrow sidebar, three KPI cards,
-advertising strip, wide revenue area, review/activity sections, equal-width
-opportunity columns, and channel-filtered inbox with list and response context.
-The content and branding are adapted to Gourmet. The revenue area is an explicit
-unknown state instead of an invented graph. There are no active-looking agent
-switches, send buttons or fabricated automation results.
+La referencia visual fue aceptada como diseño estático. El nuevo componente real
+necesita todavía ejecución y revisión visual de navegador en CI. Un build o
+una prueba SSR no demuestra identidad píxel a píxel ni calidad visual final.
 
-Pixel-level similarity and browser layout have **not** been verified locally.
-Desktop/mobile browser cases are prepared; a successful build or SSR test does
-not substitute for those checks.
+## Rutas y datos separados
 
-## What the dashboard knows
+- `/office/dashboard` contiene el Dashboard y el expediente temporal.
+- `/office/` mantiene su escena y comportamiento. Su resumen interno sigue
+  llamándose Operaciones; el Dashboard es una aplicación separada.
+- `/office/communications` conserva el backend local de revisión exacta.
+- La navegación del Dashboard usa secciones y pestañas locales en el hash,
+  admite Atrás/Adelante y conserva el mismo expediente entre módulos.
+- Datos fuente es el modo inicial. Cuatro oportunidades sintéticas y los
+  buzones separados se leen de la muestra fija. Dinero, conversión, publicidad,
+  reservas, cobros y conexiones reales permanecen desconocidos.
+- Vista DEMO se activa explícitamente. Sus cifras son el escenario visual de la
+  pantalla aceptada, no un agregado del expediente ni resultados del negocio.
+  No se mezclan con la cola local de revisión.
+- `DEMO-EVT-042` es un tercer escenario identificado. No se vincula con una
+  oportunidad, una cuenta o un hilo por coincidencia de nombre.
 
-- Its sole commercial data source is an in-memory fixture. `read(signal)` returns
-  a fresh copy and has no network, credentials, session or write capability.
-- Four invented opportunities and four invented conversations illustrate the
-  layout. The cut is fixed at 2026-10-13 00:00 UTC. Reloading does not advance it.
-- The fixture is explicitly partial. Its count is **records in the sample**, not
-  all customers or new leads this month. Stage ages use the sample cut.
-- Amounts and currencies are missing. Pipeline value remains unknown; missing
-  amounts are not zero and mixed currencies are never added.
-- Revenue, conversion and advertising remain unknown. Confirmed-stage examples
-  are not evidence of payment or conversion. No estimated trend is drawn.
-- Monday, Gmail, web form, Instagram, Messenger, payments, ads and catalog are
-  **unconfigured in this dashboard**. Their current real-world connection state
-  has not been read. No connector login, renewal or provider request occurs.
-- Matching contact names do not merge accounts. Aurora's Info/Felipe messages
-  remain separate. One deliberately unassociated example illustrates uncertainty.
-- The sample inbox and the communications fixture are separate datasets. Opening
-  Communications does not automatically associate an example with a draft.
+## Cobertura por módulo
 
-## Existing exact-review workflow, reused without new authority
+| Acceso | Funciona en código local | Alcance real pendiente |
+| --- | --- | --- |
+| Dashboard | Marco aprobado, modo fuentes, modo visual DEMO, navegación responsive | Métricas y conectores del negocio |
+| Oportunidades | Cuatro tarjetas de muestra, etapas de solo lectura | Sincronización comercial, cambios duraderos |
+| Bandeja | Canales, detalle, buzones separados, enlace a Comunicaciones | Leer cuentas reales y enlazar cada hilo con evidencia |
+| Propuestas | v1 obsoleta/v2, tabla DEMO, total/anticipo, PDF fijo y revisión | Catálogo autorizado, generador general, persistencia de propuestas reales |
+| Revisión exacta del expediente | Mensaje íntegro, identidad, destinatarios, campos editables, adjunto y contexto; invalidación y aprobación simulada | No guarda ni autoriza una aprobación productiva |
+| Revisión local | GET explícito de la cola cifrada existente; validación de contexto, cuenta, versión y caducidad | Sesión real, cuentas y permisos operativos |
+| Enlaces de pago | Secuencia local preparar/revisar/referencia/revisión de mensaje/compartir; timeout y caso alternativo | Proveedor de pago, URL real, envío, verificación/conciliación |
+| Eventos / Calendario | Ficha del mismo evento, fecha propuesta, dependencias | Calendario real, disponibilidad y reservas |
+| Tastings | Ficha editable Regus por ciudad/zona, tipo y fecha propuesta | Centro/sala/coste/permiso de alimentos/reserva/invitación |
+| Proveedores | Candidato sin aceptar; sourcing habilitado solo tras cierre humano DEMO | Directorio, contacto, aceptación y contratación |
+| Logística | Notas/checklist local del evento | Compras, recepción, transporte, calidad y cierre real |
+| Seguimientos | Pendientes legibles y navegación al expediente | Programador y mensajes revisables por cada envío |
+| Conocimiento | Reglas Gourmet de solo lectura | Editor de fuentes y configuración real de agentes |
+| Oficina | Aplicación anterior preservada | No se prueba su conexión productiva en este lote |
+| Costes / Catálogo / Analítica / Contactos / Equipo | Entradas visibles deshabilitadas | Módulos todavía no implementados en el nuevo Dashboard |
 
-The review queue is unknown until the user explicitly requests a read. The
-adapter accepts only a `read` dependency, issuing GET
-`/office-api/communications` through the existing same-origin client. It does not
-start a fixture session, save a draft, approve or dispatch. Cookies remain
-HttpOnly and session scoped; CSRF protection on the existing mutation routes is
-unchanged. GET cannot create review state and needs an existing allowed fixture
-session. The regular server still has no communications routes by default.
+## Invariantes del expediente
 
-The projection validates the response, fixture organization and actor, current
-session expiry, the precise account/thread relationship, latest draft revision,
-full draft digest and source/context digest. It checks cancellation and expiry
-again after asynchronous verification. Current approvals are shown only as
-**approved in the sample, unsent**. Inconsistent or unavailable data is blocked
-or unknown, never treated as an empty or ready queue.
+El cambio de 20 a 24 personas deja v1 obsoleta. La propuesta v2 usa exclusivamente
+un catálogo de laboratorio: 3.000 unidades DEMO y 900 de anticipo, impuestos no
+modelados. No representa precio, deuda ni obligación comercial de Gourmet.
 
-Links go to the existing `/office/communications` screen without identifiers,
-auth tokens or approval state. The user must select the saved draft there and
-complete the existing fresh verification and exact human approval. No approval
-or sending action exists on the dashboard.
+La aprobación simulada compara una captura exacta en memoria de identidad,
+texto, destinatarios, adjunto y contexto. Editarlos invalida la aprobación y las
+etapas dependientes. Las URL locales y descriptores del PDF/vista previa también
+forman parte de esa identidad; su reemplazo exige revisión nueva. El SHA-256 del
+PDF se comprueba contra bytes empaquetados, no se presenta como digest de fuentes
+externas. La página completa del PDF se revisa dentro de la misma pantalla para
+no perder el borrador; la descarga es separada.
 
-## Interaction, privacy and accessibility
+Preparado, revisado, referencia simulada, compartido en simulación y cobro son
+estados distintos. Nunca se fabrica una URL. Un timeout mantiene cobrado y saldo
+desconocidos y la misma solicitud; no habilita reenvío ni un segundo cobro. El
+caso alternativo de 900/2.100 está rotulado y no cambia el principal. Conciliación
+y proveedor siguen pendientes. No hay recibos, checkout ni pagos reales.
 
-- Source text is rendered as escaped React text, not HTML or external media.
-- Selecting a conversation does not mark a message read on any service.
-- No drag-to-change stage, payment link, scheduler or automated response exists.
-- No browser storage, provider SDK or browser-owned identity is introduced.
-- Failed reads withdraw the old queue. Abort/generation checks prevent late
-  responses from restoring it. Hiding/leaving the page or a 15-minute display
-  lifetime withdraws the view; reloading the sample and queue is explicit.
-- The queue expires no later than its server session. A session cannot be
-  extended from the dashboard.
-- Mobile layouts use readable content and 44px control targets. Semantic
-  headings, sections, links, selected states and a skip link support keyboard
-  use; in-content navigation restores focus to the new heading.
+Un cierre humano DEMO habilita sourcing. El chef candidato sigue sin contactar,
+sin disponibilidad verificada, sin aceptación ni asignación. Una nota marcada
+no convierte el evento en listo, comprado, recibido o reservado.
 
-## Run and verify
+Reuniones y tastings siguen la preferencia Regus por ciudad/zona. Centro, marca,
+dirección, sala, aforo, alimentos externos, coste, condiciones y confirmación
+se verifican por separado. No se asume que cualquier sede permita comida.
 
-`npm run office:dev` serves the dashboard fixture without an API. To exercise the
-optional review queue, use the existing explicitly local communications fixture
-server and isolated PostgreSQL as described in `monday-gmail-preparation.md`.
-Never enter real customer data or credentials in the fixture.
+## Lecturas, seguridad y privacidad
 
-- `npm run typecheck`
-- `npm run build` and `npm run office:build`
-- `npm run test:office` (includes PostgreSQL and four Docker Compose checks)
-- `npm run test:operations`
-- `npm run test:dashboard:e2e` (20 desktop/mobile executions)
-- Existing Office, staging and communications browser suites remain regression
-  gates, including the renamed Operaciones tab.
+La cola existente sigue usando solo GET `/office-api/communications`, únicamente
+al pulsar. No inicia sesiones, crea borradores, aprueba ni despacha. Conserva
+identidad de organización/cuenta/hilo, validación de contexto y versiones,
+HttpOnly, CSRF en mutaciones y composición local explícita. Las rutas no se
+habilitan automáticamente en staging.
 
-The local constrained environment can run native isolated PostgreSQL, but Docker
-is unavailable and Chromium exits before a page opens because `socket()` is not
-permitted. The dot cloud browser cannot reach this workspace's localhost; its
-URL policy also rejects `data:` navigation. These limits were respected. No
-browser rendering, screenshot, Docker image build or new CI run is claimed for
-this dashboard revision. The previously green communications PR verifies its
-own commit, not this new dashboard code.
+Los datos y el expediente temporal se retiran al ocultar/salir de la página o
+tras 15 minutos. Cada recarga cambia una generación de sesión React, por lo que
+el estado se reinicia incluso si la fuente responde de inmediato. Volver a
+mostrar datos requiere pulsar Cargar muestra; la cola se consulta por separado.
+No se usan localStorage, sesiones nuevas automáticas ni proveedores externos.
 
-## Next operational slice (not activated)
+El texto se escapa con React. No se ejecuta HTML de mensajes. No hay OAuth,
+credenciales, permisos ampliados, envíos email/SMS, importaciones, modificaciones
+Monday, reservas, contratación o cobros. Las acciones reales están deshabilitadas.
 
-Real metrics require an approved read-only source mapping, account/tenant scope,
-field/currency definitions, complete pagination, date/cohort definitions and a
-freshness/error policy. Catalog-backed proposals additionally require verified
-menus/prices, provenance and availability rules. Existing exact approvals remain
-required before every eventual send. No real account integration is configured
-by this UI slice.
+## Verificación y límites
+
+Los tests de reducer/SSR comprueban estado, invalidación, desconocidos,
+idempotencia local, escaping, identidad, bytes del adjunto y contraste declarado.
+La suite de navegador define 52 ejecuciones escritorio/móvil para Dashboard y
+expediente, incluidos Atrás/Adelante, repetición, foco, vista previa del PDF,
+refresh, caducidad y retiro por ocultación. No se considera pasada sin ejecución.
+
+Chromium local aborta antes de cargar una página por la restricción de sockets.
+Las cuatro pruebas Compose requieren Docker, ausente aquí. CI, capturas e imagen
+se ejecutarán únicamente después de autorizar la publicación del cambio exacto.
+No se fusiona ni despliega este lote.
