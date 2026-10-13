@@ -104,6 +104,7 @@ const ATTESTATIONS: Array<[Attestation, string]> = [
   ['context', 'He revisado los mensajes originales, el brief v2, el catálogo, la propuesta y los faltantes del contexto.'],
 ];
 function Review({ state, dispatch, artifact, onOpenCommunications }: { state: EventWorkflowState; dispatch: Dispatch; artifact?: ProposalArtifact; onOpenCommunications?: () => void }) {
+  const bodyId = useId();
   const artifactInSync = proposalArtifactIdentity(artifact) === proposalArtifactIdentity(state.artifact);
   const approved = artifactInSync && hasCurrentApproval(state);
   const fields: Array<[DraftField, string]> = [['to', 'Para'], ['cc', 'CC'], ['bcc', 'CCO'], ['subject', 'Asunto']];
@@ -111,7 +112,7 @@ function Review({ state, dispatch, artifact, onOpenCommunications }: { state: Ev
     <div className="gew-columns gew-review-columns"><div><Card title="Originales y cuenta"><Identity state={state} /><OriginalMessages /></Card><Card title="Contexto capturado"><Sources contextRevision={state.contextRevision} /><div className="gew-actions"><Button onClick={() => dispatch({ type: 'CONTEXT_CHANGED' })}>Simular contexto actualizado</Button></div><p className="gew-muted">Añade una revisión local de contexto e invalida cualquier aprobación previa. No consulta cuentas.</p></Card></div>
       <Card title={`Respuesta exacta · borrador r${state.draft.revision}`}><span className={`gew-tag${approved ? ' gew-tag-success' : ''}`}>{approved ? 'Aprobada en DEMO · sin envío real' : 'Pendiente de revisión'}</span>
         <div className="gew-editor-fields">{fields.map(([field, label]) => <label key={field}>{label}<input type="text" autoComplete="off" value={state.draft[field]} onChange={event => dispatch({ type: 'EDIT_DRAFT', field, value: event.target.value })} placeholder={field === 'cc' || field === 'bcc' ? 'Ninguno' : undefined} /></label>)}
-          <label>Texto completo que se revisaría<textarea rows={10} value={state.draft.body} onChange={event => dispatch({ type: 'EDIT_DRAFT', field: 'body', value: event.target.value })} /></label></div>
+          <div className="gew-editor-body"><label htmlFor={bodyId}>Texto completo que se revisaría</label><textarea id={bodyId} rows={10} value={state.draft.body} onChange={event => dispatch({ type: 'EDIT_DRAFT', field: 'body', value: event.target.value })} /></div></div>
         <Attachment state={state} artifact={artifact} dispatch={dispatch} />
         <fieldset className="gew-attestation"><legend>Revisión humana simulada · versión exacta</legend>{ATTESTATIONS.map(([field, label]) => <label key={field} className="gew-check"><input type="checkbox" checked={state.attestations[field]} onChange={event => dispatch({ type: 'ATTEST', field, checked: event.target.checked })} />{label}</label>)}</fieldset>
         <p className="gew-muted">Un cambio de texto, destinatarios, asunto, adjunto o contexto invalida la revisión y reinicia las etapas dependientes de esta simulación.</p>
