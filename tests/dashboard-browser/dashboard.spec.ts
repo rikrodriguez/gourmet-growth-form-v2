@@ -40,6 +40,16 @@ test('dashboard is separate, synthetic, readable and does not start a session or
   await expect(page.getByTestId('dashboard-metric-opportunities')).toContainText('4');
   for (const id of ['pipeline', 'conversion']) await expect(page.getByTestId(`dashboard-metric-${id}`)).toContainText('—');
   await expect(page.getByTestId('dashboard-revenue-history')).toContainText('—');
+  if (testInfo.project.name === 'dashboard-desktop') {
+    const revenue = await page.getByTestId('dashboard-revenue-history').boundingBox();
+    expect(revenue!.height).toBeGreaterThanOrEqual(200); expect(revenue!.height).toBeLessThanOrEqual(220);
+  } else {
+    const provenance = await page.getByTestId('dashboard-provenance').boundingBox();
+    expect(provenance!.height).toBeLessThanOrEqual(90);
+    await expect(page.getByTestId('dashboard-provenance')).toContainText('Corte:');
+    await expect(page.getByTestId('dashboard-provenance')).toContainText('Cobertura: parcial; datos reales desconocidos');
+    await expect(page.getByTestId('dashboard-provenance')).toContainText('sin conexión a proveedores');
+  }
   await expect(page.getByTestId('dashboard-read-reviews')).toBeEnabled(); await noOverflow(page);
   expect(apiRequests).toEqual([]); expect(external).toEqual([]);
   await expect(page.getByRole('link', { name: 'Oficina', exact: true })).toHaveAttribute('href', '/office/');
@@ -63,6 +73,11 @@ test('inbox filters preserve mailbox identity and disclose absent social connect
   await expect(page.getByRole('article', { name: 'Detalle de la conversación' })).toContainText('info@example.test');
   await page.getByRole('button', { name: /La misma consulta en otro buzón/ }).click();
   await expect(page.getByRole('article', { name: 'Detalle de la conversación' })).toContainText('felipe@example.test');
+  const reviewPanel = page.getByRole('region', { name: 'Contexto de revisión de respuesta' });
+  await expect(reviewPanel).toContainText('Sin vinculación verificada');
+  const reviewLink = reviewPanel.getByRole('link', { name: 'Revisar en Comunicaciones' });
+  await expect(reviewLink).toHaveAttribute('href', '/office/communications');
+  expect((await reviewLink.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   await captureSyntheticView(page, testInfo, 'inbox');
   for (const channel of ['Instagram', 'Messenger']) { await page.getByRole('button', { name: new RegExp(`^${channel}`) }).click(); await expect(page.getByRole('heading', { name: `${channel} pendiente de conexión` })).toBeVisible(); await expect(page.getByText('La bandeja real no se ha consultado.', { exact: false })).toBeVisible(); }
   await page.getByRole('button', { name: /^Formulario web/ }).click(); await expect(page.getByRole('article', { name: 'Detalle de la conversación' })).toContainText('No acredita una importación'); await noOverflow(page);

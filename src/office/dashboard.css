@@ -85,3 +85,19 @@
 .gourmet-dashboard .gd-source-card h3{font-size:16px}
 .gourmet-dashboard .gd-source-disclosure h2{font-size:16px}
 .gourmet-dashboard .gd-empty h3{font-size:17px}}
+
+/* Reference-density refinements: provenance stays visible; explanations live in Sources. */
+.gourmet-dashboard .gd-draft-context .gd-review-cta{min-height:44px;margin-top:14px;font-size:12px;white-space:normal}
+@media(min-width:901px){
+.gourmet-dashboard .gd-revenue{min-height:210px;padding:16px 20px}
+.gourmet-dashboard .gd-revenue-empty{min-height:84px;margin:8px 0}
+.gourmet-dashboard .gd-revenue-message{padding:4px 20px}
+.gourmet-dashboard .gd-revenue-message>strong{font-size:24px;margin-bottom:4px}
+.gourmet-dashboard .gd-revenue-message p{margin-top:4px;line-height:1.5}
+.gourmet-dashboard .gd-revenue .gd-panel-bottom{padding-top:8px}
+}
+@media(max-width:680px){
+.gourmet-dashboard .gd-evidence{display:flex;flex-wrap:wrap;gap:2px 10px;padding:8px 10px;line-height:1.45}
+.gourmet-dashboard .gd-evidence>div{display:inline-flex;flex-wrap:wrap;gap:3px;margin-top:0}
+.gourmet-dashboard .gd-evidence-end{border:0;padding-top:0;margin-top:0!important}
+}

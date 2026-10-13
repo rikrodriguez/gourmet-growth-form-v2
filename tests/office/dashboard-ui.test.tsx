@@ -70,7 +70,9 @@ test('inbox keeps distinct conversations and distinguishes unconfigured real sou
   assert.match(html, /Los mensajes de ejemplo no acreditan una conexión/);
   assert.match(html, /Seleccionar no marca como leído/);
   assert.match(html, /info@example.test/);
-  assert.match(html, /Borrador sin verificar/);
+  assert.match(html, /Sin vinculación verificada/);
+  assert.match(html, /class="gd-button gd-button-dark gd-review-cta" href="\/office\/communications"/);
+  assert.match(html, /Revisar en Comunicaciones/);
   assert.match(html, /no vincula automáticamente/);
   for (const channel of ['Correo', 'Formulario web', 'Instagram', 'Messenger']) assert.match(html, new RegExp(channel));
   assert.doesNotMatch(html, /<textarea|<form|>Enviar<|>Aprobar<|>Eliminar</);
