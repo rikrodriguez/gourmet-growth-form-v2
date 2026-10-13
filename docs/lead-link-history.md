@@ -210,11 +210,16 @@ El fixture explícito /office/lead-link-history-demo.html monta DashboardPage re
 con fuente/cliente sintéticos; no es una ruta de autenticación comercial ni entra
 en el bundle de producción. Sus pruebas están incorporadas al testDir existente
 sin cambiar workflow. El caso de apertura utiliza formulario nativo → handler
-Fastify real por HTTP loopback → 303 → destino sintético interceptado. El
+Fastify real por HTTP loopback → 303 → segundo origen loopback sintético. El
 servidor observa los metadatos de navegación enviados realmente por Chromium;
 una captura de intercepción no se usa como sustituto de los headers recibidos.
-Sólo los recursos del fixture se sirven desde Vite local. Todo tráfico externo
-queda interceptado o bloqueado. Ningún proveedor se contacta durante la prueba:
+Sólo los recursos del fixture se sirven desde Vite local. Una frontera exclusiva
+del test captura el Location exacto del handler y sustituye sólo su origen por
+el receptor loopback antes de enviarlo al navegador. Así no depende de volver
+a interceptar un redirect para evitar tráfico externo. La aserción de firma
+comprueba el header original y los parámetros recibidos por loopback. No se
+modifica el handler, la CSP del runtime ni destinos comerciales. Ningún proveedor
+se contacta durante la prueba:
 
     npm run test:dashboard:e2e -- lead-link-history.spec.ts
 
