@@ -210,13 +210,16 @@ El fixture explícito /office/lead-link-history-demo.html monta DashboardPage re
 con fuente/cliente sintéticos; no es una ruta de autenticación comercial ni entra
 en el bundle de producción. Sus pruebas están incorporadas al testDir existente
 sin cambiar workflow. El caso de apertura utiliza formulario nativo → handler
-Fastify real mediante inject → 303 → destino sintético interceptado, con todo
-tráfico externo bloqueado. Ningún proveedor se contacta durante la prueba:
+Fastify real por HTTP loopback → 303 → destino sintético interceptado. El
+servidor observa los metadatos de navegación enviados realmente por Chromium;
+una captura de intercepción no se usa como sustituto de los headers recibidos.
+Sólo los recursos del fixture se sirven desde Vite local. Todo tráfico externo
+queda interceptado o bloqueado. Ningún proveedor se contacta durante la prueba:
 
     npm run test:dashboard:e2e -- lead-link-history.spec.ts
 
 Las nuevas interacciones de navegador no se ejecutaron localmente porque
 Chromium ya tenía un bloqueo de sockets; no se reintentó por otra ruta. Listar
 las pruebas sólo valida descubrimiento, no comportamiento. La validación de CI y
-las capturas nuevas requieren publicar este alcance autorizado. El CI verde de
-la base af269082 no verifica este lote local.
+las capturas nuevas se comprueban por revisión/commit publicado, con su resultado
+en el PR. El CI verde de la base af269082 no verifica este lote.
