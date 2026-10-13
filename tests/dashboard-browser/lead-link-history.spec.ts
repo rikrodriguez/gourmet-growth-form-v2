@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-async function open(page:Page){await page.goto('/office/lead-link-history-demo.html#events');await expect(page.getByTestId('dashboard-lead-history')).toBeVisible();}
+async function open(page:Page, origin=''){await page.goto(`${origin}/office/lead-link-history-demo.html#events`);await expect(page.getByTestId('dashboard-lead-history')).toBeVisible();}
 async function verify(page:Page){await page.getByRole('button',{name:'Verificar acceso al historial',exact:true}).click();await expect(page.getByLabel('Lead autorizado',{exact:true})).toBeVisible();}
 async function select(page:Page,id='demo-history-a'){await page.getByLabel('Lead autorizado',{exact:true}).selectOption(id);}
 async function read(page:Page){await page.getByRole('button',{name:'Consultar historial del lead',exact:true}).click();}
@@ -31,23 +31,29 @@ test('close, DEMO navigation, Back and reload never reopen historical records',a
  await verify(page);await select(page);await read(page);await expect(panel(page)).toBeVisible();await page.reload();await expect(panel(page)).toHaveCount(0);
 });
 
-// Native browser form POST -> real Fastify handler via inject -> 303 -> intercepted synthetic destination.
+// Native browser form POST -> loopback HTTP Fastify handler -> 303 -> intercepted synthetic destination.
+// Interception snapshots are not used as wire headers: Chromium may add Fetch Metadata after interception.
 // The provider is never contacted, and all URL parameters are invented fixtures.
 import { createLeadLinkOpenApi, LEAD_LINK_OPEN_API, type LeadLinkOpenIdentity } from '../../src/office/backend/lead-link-opening';
 import { demoOpeningRecords, demoOpeningScope, demoOpeningDestinations } from '../../src/office/backend/lead-link-demo-fixtures';
 test('explicit open uses native POST, exact server redirect, no referrer/opener and no provider prefetch',async({page,context})=>{
- const origin='http://127.0.0.1:4175';
+ const origin='http://127.0.0.1:4182';
+ const viteOrigin='http://127.0.0.1:4175';
  const identity:LeadLinkOpenIdentity={identityKey:'synthetic-test-identity',durableIdentity:false,scope:demoOpeningScope,expiresAtMs:Date.now()+600000,canRead:true,canOpen:true,csrfToken:'synthetic_open_csrf_fixture_not_credential',leadIds:['demo-history-a','demo-history-b']};
  const app=createLeadLinkOpenApi({allowedOrigin:origin,allowedDestinations:demoOpeningDestinations,resolveIdentity:()=>identity,
   source:{async read(scope,leadId,referenceId){return demoOpeningRecords.find(record=>record.scope.organizationId===scope.organizationId&&record.scope.workspaceId===scope.workspaceId&&record.scope.mode===scope.mode&&record.leadId===leadId&&record.referenceId===referenceId)??null;}}});
- const opens:{method:string;data:string|null;status:number}[]=[];const destinations:{url:string;method:string;data:string|null;headers:Record<string,string>}[]=[];
+ const opens:{method:string;data:string|null}[]=[];
+ const responses:{status:number;site:unknown;mode:unknown;destination:unknown;user:unknown;origin:'expected'|'null'|'other'|'missing'}[]=[];
+ app.addHook('onResponse',async(request,reply)=>{if(request.url===LEAD_LINK_OPEN_API)responses.push({status:reply.statusCode,site:request.headers['sec-fetch-site'],mode:request.headers['sec-fetch-mode'],destination:request.headers['sec-fetch-dest'],user:request.headers['sec-fetch-user'],origin:request.headers.origin===origin?'expected':request.headers.origin==='null'?'null':request.headers.origin?'other':'missing'});});
+ // Only the synthetic page/assets are served through the local Vite process. No provider proxy exists.
+ app.get('/*',async(request,reply)=>{const response=await fetch(viteOrigin+request.url,{redirect:'manual'});reply.code(response.status).type(response.headers.get('content-type')??'application/octet-stream');return reply.send(Buffer.from(await response.arrayBuffer()));});
+ const destinations:{url:string;method:string;data:string|null;headers:Record<string,string>}[]=[];
  const unexpected:string[]=[];
  await context.route('**/*',async route=>{
   const request=route.request(),url=new URL(request.url());
   if(url.origin===origin && url.pathname===LEAD_LINK_OPEN_API){
-   const result=await app.inject({method:request.method() as 'POST',url:url.pathname,headers:{...await request.allHeaders(),host:url.host},payload:request.postData()??undefined});
-   opens.push({method:request.method(),data:request.postData(),status:result.statusCode});
-   await route.fulfill({status:result.statusCode,headers:Object.fromEntries(Object.entries(result.headers).filter(([,v])=>typeof v==='string').map(([k,v])=>[k,String(v)])),body:result.body});return;
+   opens.push({method:request.method(),data:request.postData()});
+   await route.continue();return;
   }
   if(url.origin===origin){await route.continue();return;}
   if(['https://monday.gourmet-corporation.com','https://gourmet-corporation.com'].includes(url.origin)){
@@ -56,17 +62,21 @@ test('explicit open uses native POST, exact server redirect, no referrer/opener 
   }
   unexpected.push(url.origin);await route.abort();
  });
+ await context.routeWebSocket('**/*',socket=>socket.close()); // Hot reload is unnecessary in this isolated test.
  try{
+  await app.listen({host:'127.0.0.1',port:4182});
   for(const name of ['Calculator','AI Notes','AI Closer','Quotes']){
-   await open(page);await verify(page);await select(page);await read(page);await expect(panel(page)).toBeVisible();
+   await open(page,origin);await verify(page);await select(page);await read(page);await expect(panel(page)).toBeVisible();
    const before=destinations.length;await page.waitForTimeout(100);expect(destinations).toHaveLength(before);
    const button=panel(page).getByRole('button',{name:`Abrir ${name}`,exact:true});
    const form=button.locator('..');await expect(form).toHaveAttribute('action',LEAD_LINK_OPEN_API);await expect(form).toHaveAttribute('method','post');await expect(form).toHaveAttribute('rel','noopener noreferrer');
    const [popup]=await Promise.all([context.waitForEvent('page'),name === 'AI Notes' ? button.press('Enter') : button.click()]);
+   await expect.poll(()=>responses.length).toBe(before+1);
+   expect(responses.at(-1),'Native POST must pass the unchanged server navigation and permission checks').toMatchObject({status:303,site:'same-origin',mode:'navigate',destination:'document',user:'?1'});
    await popup.waitForLoadState('domcontentloaded');await expect(popup).toHaveTitle('Destino sintético interceptado');
    expect(await popup.evaluate(()=>window.opener===null)).toBe(true);
    const received=destinations.at(-1)!;expect(destinations).toHaveLength(before+1);expect(received.method).toBe('GET');expect(received.data).toBeNull();expect(received.headers.referer).toBeUndefined();
-   expect(opens.at(-1)?.method).toBe('POST');expect(opens.at(-1)?.status).toBe(303);
+   expect(opens.at(-1)?.method).toBe('POST');expect(responses.at(-1)?.status).toBe(303);
    expect(opens.at(-1)?.data).not.toContain('https');
    if(name==='Quotes')expect(received.url).toContain('signature=SYNTHETIC_SIGNATURE%2BKEEP%2FEXACT');
    await popup.close();
