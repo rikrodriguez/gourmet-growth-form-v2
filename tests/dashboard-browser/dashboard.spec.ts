@@ -10,6 +10,8 @@ async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 }
 async function captureSyntheticView(page: Page, testInfo: TestInfo, section: 'overview' | 'opportunities' | 'inbox' | 'sources') {
+  await expect(page.locator('.gd-skip')).not.toBeFocused();
+  await expect(page.locator('.gd-skip')).toHaveCSS('clip-path', 'inset(50%)');
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: `test-results/dashboard-visual/${testInfo.project.name}-${section}.png`, fullPage: true, animations: 'disabled', caret: 'hide' });
 }
@@ -129,9 +131,18 @@ test('15-minute display expiry clears queue and requires an explicit new load', 
   await page.getByTestId('dashboard-refresh').click(); await expect(page.getByTestId('dashboard-metric-opportunities')).toBeVisible(); await expect(page.getByText('Aún no consultada.', { exact: false })).toBeVisible();
 });
 
-test('keyboard navigation has named controls, visible focus, and separate Office route with preserved operational tabs', async ({ page }) => {
-  await open(page); await page.keyboard.press('Tab'); await expect(page.getByRole('link', { name: 'Saltar al contenido' })).toBeFocused();
+test('keyboard navigation has named controls, visible focus, and separate Office route with preserved operational tabs', async ({ page }, testInfo) => {
+  await open(page); await expect(page.locator('.gd-skip')).toHaveCSS('clip-path', 'inset(50%)');
+  await page.keyboard.press('Tab'); await expect(page.getByRole('link', { name: 'Saltar al contenido' })).toBeFocused();
+  await expect(page.locator('.gd-skip')).toHaveCSS('clip-path', 'none');
   await page.keyboard.press('Enter'); await expect(page.locator('#gd-main')).toBeFocused();
+  await expect(page.locator('.gd-skip')).toHaveCSS('clip-path', 'inset(50%)');
+  if (testInfo.project.name === 'dashboard-mobile') {
+    const navigation = page.locator('.gd-sidebar nav .gd-nav-item');
+    const positions = await navigation.evaluateAll(items => items.map(item => ({ top: (item as HTMLElement).offsetTop, left: (item as HTMLElement).offsetLeft })));
+    await page.getByRole('button', { name: 'Fuentes', exact: true }).click();
+    expect(await navigation.evaluateAll(items => items.map(item => ({ top: (item as HTMLElement).offsetTop, left: (item as HTMLElement).offsetLeft })))).toEqual(positions);
+  }
   await page.getByRole('link', { name: 'Oficina', exact: true }).click();
   await expect(page.locator('.approved-office-scene')).toBeVisible();
   await expect(page.getByRole('tab', { name: 'Operaciones', exact: true })).toBeVisible();
