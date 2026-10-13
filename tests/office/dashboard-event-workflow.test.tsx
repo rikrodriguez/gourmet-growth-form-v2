@@ -346,3 +346,12 @@ test('missing or invalid preview stays explicit rather than presenting content a
     assert.match(html, /disabled="">Simular aprobación exacta/);
   }
 });
+
+
+test('draft body has an explicit stable accessible label independent of its content', () => {
+  const html = renderTab('revision');
+  const label = html.match(/<label for="([^"]+)">Texto completo que se revisaría<\/label>/);
+  assert.ok(label, 'body label must contain only its label text');
+  assert.ok(html.includes(`<textarea id="${label[1]}" rows="10">`));
+  assert.doesNotMatch(html, /<label[^>]*>Texto completo que se revisaría<textarea/);
+});
