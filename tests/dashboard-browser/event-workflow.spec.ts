@@ -39,6 +39,9 @@ async function noOverflow(page: Page) {
 async function capture(page: Page, testInfo: TestInfo, stage: string) {
   await noOverflow(page);
   await page.evaluate(() => document.fonts.ready);
+  // Capture the same top-of-page state, including sticky navigation.
+  await page.evaluate(() => { window.scrollTo(0, 0); const sidebar = document.querySelector('.ga-sidebar'); if (sidebar) sidebar.scrollTop = 0; });
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   await page.screenshot({ path: `test-results/dashboard-visual/${testInfo.project.name}-event-${stage}.png`, fullPage: true, animations: 'disabled', caret: 'hide' });
 }
 async function openPdfPreview(page: Page) {
@@ -86,6 +89,21 @@ test('one exact synthetic identity spans all event views, with reachable brief a
   for (const [name, stage] of [['Cotización', 'quote'], ['Revisión exacta', 'review'], ['Cobro', 'payment'], ['Operación', 'operations'], ['Tastings · Regus', 'tastings']] as const) {
     await tab(page, name);
     await expect(workspace(page).locator('.gew-case')).toContainText('DEMO-EVT-042 · DEMO-OP-042 · 24 personas');
+    if (stage === 'quote') {
+      const wrapper = workspace(page).locator('.gew-table-wrap');
+      await expect(wrapper.locator('thead th')).toHaveCount(4);
+      await expect(wrapper.locator('tfoot td')).toContainText('3,000 U. DEMO');
+      expect(await wrapper.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+      const bounds = await wrapper.boundingBox();
+      expect(bounds).not.toBeNull();
+      for (const cell of await wrapper.locator('th,td').all()) {
+        const box = await cell.boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.x).toBeGreaterThanOrEqual(bounds!.x - 1);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width + 1);
+        expect(await cell.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(12);
+      }
+    }
     await capture(page, testInfo, stage);
   }
   for (const name of ['Propuestas', 'Enlaces de pago', 'Calendario', 'Tastings', 'Proveedores', 'Logística']) {
@@ -163,6 +181,13 @@ test('opening and closing the exact PDF preview preserves edited draft and attes
   await openPdfPreview(page);
   await expect(page.getByTestId('event-pdf-preview')).toHaveAttribute('alt', `Página 1 de la propuesta ${EVENT_FIXTURE.attachment.fileName}`);
   expect(await page.getByTestId('event-pdf-preview').getAttribute('src')).toMatch(/^\/(?!\/)/);
+  const previewWidth = await page.getByTestId('event-pdf-preview').evaluate(image => image.getBoundingClientRect().width);
+  const attachmentWidth = await workspace(page).locator('.gew-attachment').evaluate(element => {
+    const style = getComputedStyle(element);
+    return element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  });
+  expect(previewWidth).toBeGreaterThanOrEqual(attachmentWidth - 2);
+  expect(previewWidth).toBeLessThanOrEqual(attachmentWidth + 1);
   await capture(page, testInfo, 'review-pdf-preview');
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await control(page, 'Ocultar vista previa del PDF').click();
