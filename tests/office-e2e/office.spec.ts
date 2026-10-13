@@ -112,7 +112,7 @@ async function selectCase(page: Page, id: string) {
   await menu.locator('summary').first().click();
 }
 
-async function showView(page: Page, name: 'Mi oficina' | 'Historial' | 'Dashboard' | 'Aprobaciones') {
+async function showView(page: Page, name: 'Mi oficina' | 'Historial' | 'Operaciones' | 'Aprobaciones') {
   await closeWorkspace(page);
   await page.getByRole('tab', { name: name === 'Aprobaciones' ? /^Aprobaciones(?: \d+)?$/ : name, exact: true }).click();
 }
@@ -286,7 +286,7 @@ test('all office views remain reachable by keyboard and history keeps focus acro
   await boot(page);
   const home = page.getByRole('tab', { name: 'Mi oficina', exact: true });
   await home.focus();
-  for (const name of ['Dashboard', /^Aprobaciones/, 'Historial', 'Mi oficina']) {
+  for (const name of ['Operaciones', /^Aprobaciones/, 'Historial', 'Mi oficina']) {
     await page.keyboard.press('ArrowRight');
     const tab = page.getByRole('tab', { name, exact: typeof name === 'string' });
     await expect(tab).toBeFocused();
@@ -522,7 +522,7 @@ test('dashboard and history present synthetic coverage and saved work without ov
   const history = page.getByRole('tabpanel', { name: 'Historial', exact: true });
   await expect(history.getByRole('heading', { name: 'Borrador preparado · DEMO', exact: true }).first()).toBeVisible();
   await expect(history.getByText(/sintétic|DEMOSTRACIÓN|DEMO/i).first()).toBeVisible();
-  await showView(page, 'Dashboard');
+  await showView(page, 'Operaciones');
   await expect(page.getByRole('heading', { name: 'Una lectura con cobertura.', exact: true })).toBeVisible();
   await expect(page.getByText('MUESTRA SINTÉTICA · DEMO', { exact: true })).toBeVisible();
   await expect(page.getByText('Métricas derivadas de 3 casos confirmados por la API. Esta muestra no mide resultados del negocio.', { exact: true })).toBeVisible();
@@ -810,9 +810,9 @@ test('failed and empty reads keep evidence honest and recover through refresh', 
   await expect(page.getByLabel('Caso de demostración')).toBeDisabled();
   await menu.locator('summary').first().click();
   await expect(page.getByLabel('Mensaje contextual')).toBeDisabled();
-  await showView(page, 'Dashboard');
+  await showView(page, 'Operaciones');
   await expect(page.getByText('Métricas derivadas de 0 casos confirmados por la API. Esta muestra no mide resultados del negocio.', { exact: true })).toBeVisible();
-  await expect(page.getByRole('tabpanel', { name: 'Dashboard', exact: true }).locator('.sla-value')).toContainText('Sin muestra');
+  await expect(page.getByRole('tabpanel', { name: 'Operaciones', exact: true }).locator('.sla-value')).toContainText('Sin muestra');
   await showView(page, 'Historial');
   await expect(page.getByRole('heading', { name: 'No hay registros confirmados', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Nueva tarea', exact: true }).click();
@@ -1006,7 +1006,7 @@ test('read-only dashboard shows a scoped immediate resolution queue and verified
   page.on('request', request => { if (request.method() === 'POST') writes.push(request.url()); });
   await page.goto('/office/');
   await expect(page.getByLabel('Caso de demostración')).toBeEnabled();
-  await showView(page, 'Dashboard');
+  await showView(page, 'Operaciones');
   const queue = page.getByTestId('dashboard-human-resolution');
   const alert = page.getByTestId('dashboard-workflow-task-workflow-demo-aurora-paid-without-supplier');
   await expect(queue).toContainText('Resolución humana inmediata');

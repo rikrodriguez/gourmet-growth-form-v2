@@ -1,0 +1,8 @@
+/* The existing Office header shortcut is now a semantic route link. Its sizing
+   matches the former button; OfficeScene and the original stylesheet stay intact. */
+.shell-switch > .office-dashboard-link { display:flex; align-items:center; gap:10px; padding:10px 19px; border-radius:12px; background:none; color:#606a7e; font-size:15px; white-space:nowrap; text-decoration:none; }
+.shell-switch > .office-dashboard-link:hover { background:#e8e5e2; }
+@media (max-width:1380px) { .shell-switch > .office-dashboard-link { padding:9px 13px; font-size:13px; } }
+@media (max-width:1050px) { .shell-switch > .office-dashboard-link { font-size:11px; padding:6px 9px; gap:6px; } }
+@media (max-width:760px) { .shell-switch > .office-dashboard-link { padding-left:7px; padding-right:7px; min-height:32px; } }
+@media (min-width:1381px) { .shell-switch > .office-dashboard-link { height:42px; flex:1; padding-left:20px; padding-right:19px; gap:12px; } }
