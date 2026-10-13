@@ -44,7 +44,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 const errors: string[] = []; const external: string[] = [];
 page.on('pageerror', error => errors.push(error.message));
 await page.route('**/*', async route => { const url = new URL(route.request().url()); if (!['127.0.0.1', 'localhost'].includes(url.hostname)) { external.push(url.href); await route.abort(); } else await route.continue(); });
-await mkdir(new URL('../../test-results/event-quotes/', import.meta.url), { recursive: true });
+await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { recursive: true });
   await page.goto('http://127.0.0.1:4197/quote-test');
   await page.getByLabel('Contacto', { exact: true }).fill('Browser synthetic contact');
   await page.getByLabel('Destinatario previsto', { exact: true }).fill('browser@example.test');
@@ -69,8 +69,8 @@ await mkdir(new URL('../../test-results/event-quotes/', import.meta.url), { recu
   await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
   assert.equal(await page.getByRole('checkbox').isChecked(), false);
   const artifact = await page.request.get('http://127.0.0.1:4197/api/office/event-quotes/BROWSER-EVENT/quotes/1/artifact'); assert.equal(artifact.status(), 200); assert.match(await artifact.text(), /Cotización v1/); assert.match(artifact.headers()['content-security-policy'], /sandbox/);
-  await page.screenshot({path:fileURLToPath(new URL('../../test-results/event-quotes/desktop.png', import.meta.url)), fullPage:true});
-  await page.setViewportSize({width:360,height:780}); assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= window.innerWidth), true); await page.screenshot({path:fileURLToPath(new URL('../../test-results/event-quotes/mobile.png', import.meta.url)), fullPage:true});
+  await page.screenshot({path:fileURLToPath(new URL('../../test-results/dashboard-visual/persisted-quote-desktop.png', import.meta.url)), fullPage:true});
+  await page.setViewportSize({width:360,height:780}); assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= window.innerWidth), true); await page.screenshot({path:fileURLToPath(new URL('../../test-results/dashboard-visual/persisted-quote-mobile.png', import.meta.url)), fullPage:true});
   await page.getByRole('button',{name:'Test logout',exact:true}).click(); await page.getByText(/Se requiere una identidad existente verificada/).waitFor(); assert.equal(await page.getByText('browser@example.test',{exact:true}).count(),0); assert.equal(await page.getByTestId('persisted-quote-approve').count(),0);
   await page.getByRole('button',{name:'Test restore identity',exact:true}).click(); await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
   await page.getByRole('button',{name:'Test slow event',exact:true}).click(); await page.getByRole('button',{name:'Test primary event',exact:true}).click(); await page.waitForTimeout(900); assert.equal(await page.getByRole('heading',{name:'BROWSER-EVENT',exact:true}).count(),1); assert.equal(await page.getByText('Late response must not display',{exact:true}).count(),0);
@@ -78,7 +78,7 @@ await mkdir(new URL('../../test-results/event-quotes/', import.meta.url), { recu
   await page.getByRole('button',{name:'Recargar expediente',exact:true}).click(); await page.getByText(/La sesión expiró/).waitFor(); assert.equal(await page.getByTestId('persisted-quote-approve').count(),0); assert.equal(await page.getByLabel('Contacto',{exact:true}).count(),0);
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
   persisted = await t.service.read(testScope,browserActor,'BROWSER-EVENT'); assert.equal(persisted.record.revision,5); assert.equal(persisted.record.decisions.length,1);
-  console.log('PASS: Chromium desktop/mobile intake -> quote -> internal approval -> reload -> stale edit -> v2; artifact isolation; logout/identity reset; delayed event result; session expiry; no JS errors or external requests. PostgreSQL persists the exact revisions and decisions. Screenshots in test-results/event-quotes/.');
+  console.log('PASS: Chromium desktop/mobile intake -> quote -> internal approval -> reload -> stale edit -> v2; artifact isolation; logout/identity reset; delayed event result; session expiry; no JS errors or external requests. PostgreSQL persists the exact revisions and decisions. Screenshots in test-results/dashboard-visual/.');
 } finally {
   await browser?.close(); await vite?.close(); await api?.close();
   try { if (initialized) await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); }

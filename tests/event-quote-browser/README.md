@@ -23,7 +23,7 @@ approval, browser reload, changed brief and obsolete approval, a second quote,
 exact historical artifact retrieval, desktop/mobile overflow, logout/identity
 replacement, late response after changing event, and session-expiry clearing.
 Requests outside loopback fail the run. Screenshots, if reached, go to ignored
-`test-results/event-quotes/`.
+`test-results/dashboard-visual/persisted-quote-*.png` (the existing short-retention synthetic artifact).
 
 Verification limit for the 2026-10-13 executor: Chromium was attempted once and
 failed before any page interaction with `socket() failed: Operation not permitted`
