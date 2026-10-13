@@ -61,7 +61,7 @@ test('inbox filters preserve mailbox identity and disclose absent social connect
 
 test('sources distinguish sample cut from unverified providers and refresh does not pretend a new cut', async ({ page }) => {
   await open(page); const before = await page.getByTestId('dashboard-provenance').innerText();
-  await page.getByTestId('dashboard-refresh').click(); await expect(page.getByTestId('dashboard-provenance')).toHaveText(before);
+  await page.getByTestId('dashboard-refresh').click(); await expect(page.getByTestId('dashboard-provenance')).toHaveText(before, { useInnerText: true });
   await page.getByRole('button', { name: 'Fuentes', exact: true }).click();
   await expect(page.getByText('Sin configurar', { exact: true })).toHaveCount(8);
   await expect(page.getByText('Sin verificación', { exact: true })).toHaveCount(8); await noOverflow(page);
@@ -84,6 +84,7 @@ test('queue projects real local saved draft and links to exact review without pr
   expect(latest.workflow.revision).toBe(before); expect(latest.workflow.outbox).toEqual([]);
   await page.getByRole('link', { name: 'Revisar en Comunicaciones: Propuesta de prueba sin enviar' }).click();
   await expect(page).toHaveURL(/\/office\/communications$/);
+  await expect(page.getByRole('region', { name: 'Sesión y almacenamiento' })).toBeVisible();
   await expect(page.getByRole('button', { name: /Aprobar revisión/ })).toHaveCount(0);
   await page.goBack(); await page.getByTestId('dashboard-refresh').click();
   await expect(page.getByText('Aún no consultada.', { exact: false })).toBeVisible();
@@ -101,9 +102,12 @@ test('failed refresh removes a previously verified approval instead of leaving r
 test('pagehide withdraws data and a late read cannot repopulate the queue', async ({ page, context }) => {
   await seedReview(context); await open(page);
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); let entered!: () => void; const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
-  await page.route('**/office-api/communications', async route => { const response = await route.fetch(); entered(); await gate; await route.fulfill({ response }).catch(() => {}); });
+  let settled!: () => void; const settledPromise = new Promise<void>(resolve => { settled = resolve; });
+  await page.route('**/office-api/communications', async route => { const response = await route.fetch(); entered(); await gate; try { await route.fulfill({ response }); } catch { /* Page withdrawal may have aborted the read. */ } finally { settled(); } });
   await page.getByTestId('dashboard-read-reviews').click(); await enteredPromise;
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide'))); release();
+  await settledPromise;
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await expect(page.getByRole('status')).toContainText('vista se retiró');
   await expect(page.getByRole('link', { name: /Revisar en Comunicaciones:/ })).toHaveCount(0);
   await page.getByTestId('dashboard-refresh').click(); await expect(page.getByText('Aún no consultada.', { exact: false })).toBeVisible();
