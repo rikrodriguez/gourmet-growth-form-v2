@@ -16,3 +16,5 @@ import './dashboard/dashboard-integration.css';
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>{['/office/dashboard', '/office/dashboard/'].includes(window.location.pathname) ? <DashboardPage /> : ['/office/communications', '/office/communications/'].includes(window.location.pathname) ? <CommunicationsPage /> : ['/office/provenance', '/office/provenance/'].includes(window.location.pathname) ? <ProvenancePage /> : ['/office/monday', '/office/monday/'].includes(window.location.pathname) ? <MondayOwnerPage /> : <OfficeApp />}</React.StrictMode>,
 );
+
+import './lead-link-history.css';

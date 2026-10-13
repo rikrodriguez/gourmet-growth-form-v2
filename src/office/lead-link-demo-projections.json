@@ -1,0 +1,174 @@
+[
+  {
+    "leadId": "demo-history-a",
+    "links": [
+      {
+        "opening": {
+          "referenceId": "synthetic-reference-0",
+          "revision": "synthetic-revision-1"
+        },
+        "category": "calculator",
+        "status": "historical",
+        "accountId": "demo-account",
+        "boardId": "200",
+        "itemId": "300",
+        "columnId": "text_mm1kdqqb",
+        "updateId": null,
+        "evidenceKind": "column_snapshot",
+        "attributionIndicators": [
+          "utm"
+        ],
+        "observedAt": "2026-10-13T20:00:00Z",
+        "changedAt": null,
+        "campaignLabel": "Otoño DEMO",
+        "recordedGuests": 50
+      },
+      {
+        "opening": null,
+        "category": "lead_notes",
+        "status": "missing",
+        "accountId": "demo-account",
+        "boardId": "200",
+        "itemId": "300",
+        "columnId": "link_mm4w75jc",
+        "updateId": null,
+        "evidenceKind": "column_snapshot",
+        "attributionIndicators": [],
+        "observedAt": "2026-10-13T20:00:00Z",
+        "changedAt": null,
+        "campaignLabel": null,
+        "recordedGuests": null
+      },
+      {
+        "opening": null,
+        "category": "sales_closer",
+        "status": "quarantined",
+        "accountId": "demo-account",
+        "boardId": "200",
+        "itemId": "300",
+        "columnId": "link_mm5gbcxh",
+        "updateId": null,
+        "evidenceKind": "column_snapshot",
+        "attributionIndicators": [],
+        "observedAt": "2026-10-13T20:00:00Z",
+        "changedAt": null,
+        "campaignLabel": null,
+        "recordedGuests": null
+      },
+      {
+        "opening": null,
+        "category": "update_link",
+        "status": "historical",
+        "accountId": "demo-account",
+        "boardId": "200",
+        "itemId": "300",
+        "columnId": null,
+        "updateId": "444",
+        "evidenceKind": "historical_update_link",
+        "attributionIndicators": [],
+        "observedAt": "2026-10-13T20:00:00Z",
+        "changedAt": null,
+        "campaignLabel": null,
+        "recordedGuests": null
+      },
+      {
+        "opening": null,
+        "category": "landing_attribution",
+        "status": "historical",
+        "accountId": "demo-account",
+        "boardId": "200",
+        "itemId": "300",
+        "columnId": "text_mm1er3gk",
+        "updateId": null,
+        "evidenceKind": "column_snapshot",
+        "attributionIndicators": [
+          "utm",
+          "google_click_id",
+          "google_campaign_id"
+        ],
+        "observedAt": "2026-10-13T20:00:00Z",
+        "changedAt": null,
+        "campaignLabel": null,
+        "recordedGuests": null
+      },
+      {
+        "opening": {
+          "referenceId": "synthetic-reference-5",
+          "revision": "synthetic-revision-1"
+        },
+        "category": "quote",
+        "status": "historical",
+        "accountId": "demo-account",
+        "boardId": "200",
+        "itemId": "300",
+        "columnId": "text_mm1mkvn",
+        "updateId": null,
+        "evidenceKind": "column_snapshot",
+        "attributionIndicators": [],
+        "observedAt": "2026-10-13T20:00:00Z",
+        "changedAt": "2026-10-13T19:55:00Z",
+        "campaignLabel": null,
+        "recordedGuests": 60
+      },
+      {
+        "opening": {
+          "referenceId": "synthetic-reference-6",
+          "revision": "synthetic-revision-1"
+        },
+        "category": "lead_notes",
+        "status": "historical",
+        "accountId": "demo-account",
+        "boardId": "200",
+        "itemId": "300",
+        "columnId": "link_mm4w75jc",
+        "updateId": null,
+        "evidenceKind": "column_snapshot",
+        "attributionIndicators": [],
+        "observedAt": "2026-10-13T20:00:00Z",
+        "changedAt": null,
+        "campaignLabel": null,
+        "recordedGuests": null
+      },
+      {
+        "opening": {
+          "referenceId": "synthetic-reference-7",
+          "revision": "synthetic-revision-1"
+        },
+        "category": "sales_closer",
+        "status": "historical",
+        "accountId": "demo-account",
+        "boardId": "200",
+        "itemId": "300",
+        "columnId": "link_mm5gbcxh",
+        "updateId": null,
+        "evidenceKind": "column_snapshot",
+        "attributionIndicators": [],
+        "observedAt": "2026-10-13T20:00:00Z",
+        "changedAt": null,
+        "campaignLabel": null,
+        "recordedGuests": null
+      }
+    ]
+  },
+  {
+    "leadId": "demo-history-b",
+    "links": [
+      {
+        "opening": null,
+        "category": "calculator",
+        "status": "historical",
+        "accountId": "demo-account",
+        "boardId": "200",
+        "itemId": "301",
+        "columnId": "text_mm1kdqqb",
+        "updateId": null,
+        "evidenceKind": "column_snapshot",
+        "attributionIndicators": [],
+        "observedAt": "2026-10-13T20:00:00Z",
+        "changedAt": null,
+        "campaignLabel": null,
+        "recordedGuests": 80
+      }
+    ]
+  }
+]
