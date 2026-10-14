@@ -147,6 +147,8 @@ export class PostgresEventQuoteStore implements EventQuoteStore {
       if (next.revision !== (current?.revision ?? 0) + 1 || next.revision > 100 || next.quotes.length > 20 ||
           next.audit.length !== next.revision || next.receipts.length !== next.revision) throw invalid();
       if (current) {
+        if (current.schemaVersion === 2 && next.schemaVersion !== 2 ||
+            !isDeepStrictEqual(current.paymentPreparations ?? [], (next.paymentPreparations ?? []).slice(0, (current.paymentPreparations ?? []).length))) throw invalid();
         for (const field of ['briefs', 'quotes', 'decisions', 'audit', 'receipts'] as const) {
           if (!isDeepStrictEqual(current[field], next[field].slice(0, current[field].length))) throw invalid();
         }

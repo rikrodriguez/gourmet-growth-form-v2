@@ -1,4 +1,4 @@
-import type { BriefInput, CatalogSnapshot, EventQuoteView, QuoteCommand, QuoteVersion } from './backend/event-quote-contracts';
+import type { BriefInput, CatalogSnapshot, EventQuoteView, QuoteCommand, QuoteVersion, PreparePaymentCommand, PaymentLinkPreparation } from './backend/event-quote-contracts';
 import type { EventQuoteStatusResponse } from './backend/event-quote-http';
 export type { EventQuoteStatusResponse } from './backend/event-quote-http';
 
@@ -36,7 +36,7 @@ export function validateQuoteStatus(value: unknown): EventQuoteStatusResponse {
 export function validateQuoteView(value: unknown, expectedEventId: string): EventQuoteView {
   const v = row(value), record = row(v.record), scope = row(record.scope);
   if (v.externalEffectsEnabled !== false || !['missing', 'pending_internal_review', 'approved_internal_unsent', 'obsolete'].includes(v.currentQuoteStatus as string)) invalid();
-  if (record.schemaVersion !== 1 || record.eventId !== expectedEventId || !['test', 'commercial'].includes(scope.mode as string)) invalid();
+  if (![1, 2].includes(record.schemaVersion as number) || record.eventId !== expectedEventId || !['test', 'commercial'].includes(scope.mode as string)) invalid();
   text(scope.organizationId, 128); text(scope.workspaceId, 128); integer(record.revision, 1);
   list(record.briefs).forEach(value => {
     const b = row(value); ['contactName', 'recipient', 'originalMessage', 'proposedDate', 'proposedLocation', 'requirements', 'actorId'].forEach(key => text(b[key]));
@@ -54,6 +54,27 @@ export function validateQuoteView(value: unknown, expectedEventId: string): Even
   });
   list(record.decisions).forEach(value => { const d = row(value); if (d.status !== 'approved_internal_unsent') invalid(); integer(d.quoteVersion, 1); integer(d.atMs); ['id', 'actorId', 'intendedRecipient'].forEach(key => text(d[key])); ['quoteDigest', 'briefDigest', 'catalogDigest', 'artifactSha256', 'digest'].forEach(key => digest(d[key])); });
   list(record.audit); list(record.receipts);
+  if (record.schemaVersion === 1 && record.paymentPreparations !== undefined) invalid();
+  if (record.schemaVersion === 2) {
+    const preparations = list(record.paymentPreparations); if (!preparations.length || preparations.length > 20) invalid();
+    const seen = new Set<number>();
+    for (const value of preparations) {
+      const p = row(value); ['id', 'actorId', 'intendedRecipient', 'terms'].forEach(key => text(p[key]));
+      ['quoteDigest', 'approvalDigest', 'briefDigest', 'catalogDigest', 'artifactSha256', 'digest'].forEach(key => digest(p[key]));
+      integer(p.quoteVersion, 1); integer(p.atMs); ['totalCents', 'depositCents', 'remainingCents'].forEach(key => integer(p[key]));
+      if (p.eventId !== expectedEventId || p.currency !== 'USD' || p.status !== 'pending_provider_review' || p.provider !== 'gourmet_payments_legacy'
+        || p.providerEnabled !== false || p.publicPaymentUrl !== null || p.financialMeaning !== 'unaccepted_quote'
+        || JSON.stringify(p.blockers) !== JSON.stringify(['PROVIDER_DISABLED', 'LEGACY_TERMS_UNVERIFIED', 'CANONICAL_LEAD_REQUIRED', 'PAYMENT_SCHEDULE_REQUIRED'])
+        || seen.has(p.quoteVersion as number)) invalid();
+      seen.add(p.quoteVersion as number);
+      const q = (record.quotes as QuoteVersion[]).find(q => q.version === p.quoteVersion);
+      const d = (record.decisions as EventQuoteView['record']['decisions']).find(d => d.digest === p.approvalDigest);
+      if (!q || !d || q.digest !== p.quoteDigest || q.briefDigest !== p.briefDigest || q.catalogDigest !== p.catalogDigest
+        || q.artifact.sha256 !== p.artifactSha256 || q.totalCents !== p.totalCents || q.depositCents !== p.depositCents
+        || q.totalCents - q.depositCents !== p.remainingCents || q.catalog.terms !== p.terms
+        || d.quoteDigest !== q.digest || d.intendedRecipient !== p.intendedRecipient || d.atMs > (p.atMs as number)) invalid();
+    }
+  }
   return value as EventQuoteView;
 }
 function path(eventId: string): string {
@@ -116,4 +137,27 @@ export async function verifyQuoteArtifact(quote: QuoteVersion): Promise<boolean>
   if (bytes.byteLength !== quote.artifact.bytes) return false;
   const hash = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(hash)].map(value => value.toString(16).padStart(2, '0')).join('') === quote.artifact.sha256;
+}
+
+/** A saved internal request is never a usable payment link or proof of payment. */
+export function paymentPreparationIsCurrent(preparation: PaymentLinkPreparation, view: EventQuoteView, now = Date.now(), currentCatalogDigest?: string | null): boolean {
+  const q = view.record.quotes.at(-1), b = view.record.briefs.at(-1);
+  return view.currentQuoteStatus === 'approved_internal_unsent' && !!q && q.catalog.validUntilMs > now
+    && (currentCatalogDigest === undefined || currentCatalogDigest === q.catalogDigest) && preparation.eventId === view.record.eventId
+    && preparation.quoteDigest === q?.digest && preparation.briefDigest === b?.digest
+    && view.record.decisions.some(d => d.digest === preparation.approvalDigest && d.quoteDigest === q?.digest);
+}
+export function paymentPreparationBlocked(view: EventQuoteView | null, status: EventQuoteStatusResponse | null, now = Date.now()): boolean {
+  const q = view?.record.quotes.at(-1), b = view?.record.briefs.at(-1);
+  return !view || !status?.enabled || !status.session.canWrite || !status.session.canApprove || status.session.expiresAtMs <= now
+    || !status.catalog || status.catalog.validUntilMs <= now || view.record.scope.mode !== status.session.mode
+    || view.currentQuoteStatus !== 'approved_internal_unsent' || !q || !b || q.briefVersion !== b.version || q.briefDigest !== b.digest
+    || q.catalogDigest !== status.catalogDigest || !view.record.decisions.some(d => d.quoteDigest === q.digest)
+    || !!view.record.paymentPreparations?.some(item => item.quoteDigest === q.digest);
+}
+export function exactPaymentPreparation(view: EventQuoteView, status: EventQuoteStatusResponse, key: string, now = Date.now()): PreparePaymentCommand {
+  if (paymentPreparationBlocked(view, status, now)) throw new EventQuoteClientError('PAYMENT_PREPARATION_BLOCKED');
+  const q = view.record.quotes.at(-1)!, decision = view.record.decisions.find(d => d.quoteDigest === q.digest)!;
+  return { action: 'prepare_payment', key, expectedRevision: view.record.revision, quoteVersion: q.version,
+    quoteDigest: q.digest, approvalDigest: decision.digest, artifactSha256: q.artifact.sha256 };
 }

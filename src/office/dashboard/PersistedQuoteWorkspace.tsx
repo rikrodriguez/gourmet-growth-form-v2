@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { BriefInput, EventQuoteView, QuoteCommand } from '../backend/event-quote-contracts';
-import { EventQuoteClientError, exactQuoteApproval, exactQuoteReviewKey, latestBriefInput, quoteApprovalBlocked, quoteArtifactUrl, verifyQuoteArtifact,
+import { EventQuoteClientError, exactPaymentPreparation, paymentPreparationBlocked, paymentPreparationIsCurrent, exactQuoteApproval, exactQuoteReviewKey, latestBriefInput, quoteApprovalBlocked, quoteArtifactUrl, verifyQuoteArtifact,
   type EventQuoteClient, type EventQuoteStatusResponse } from '../event-quote-client';
 
 export interface PersistedQuoteWorkspaceProps {
@@ -118,6 +118,11 @@ function BoundWorkspace({ client, eventId }: PersistedQuoteWorkspaceProps) {
     try { void execute(exactQuoteApproval(view, status, nextKey())); } catch (error) { setReviewed(null); setError(failureMessage(error)); }
   }
 
+  function preparePayment() {
+    if (!writable || dirty || !view || !status || verified !== reviewKey || paymentPreparationBlocked(view, status)) return;
+    try { void execute(exactPaymentPreparation(view, status, nextKey())); } catch (error) { setError(failureMessage(error)); }
+  }
+
   return <div className="gourmet-event-workspace" data-testid="persisted-quote-workspace">
     <header className="gew-case"><div><span className="gew-eyebrow">Cotización guardada</span><h2>{eventId}</h2><p>Consulta manual → brief → catálogo autorizado → revisión exacta</p></div><span className="gew-tag">{view ? labels[view.currentQuoteStatus] : 'Pendiente de crear'}</span></header>
     <div className="gew-safety"><span>No envío ni cobro · aprobación exclusivamente interna</span><span>Fecha y lugar propuestos · reserva sin confirmar</span></div>
@@ -145,7 +150,7 @@ function BoundWorkspace({ client, eventId }: PersistedQuoteWorkspaceProps) {
         <p className="gew-muted">Impuesto: {status.catalog.taxBps / 100}% · anticipo solicitado: {status.catalog.depositBps / 100}% · vigencia: {new Date(status.catalog.validUntilMs).toISOString()}</p>
         <fieldset className="gew-attestation" disabled={!writable || !view || dirty}><legend>Cantidades explícitas</legend><div className="gew-editor-fields">{status.catalog.items.map(item => <label key={item.id}>{item.label} · {money(item.unitPriceCents)} / {item.unit}<input type="number" min={0} max={1000} step={1} value={quantities[item.id] ?? ''} placeholder="0" onChange={event => { setQuantities(previous => ({ ...previous, [item.id]: event.target.value })); setReviewed(null); }} /></label>)}</div></fieldset>
         <p>{status.catalog.terms}</p><div className="gew-actions"><button type="button" className="gew-button gew-button-primary" disabled={!writable || !view || dirty || !quantitiesValid} onClick={generate}>Generar versión de cotización</button></div></> : <p>Sin catálogo autorizado disponible. No se completan precios automáticamente.</p>}
-    </Card></div><div><PersistedQuoteReview view={view} status={status} writable={writable} dirty={dirty} reviewed={reviewed} verified={verified} onReviewed={setReviewed} onApprove={approve} /></div></div>}
+    </Card></div><div><PersistedQuoteReview view={view} status={status} writable={writable} dirty={dirty} reviewed={reviewed} verified={verified} onReviewed={setReviewed} onApprove={approve} /><PersistedPaymentPreparation view={view} status={status} writable={writable} dirty={dirty} verified={verified} onPrepare={preparePayment} /></div></div>}
   </div>;
 }
 
@@ -174,4 +179,32 @@ export function PersistedQuoteReview({ view, status, writable = false, dirty = t
         {(view?.currentQuoteStatus === 'obsolete' || quote.catalogDigest !== status.catalogDigest) && <p className="gew-notice gew-notice-warning">La versión guardada quedó obsoleta. Genera una nueva propuesta con el brief y catálogo vigentes.</p>}
       </> : <p>Guarda el brief y selecciona conceptos del catálogo para generar el archivo y revisar sus importes exactos.</p>}
     </Card>;
+}
+
+
+/** Reuses the approved card layout; a pending preparation has no link-shaped UI. */
+export function PersistedPaymentPreparation({ view, status, writable = false, dirty = true, verified = null, onPrepare = () => {} }: {
+  view: EventQuoteView | null; status: EventQuoteStatusResponse; writable?: boolean; dirty?: boolean;
+  verified?: string | null; onPrepare?: () => void;
+}) {
+  const preparations = view?.record.paymentPreparations ?? [];
+  const blocked = !writable || dirty || !view || verified !== exactQuoteReviewKey(view) || paymentPreparationBlocked(view, status);
+  return <Card title="Preparación de enlace de pago">
+    <p>Guarda una solicitud interna ligada a la cotización aprobada. No crea un enlace, acuerdo de pago, cobro ni envío.</p>
+    <button type="button" className="gew-button gew-button-primary" data-testid="persisted-payment-prepare" disabled={blocked} onClick={onPrepare}>Preparar solicitud de enlace</button>
+    {!preparations.length && <p className="gew-muted">Sin solicitud guardada. Requiere la aprobación interna de la versión vigente y permiso de aprobación.</p>}
+    {preparations.map(preparation => <section key={preparation.id} className="gew-notice" data-testid="persisted-payment-request">
+      <h4>Solicitud interna · cotización v{preparation.quoteVersion}</h4>
+      <p className="gew-tag">{paymentPreparationIsCurrent(preparation, view!, Date.now(), status.catalogDigest) ? 'Pendiente de revisión del proveedor · sin enlace' : 'Solicitud obsoleta · conservar solo como historial'}</p>
+      <p>Destinatario previsto: {preparation.intendedRecipient}</p>
+      <p>Total cotizado: {money(preparation.totalCents)} · anticipo cotizado: {money(preparation.depositCents)} · resto cotizado: {money(preparation.remainingCents)}. Cobrado: desconocido.</p>
+      <p>{preparation.terms}</p>
+      <ul><li>Proveedor desactivado. Ninguna solicitud se ha enviado.</li>
+        <li>El contrato legado exige una reserva de USD 49; su compatibilidad con estas condiciones está pendiente. No se sustituye el anticipo cotizado.</li>
+        <li>Falta vincular el lead canónico autorizado.</li>
+        <li>Faltan calendario de pago, zona horaria y expiración aprobados.</li></ul>
+      <p className="gew-muted">Solicitud: <span className="gew-hash">{preparation.id}</span></p>
+      <p className="gew-muted">Huella: <span className="gew-hash">{preparation.digest}</span></p>
+    </section>)}
+  </Card>;
 }

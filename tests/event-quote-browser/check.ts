@@ -100,6 +100,28 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   await page.getByTestId('persisted-quote-approve').click();
   await page.getByText('Aprobada internamente · sin envío', {exact:true}).first().waitFor();
   let persisted = await store.read(testScope, eventId); assert.equal(persisted!.decisions.length, 1); assert.equal(persisted!.revision, 3);
+  const preparationPosts = () => quoteRequests.filter(method => method === 'POST').length;
+  const beforePrepare = preparationPosts();
+  await page.waitForFunction(() => !(document.querySelector('[data-testid="persisted-payment-prepare"]') as HTMLButtonElement)?.disabled);
+  // Same-turn repeated clicks exercise the synchronous in-flight lock.
+  await page.getByTestId('persisted-payment-prepare').evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+  await page.getByText('Pendiente de revisión del proveedor · sin enlace', { exact: true }).waitFor();
+  await page.waitForFunction(() => !document.querySelector('[data-testid="persisted-quote-workspace"]')?.textContent?.includes('Guardando'));
+  assert.equal(preparationPosts(), beforePrepare + 1);
+  assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
+  assert.equal(await page.getByTestId('persisted-payment-request').locator('a').count(), 0);
+  persisted = await store.read(testScope, eventId);
+  assert.equal(persisted!.revision, 4); assert.equal(persisted!.paymentPreparations!.length, 1);
+  const originalPreparation = structuredClone(persisted!.paymentPreparations![0]);
+  assert.equal(originalPreparation.publicPaymentUrl, null); assert.equal(originalPreparation.providerEnabled, false);
+  assert.equal(originalPreparation.depositCents, persisted!.quotes[0].depositCents);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({path:fileURLToPath(new URL('../../test-results/dashboard-visual/payment-preparation-desktop.png', import.meta.url)), fullPage:true});
+  await page.setViewportSize({width:360,height:780});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= window.innerWidth), true);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({path:fileURLToPath(new URL('../../test-results/dashboard-visual/payment-preparation-mobile.png', import.meta.url)), fullPage:true});
+  await page.setViewportSize({width:1280,height:900});
   // Recreate the full server composition with the same durable SQL rows and vault.
   await api.close(); api = makeApi(); await api.listen({ host: '127.0.0.1', port: 4198 });
   const requestsBeforeReload = quoteRequests.length;
@@ -107,8 +129,12 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   assert.equal(await page.getByTestId('persisted-quote-approve').count(), 0);
   assert.equal(quoteRequests.length, requestsBeforeReload, 'Reload must not reopen the existing identity');
   await openSaved(); await page.getByText('Aprobada internamente · sin envío', {exact:true}).first().waitFor(); assert.equal(await page.getByTestId('persisted-quote-approve').isDisabled(), true);
+  await page.getByText('Pendiente de revisión del proveedor · sin enlace', { exact: true }).waitFor();
+  assert.deepEqual((await store.read(testScope, eventId))!.paymentPreparations![0], originalPreparation);
   await page.getByLabel('Comensales',{exact:true}).fill('25'); assert.equal(await page.getByTestId('persisted-quote-approve').isDisabled(), true);
   await page.getByRole('button', {name:'Guardar nueva versión del brief'}).click(); await page.getByText('Cotización obsoleta', {exact:true}).first().waitFor();
+  await page.getByText('Solicitud obsoleta · conservar solo como historial', { exact: true }).waitFor();
+  assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
   await page.getByLabel(/Partida sintética/).fill('25'); await page.getByRole('button', {name:'Generar versión de cotización'}).click();
   await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
   assert.equal(await page.getByRole('checkbox').isChecked(), false);
@@ -182,6 +208,7 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   assert.equal(await page.getByLabel('Contacto', { exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole('button', { name: 'Generar versión de cotización' }).isDisabled(), true);
   assert.equal(await page.getByTestId('persisted-quote-approve').isDisabled(), true);
+  assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
   const readOnlyStatus = await page.request.get('http://127.0.0.1:4197/api/office/event-quotes/status');
   assert.equal(readOnlyStatus.status(), 200);
   const readOnlySession = (await readOnlyStatus.json()).session;
@@ -207,8 +234,8 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   await page.getByRole('button',{name:'Recargar expediente',exact:true}).click();
   await page.getByText(/El servidor retiró o no pudo verificar este acceso/).waitFor(); await assertClosed();
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
-  persisted = await store.read(testScope, eventId); assert.equal(persisted!.revision,5); assert.equal(persisted!.decisions.length,1);
-  console.log('PASS: durable SQL session and fixed-event Dashboard projection; explicit access with no reads on mount/reload/restore/history; Chromium desktop/mobile create -> quote -> internal approval -> API restart -> recovery -> stale edit -> v2; artifact isolation; SQL session revocation and grant withdrawal; delayed real GET discarded on close; persisted read-only enforcement and grant expiry; no JS errors or external requests. PostgreSQL preserves exact revisions and decisions. Screenshots in test-results/dashboard-visual/.');
+  persisted = await store.read(testScope, eventId); assert.equal(persisted!.revision,6); assert.deepEqual(persisted!.paymentPreparations, [originalPreparation]); assert.equal(persisted!.decisions.length,1);
+  console.log('PASS: durable SQL session and fixed-event Dashboard projection; explicit access with no reads on mount/reload/restore/history; Chromium desktop/mobile create -> quote -> internal approval -> double-click-safe payment preparation without provider URL -> API restart -> recovery -> stale edit -> v2; artifact isolation; SQL session revocation and grant withdrawal; delayed real GET discarded on close; persisted read-only enforcement and grant expiry; no JS errors or external requests. PostgreSQL preserves exact revisions and decisions. Screenshots in test-results/dashboard-visual/.');
 } finally {
   await browser?.close(); await vite?.close(); await api?.close();
   try {
