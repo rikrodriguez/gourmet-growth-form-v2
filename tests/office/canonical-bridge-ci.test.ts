@@ -8,6 +8,7 @@ const verificationBranches = [
   'codex/gourmet-office-demo-recovery-20261010',
   'feat/gourmet-dashboard-reference-20261013',
   'feat/office-communications-review-20261013',
+  'feat/payments-contract-reconciliation-20261014',
 ];
 
 // Read the actual checked-in policy, without evaluating workflow expressions or
@@ -19,7 +20,7 @@ function topLevelBlock(key: string): string {
 }
 
 describe('approved canonical bridge CI boundaries', () => {
-  it('accepts push revisions only from the four explicit verification branches in the intended repository', () => {
+  it('accepts push revisions only from the five explicit verification branches in the intended repository', () => {
     const triggers = topLevelBlock('on');
     assert.deepEqual([...triggers.matchAll(/^  ([\w_]+):/gm)].map(match => match[1]), ['push']);
     const pushBranches = [...triggers.matchAll(/^      - (\S+)$/gm)].map(match => match[1]).sort();
