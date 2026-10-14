@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@gourmet-sales/contracts": ["./references/candidate/packages/contracts/src/index.ts"]
+    }
+  },
+  "include": ["./roundtrip.test.ts"]
+}

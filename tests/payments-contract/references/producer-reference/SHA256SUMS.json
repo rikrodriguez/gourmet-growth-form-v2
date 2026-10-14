@@ -1,0 +1,9 @@
+{
+  "Application.php": "e31cf08152feedfb33120d9c141f8883586820ca32e88992397d7725b2e1c240",
+  "InternalPaymentAgreementRequest.php": "c775be893d1796e1d4fb03cb1e2120ca78b39e042b115254aa6d121328d44e6f",
+  "SalesOsEventOutbox.php": "85daf23189d8a2488f1bf6cbd5258b678d2a4a8328a4e496f16b8a060a5b0283",
+  "Redactor.php": "43bfbba652628f2f94383c98b5f866cb5076979223f5d6050304e995f521ffe6",
+  "Uuid.php": "d4415c32f85d13fcc1c96b4d94b9840bf33e5d7815d3969bcebcd33e1cef21ab",
+  "generate-fixtures.php": "b0f886ff574d7ea40d58efd0daefb7cbe5b3ca957c144a088b569f5deaf73afb",
+  "prepared-requests.json": "41ea346400d595f316c0402e5e23840611a9ec688e6466dc3b54185c4ef82801"
+}

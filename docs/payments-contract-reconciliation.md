@@ -18,9 +18,11 @@ The canonical Dropbox folder is `Gourmet Corporation/gourmet-payments`:
 - [Original money invariant](https://www.dropbox.com/scl/fi/krboohcbw072j5qelqyjy),
   `src/Domain/Money.php`.
 
-The October 5 TypeScript adapter must be transferred and reused, including its
-dependencies and original contract tests. A recovered historical snapshot does
-not replace the current Dashboard application or establish present authorization.
+The October 5 TypeScript adapter, original tests, five dependency modules and
+partial PHP source were transferred byte for byte and reused under
+`tests/payments-contract/references`. All 17 per-file hashes and byte counts match
+the parent transfer manifest. These references do not replace the current
+Dashboard application or establish present authorization.
 
 ## Semantic boundary
 
@@ -49,43 +51,71 @@ these missing facts. The PHP parser accepts totals from one cent, whereas the
 domain money invariant rejects totals at or below 4900 cents; parser-only success
 is therefore insufficient even for structural interoperability.
 
-## Required isolated checks
+## Isolated checks and limits
 
-Round-trip tests must use synthetic fixtures and the recovered original adapter
-and PHP parsing/fixture code. They must preserve exact integer cents, source
-references, event and balance dates, timezone, expiration and conditions retained
-outside the legacy wire request. Relevant rejection cases include:
+`npm run test:payments-contract` runs 114 tests using the recovered original
+adapter, original in-memory consumer and actual PHP parsing/fixture code. This
+includes 46 new structural round-trip/rejection tests. Standalone synthetic
+fixed-reservation fixtures preserve exact integer cents, source references,
+recipient, event and balance dates, timezone and expiration on TS → PHP → TS.
+Custom expiration instants survive timezone conversion; relative expiration
+choices retain their conditions. The original PHP producer creates seven actual
+source rows in memory and passes five request/date checks before the Node tests
+use its fresh output. No historical result is substituted.
+
+The current application has four separate boundary tests with actual service and
+HTTP handlers. Percentage quotes `10000/3000` at 30% and `9800/4900` at 50% retain
+their exact stored conditions, dates and financial snapshot after preparation,
+idempotent retry and read. Sixteen injected requests are rejected with HTTP 400
+and no mutation, including legacy agreement creation, schedules, timezone,
+expiration and consent flags. Neither percentage quote is passed to the original
+structural adapter. The existing pending/obsolete panel is reused.
+
+Coverage and material limits:
 
 - Percentage deposits different from 4900 cents and a 50% deposit of exactly
   4900 cents; neither may become a provider-ready request.
-- Totals at or below the original reservation, unsupported currency, fractional
-  or unsafe cents and a balance inconsistent with the declared initial amount.
-- Missing or unapproved canonical lead, payment schedule, timezone or expiration;
-  invalid dates, past balance/expiry, timezone conversion and daylight-saving
-  ambiguities must follow the original contract rather than inferred brief text.
+- The structural adapter blocks totals at or below the original reservation,
+  fractional/unsafe cents, incomplete references, invalid dates, lossy precision,
+  unsupported timezones and daylight-saving gaps/folds. The original event
+  adapter rejects unsupported currency and financial events lacking evidence.
+- The original parser/date methods independently reject malformed requests,
+  calendar inputs and past balance/expiration dates even when TS reports
+  structural readiness. The pure TS adapter does not guarantee future dates or
+  authorization; those remain receiver/service checks.
 - Stale quote, approval, preparation, catalogue or artifact bindings; altered
   recipient, cross-scope references, absent write/approval rights and expiry.
-- Additional wire fields purporting to change reservation or business conditions
-  must never be treated as receiver support for them.
+- The wire request has no deposit, quoted-conditions or consent authorization
+  field. Structural `ready` must never authorize dropping quote conditions or
+  changing the initial amount. In particular, a matching 4900-cent percentage
+  deposit remains blocked.
 
 The existing immutable preparation remains blocked and preserves its financial
-snapshot through reads, retries and restart. No live endpoint, provider client,
-credential, launch flag or deferred send is part of these tests. Do not start the
-recovered PHP application or run its legacy E2E/database cleanup routine.
+snapshot through reads, retries and restart. No provider client is instantiated,
+and no live endpoint, credential, launch flag or deferred send is enabled. Do not
+start the recovered PHP application or run its legacy E2E/database cleanup routine.
 
-## Current verification and transfer blocker
+The tests do not invoke `PaymentAgreementService::create`, create an agreement,
+or execute the full receiver. The fixed reservation/balance policy was inspected
+in its original `Money.php` and service source; the new round-trip checks exercise
+request/date fidelity rather than claiming execution of that domain service.
+
+## Current verification and provenance
 
 Completed locally on 2026-10-14:
 
-- `node --import tsx --test tests/office/payment-preparation.test.tsx tests/office/payment-preparation-review.test.ts`:
-  40 passed. The new 9800-cent total / 4900-cent percentage deposit case preserves
-  quote conditions and the disabled preparation. The existing pending UI test now
-  fixes its clock to the fixture time, so catalogue expiry is deterministic.
+- `GOURMET_CONTRACT_PHP_BIN=/tmp/gourmet-php/bin/php npm run test:payments-contract`:
+  114 passed, no skipped cases, using fresh PHP output and all 17 verified files.
+- `node --import tsx --test tests/office/payment-preparation.test.tsx tests/office/payment-preparation-review.test.ts tests/office/gourmet-payments-boundary.test.ts`:
+  44 passed. The existing pending UI test now fixes its clock to the fixture time,
+  so catalogue expiry is deterministic.
+- `./node_modules/.bin/tsc --noEmit -p tests/payments-contract/tsconfig.json`:
+  pure adapter and new round-trip types pass. No full historical integrations
+  type-check is claimed; its original type-only `FetchLike` graph is not copied.
 - `npm run typecheck`, `npm run build`, `npm run office:build` and
   `git diff --check` completed successfully.
-- Isolated PHP CLI 8.4.26 with mbstring and PDO SQLite is available under
-  `/tmp/gourmet-php`; its UTF-8 / in-memory SQLite smoke check passed. This is
-  runtime availability evidence, not execution of the recovered contract tests.
+- Actual runtimes: Node 24.19.0, tsx 4.23.15, TypeScript 7.0.2 and isolated
+  PHP 8.4.26 with mbstring/PDO SQLite. Dependency versions were not changed.
 
 The original bundle is Library file
 `libfile_7d330c581d00819186bae438e36c9814`, pinned OpenAI file
@@ -97,11 +127,13 @@ Expected size: 337041 bytes; expected SHA-256:
 Library `prepare_materialize` returned a signed transfer URL and
 `workspace_path:null`. Download attempts using default, additional-network and
 escalated execution all failed with `Tunnel connection failed: 403 Forbidden`.
-No bytes were downloaded, no hash was verified and no archive was extracted.
-The TypeScript adapter has not been recreated. The round-trip/rejection matrix
-above remains pending until a supported byte-preserving transfer succeeds.
+The archive was not downloaded, extracted or hash-verified. The subsequent
+message transfer supplied the exact individual files; their separate hashes and
+byte counts were verified before import. See `tests/payments-contract/README.md`
+and `references/TRANSFER-SHA256SUMS.json` for the executable checks and limits.
 
 No `AGENTS.md` was found in `/`, `/workspace`, the repository or its candidate
-tree; the applicable instructions were requested from the parent. No remote
-publication, CI run, merge, deployment, payment call or database migration was
-performed by this continuation.
+tree, and the parent confirmed the recovered bundle contains none. No legacy
+PHP E2E, recovered persistent database, provider activation, payment call,
+migration, merge or deployment is part of this work. The candidate's successful
+CI 38510606784 belongs to `faa7001e`; it does not validate these later changes.
