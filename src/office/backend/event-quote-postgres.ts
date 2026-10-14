@@ -27,17 +27,19 @@ const binding = (key: string, revision: number) => `gourmet-event-quote:v1:${key
 // the pool, calls a provider or auto-migrates a deployed database.
 export class PostgresEventQuoteStore implements EventQuoteStore {
   private readonly schema: string;
+  private readonly transaction?: PoolClient;
   private readonly vault: Pick<MondayVault, 'seal' | 'open'>;
-  constructor(private readonly pool: Pool, options: { vault: Pick<MondayVault, 'seal' | 'open'>; schema?: string }) {
+  constructor(private readonly pool: Pool, options: { vault: Pick<MondayVault, 'seal' | 'open'>; schema?: string; transaction?: PoolClient }) {
     this.schema = options.schema ?? 'gourmet_quotes';
     if (!/^(gourmet_quotes|quote_test_[a-f0-9]{32})$/.test(this.schema)) throw unavailable();
     this.vault = options.vault;
+    this.transaction = options.transaction;
   }
 
   // Explicit bootstrap for a fresh isolated loopback test schema only. Normal
   // startup must use the separately reviewed prepared migration instead.
   async initialize(): Promise<void> {
-    if (!/^quote_test_[a-f0-9]{32}$/.test(this.schema)) throw unavailable();
+    if (this.transaction || !/^quote_test_[a-f0-9]{32}$/.test(this.schema)) throw unavailable();
     let host: string | undefined;
     try {
       if (this.pool.options.connectionString) {
@@ -93,7 +95,7 @@ export class PostgresEventQuoteStore implements EventQuoteStore {
     const key = eventQuoteStorageKey(scope, eventId);
     const owner = { organizationId: scope.organizationId, workspaceId: scope.workspaceId, mode: scope.mode };
     try {
-      const result = await this.pool.query<DatabaseRow>(this.selectSql(), [key]);
+      const result = await (this.transaction ?? this.pool).query<DatabaseRow>(this.selectSql(), [key]);
       if (!result.rows.length) return null;
       if (result.rows.length !== 1) throw invalid();
       return this.validateRow(owner, eventId, key, result.rows[0]);
@@ -107,8 +109,8 @@ export class PostgresEventQuoteStore implements EventQuoteStore {
     const owner = { organizationId: scope.organizationId, workspaceId: scope.workspaceId, mode: scope.mode };
     let client: PoolClient | undefined;
     try {
-      client = await this.pool.connect();
-      await client.query('BEGIN');
+      client = this.transaction ?? await this.pool.connect();
+      if (!this.transaction) await client.query('BEGIN');
       await client.query("SET LOCAL lock_timeout = '5s'");
       // Advisory lock covers concurrent creation of an absent event across pools.
       // A hash collision only serializes unrelated events, never combines them.
@@ -139,7 +141,7 @@ export class PostgresEventQuoteStore implements EventQuoteStore {
       if (Buffer.byteLength(serialized, 'utf8') > MAX_RECORD_BYTES) throw invalid();
       const next = JSON.parse(serialized) as EventQuoteRecord;
       if (current && isDeepStrictEqual(current, next)) {
-        await client.query('COMMIT');
+        if (!this.transaction) await client.query('COMMIT');
         return next;
       }
       if (next.revision !== (current?.revision ?? 0) + 1 || next.revision > 100 || next.quotes.length > 20 ||
@@ -162,12 +164,12 @@ export class PostgresEventQuoteStore implements EventQuoteStore {
           VALUES($1,$2,$3::jsonb,$4,$5,$6)`, values);
       }
       // SQL triggers append the immutable audit and receipt hashes atomically.
-      await client.query('COMMIT');
+      if (!this.transaction) await client.query('COMMIT');
       return next;
     } catch (error) {
-      if (client) { try { await client.query('ROLLBACK'); } catch { /* Preserve a sanitized failure. */ } }
+      if (client && !this.transaction) { try { await client.query('ROLLBACK'); } catch { /* Preserve a sanitized failure. */ } }
       throw safeError(error);
-    } finally { client?.release(); }
+    } finally { if (!this.transaction) client?.release(); }
   }
 }
 

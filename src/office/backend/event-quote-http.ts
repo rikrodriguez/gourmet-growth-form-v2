@@ -9,13 +9,20 @@ export type EventQuoteStatusResponse = Awaited<ReturnType<EventQuoteService['sta
   session: { mode: QuoteScope['mode']; canWrite: boolean; canApprove: boolean; csrfToken: string; expiresAtMs: number };
   externalEffectsEnabled: false;
 };
-export type EventQuoteHttpDependencies = {
+export type QuoteAccessTarget = { kind: 'status' } | { kind: 'read' | 'artifact' | 'create' | 'write' | 'approve'; eventId: string };
+export type RunQuoteAuthorization = <T>(request: FastifyRequest, target: QuoteAccessTarget,
+  operation: (identity: EventQuoteIdentity, service: EventQuoteService) => Promise<T>) => Promise<T>;
+export type EventQuoteHttpDependencies = { allowedOrigin: string; clock?: () => number } & ({
   service: EventQuoteService;
   /** Must resolve an already authenticated, server-owned session. Never a chooser or body/header identity. */
   resolveIdentity(request: FastifyRequest): EventQuoteIdentity | null | Promise<EventQuoteIdentity | null>;
-  allowedOrigin: string;
-  clock?: () => number;
-};
+  runAuthorized?: never;
+} | {
+  /** Opt-in composition owns a transaction spanning identity, ACL and quote operations. */
+  runAuthorized: RunQuoteAuthorization;
+  service?: never;
+  resolveIdentity?: never;
+});
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
 const CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox";
 function fail(status: number): never { throw new EventQuoteError('REQUEST_REJECTED', status); }
@@ -59,45 +66,56 @@ export function registerEventQuoteRoutes(app: FastifyInstance, dependencies: Eve
       const code = status === 401 ? 'AUTHENTICATION_REQUIRED' : status === 403 ? 'ACCESS_DENIED' : status === 404 ? 'NOT_FOUND' : status === 409 ? 'REVISION_CONFLICT' : status === 503 ? 'SERVICE_UNAVAILABLE' : 'INVALID_REQUEST';
       return reply.code(status).send({ error: code });
     });
-    const authorize = async (request: FastifyRequest) => {
-      const identity = await dependencies.resolveIdentity(request);
-      if (!identity || !identityValid(identity, clock())) fail(401);
-      return { ...identity, actor: { ...identity.actor, expiresAtMs: identity.expiresAtMs } };
+    const run = async <T>(request: FastifyRequest, target: QuoteAccessTarget,
+      operation: (identity: EventQuoteIdentity, service: EventQuoteService) => Promise<T>): Promise<T> => {
+      const use = async (identity: EventQuoteIdentity | null, service: EventQuoteService) => {
+        if (!identity || !identityValid(identity, clock())) fail(401);
+        return operation(structuredClone(identity), service);
+      };
+      return dependencies.runAuthorized
+        ? dependencies.runAuthorized(request, target, use)
+        : use(await dependencies.resolveIdentity(request), dependencies.service);
     };
-    routes.get(`${EVENT_QUOTE_API}/status`, async request => {
-      const identity = await authorize(request);
-      const status = await dependencies.service.status(identity.scope, identity.actor);
+    const actorOf = (identity: EventQuoteIdentity): QuoteActor => ({ ...identity.actor, expiresAtMs: identity.expiresAtMs });
+    routes.get(`${EVENT_QUOTE_API}/status`, request => run(request, { kind: 'status' }, async (identity, service) => {
+      const status = await service.status(identity.scope, actorOf(identity));
       const result: EventQuoteStatusResponse = { ...status, session: {
         mode: identity.scope.mode, canWrite: identity.actor.canWrite, canApprove: identity.actor.canApprove,
         csrfToken: identity.csrfToken, expiresAtMs: identity.expiresAtMs,
       }, externalEffectsEnabled: false };
       return result;
+    }));
+    routes.get(`${EVENT_QUOTE_API}/:eventId`, request => {
+      const id = eventId(request);
+      return run(request, { kind: 'read', eventId: id }, (identity, service) => service.read(identity.scope, actorOf(identity), id));
     });
-    routes.get(`${EVENT_QUOTE_API}/:eventId`, async request => {
-      const { scope, actor } = await authorize(request);
-      return dependencies.service.read(scope, actor, eventId(request));
-    });
-    routes.post(`${EVENT_QUOTE_API}/:eventId/commands`, { bodyLimit: 65_536 }, async request => {
-      const identity = await authorize(request);
-      if (!identity.actor.canWrite || !equalToken(request.headers[EVENT_QUOTE_CSRF_HEADER], identity.csrfToken)) fail(403);
-      const body = request.body;
-      if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400);
-      if (['scope', 'actor', 'actorId', 'organizationId', 'workspaceId', 'mode', 'tenantId'].some(key => Object.hasOwn(body, key))) fail(400);
-      if ((body as { action?: unknown }).action === 'approve' && !identity.actor.canApprove) fail(403);
-      return dependencies.service.execute(identity.scope, identity.actor, eventId(request), body);
+    routes.post(`${EVENT_QUOTE_API}/:eventId/commands`, { bodyLimit: 65_536 }, request => {
+      const id = eventId(request), body = request.body;
+      const action = body && typeof body === 'object' && !Array.isArray(body) ? (body as { action?: unknown }).action : null;
+      const kind = action === 'approve' ? 'approve' : action === 'create' ? 'create' : 'write';
+      return run(request, { kind, eventId: id }, async (identity, service) => {
+        if (!identity.actor.canWrite || !equalToken(request.headers[EVENT_QUOTE_CSRF_HEADER], identity.csrfToken)) fail(403);
+        if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400);
+        if (['scope', 'actor', 'actorId', 'organizationId', 'workspaceId', 'mode', 'tenantId'].some(key => Object.hasOwn(body, key))) fail(400);
+        if (action === 'approve' && !identity.actor.canApprove) fail(403);
+        return service.execute(identity.scope, actorOf(identity), id, body);
+      });
     });
     routes.get(`${EVENT_QUOTE_API}/:eventId/quotes/:version/artifact`, async (request, reply) => {
-      const { scope, actor } = await authorize(request);
       const id = eventId(request);
       const rawVersion = (request.params as { version: string }).version;
       if (!/^[1-9][0-9]{0,8}$/.test(rawVersion)) fail(404);
-      const view = await dependencies.service.read(scope, actor, id);
-      const quote = view.record.quotes.find(item => item.version === Number(rawVersion));
-      if (!quote) fail(404);
-      const artifact = quote.artifact;
-      if (artifact.mediaType !== 'text/html; charset=utf-8' || Buffer.byteLength(artifact.html, 'utf8') !== artifact.bytes
-        || createHash('sha256').update(artifact.html, 'utf8').digest('hex') !== artifact.sha256) fail(503);
-      return reply.header('Content-Disposition', `inline; filename="${id}-v${quote.version}.html"`)
+      const artifact = await run(request, { kind: 'artifact', eventId: id }, async (identity, service) => {
+        const view = await service.read(identity.scope, actorOf(identity), id);
+        const quote = view.record.quotes.find(item => item.version === Number(rawVersion));
+        if (!quote) fail(404);
+        const artifact = quote.artifact;
+        if (artifact.mediaType !== 'text/html; charset=utf-8' || Buffer.byteLength(artifact.html, 'utf8') !== artifact.bytes
+          || createHash('sha256').update(artifact.html, 'utf8').digest('hex') !== artifact.sha256) fail(503);
+        return artifact;
+      });
+      // Do not write response bytes until the authorization transaction commits.
+      return reply.header('Content-Disposition', `inline; filename="${id}-v${Number(rawVersion)}.html"`)
         .type('text/html; charset=utf-8').send(artifact.html);
     });
   });
