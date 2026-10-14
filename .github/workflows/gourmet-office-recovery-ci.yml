@@ -1,6 +1,6 @@
 name: Gourmet Office Recovery Checks
 
-# This workflow checks only the four explicit verification branches. It never
+# This workflow checks only the explicit verification branches. It never
 # publishes an image, changes another branch, connects staging or deploys.
 on:
   push:
@@ -9,6 +9,7 @@ on:
       - codex/canonical-reference-bridge-20261012
       - feat/office-communications-review-20261013
       - feat/gourmet-dashboard-reference-20261013
+      - feat/payments-contract-reconciliation-20261014
 
 permissions:
   contents: read
@@ -19,7 +20,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.repository == 'rikrodriguez/gourmet-growth-form-v2' && (github.ref == 'refs/heads/codex/gourmet-office-demo-recovery-20261010' || github.ref == 'refs/heads/codex/canonical-reference-bridge-20261012' || github.ref == 'refs/heads/feat/office-communications-review-20261013' || github.ref == 'refs/heads/feat/gourmet-dashboard-reference-20261013')
+    if: github.repository == 'rikrodriguez/gourmet-growth-form-v2' && (github.ref == 'refs/heads/codex/gourmet-office-demo-recovery-20261010' || github.ref == 'refs/heads/codex/canonical-reference-bridge-20261012' || github.ref == 'refs/heads/feat/office-communications-review-20261013' || github.ref == 'refs/heads/feat/gourmet-dashboard-reference-20261013' || github.ref == 'refs/heads/feat/payments-contract-reconciliation-20261014')
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -43,6 +44,14 @@ jobs:
 
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
+
+      - name: Check the recovered original Payments contract in isolation
+        run: |
+          php --version
+          php -r 'if (PHP_VERSION_ID < 80200 || !extension_loaded("mbstring") || !extension_loaded("pdo_sqlite")) { fwrite(STDERR, "PHP 8.2+ with mbstring and pdo_sqlite is required.\n"); exit(1); }'
+          ./node_modules/.bin/tsc --noEmit -p tests/payments-contract/tsconfig.json
+          npm run test:payments-contract
+          cat test-results/gourmet-payments-contract/summary.json
 
       - name: Install the lockfile-compatible Playwright Chromium
         run: |
