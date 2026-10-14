@@ -42,7 +42,7 @@ after(async () => { await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE; D
 
 test('restores authorized test identity through a fresh repository and connection pool', async () => {
   assert.equal((await inspect()).actor.canApprove, true);
-  const fresh = new Pool({ connectionString: DEFAULT_OFFICE_DATABASE_URL });
+  const fresh = new Pool({ connectionString: DEFAULT_OFFICE_DATABASE_URL, connectionTimeoutMillis: 1000 });
   try {
     const result = await new PostgresQuoteAccessRepository(fresh, { schema, clock: () => now }).run(proof, read, async identity => identity);
     assert.equal(result.scope.organizationId, 'org-one');
