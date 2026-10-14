@@ -9,7 +9,7 @@ import { createDurableTestQuoteApi } from '../../src/office/backend/event-quote-
 import { PostgresQuoteAccessRepository } from '../../src/office/backend/quote-access-postgres';
 import { MondayVault } from '../../src/office/backend/monday-store';
 import { DEFAULT_OFFICE_DATABASE_URL } from '../../src/office/backend/postgres-store';
-import { chromium, type Browser } from '@playwright/test';
+import { chromium, type Browser, type Locator } from '@playwright/test';
 import { testScope, testActor, testCatalog } from '../office/event-quote-fixtures';
 // Explicit isolated test composition, never imported by the app or its servers.
 // Run after starting the local office test database. No external requests or real identity.
@@ -71,6 +71,94 @@ page.on('request', request => { if (new URL(request.url()).pathname.startsWith('
 page.on('pageerror', error => errors.push(error.message));
 await page.route('**/*', async route => { const url = new URL(route.request().url()); if (!['127.0.0.1', 'localhost'].includes(url.hostname)) { external.push(url.href); await route.abort(); } else await route.continue(); });
 await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { recursive: true });
+const visualPath = (filename: string) => fileURLToPath(new URL('../../test-results/dashboard-visual/' + filename, import.meta.url));
+const draftForQuote = (version: number) => page.getByTestId('persisted-payment-v2-request').filter({
+  has: page.getByRole('heading', { name: 'Borrador de contrato v2 · cotización v' + version, exact: true }),
+});
+const quoteReviewCard = () => page.locator('section.gew-card').filter({
+  has: page.getByRole('heading', { name: /^Revisión exacta · cotización v\d+$/ }),
+});
+const settleViewport = () => page.evaluate(async () => {
+  await document.fonts.ready;
+  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+});
+const assertQuoteMoneyFits = async (viewportName: string) => {
+  const review = quoteReviewCard();
+  assert.equal(await review.count(), 1, 'There must be one exact source quote review');
+  const heading = await review.getByRole('heading', { level: 3 }).innerText();
+  const cells = review.locator('tbody td:nth-child(3), tbody td:nth-child(4), tfoot td');
+  assert.ok(await cells.count() >= 5, 'Source quote must expose its unit, line subtotal and three totals');
+  for (const cell of await cells.all()) {
+    await cell.scrollIntoViewIfNeeded();
+    const geometry = await cell.evaluate(element => {
+      const box = element.getBoundingClientRect(), glyphs: Array<{ text: string; left: number; right: number; top: number; bottom: number }> = [];
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        const value = node.textContent ?? '';
+        for (let index = 0; index < value.length; index++) {
+          if (!value[index].trim()) continue;
+          const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + 1);
+          for (const rect of Array.from(range.getClientRects())) {
+            if (rect.width > 0 && rect.height > 0) glyphs.push({ text: value[index], left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom });
+          }
+          range.detach();
+        }
+      }
+      // Actual character boxes must share a vertical band. CSS white-space or
+      // scrollWidth alone cannot detect a final digit wrapped onto a new line.
+      const singleLine = glyphs.length > 0 && Math.max(...glyphs.map(g => g.top)) < Math.min(...glyphs.map(g => g.bottom));
+      const tolerance = 0.75;
+      const insideCell = glyphs.every(g => g.left >= box.left - tolerance && g.right <= box.right + tolerance && g.top >= box.top - tolerance && g.bottom <= box.bottom + tolerance);
+      const insideViewport = glyphs.every(g => g.left >= -tolerance && g.right <= window.innerWidth + tolerance && g.top >= -tolerance && g.bottom <= window.innerHeight + tolerance);
+      return { text: element.textContent, cell: { left: box.left, right: box.right, top: box.top, bottom: box.bottom }, glyphs, singleLine, insideCell, insideViewport };
+    });
+    const context = heading + ' / ' + viewportName + ': ' + JSON.stringify(geometry);
+    assert.ok(geometry.singleLine, 'Monetary text must render on one real line: ' + context);
+    assert.ok(geometry.insideCell, 'Every monetary glyph must remain inside its own visible cell: ' + context);
+    assert.ok(geometry.insideViewport, 'Every monetary glyph must be visible without clipping: ' + context);
+  }
+};
+const capturePaymentState = async (prefix: string, detail: Locator) => {
+  await page.waitForFunction(() => !document.querySelector('[data-testid="persisted-quote-workspace"]')?.textContent?.includes('Guardando'));
+  assert.equal(await detail.count(), 1, 'The exact payment state must have one detail section');
+  for (const viewport of [
+    { name: 'desktop', width: 1280, height: 900 },
+    { name: 'mobile', width: 360, height: 780 },
+  ]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await settleViewport();
+    await assertQuoteMoneyFits(viewport.name);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, prefix + ' must not overflow ' + viewport.name);
+    assert.equal(await detail.locator('a').count(), 0, 'Pending payment states must expose no executable anchors');
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForFunction(() => window.scrollY === 0);
+    await page.screenshot({ path: visualPath(prefix + '-' + viewport.name + '.png'), fullPage: true, animations: 'disabled' });
+    // Element capture preserves the payment text at its native readable scale,
+    // independently of the height of the complete quote and history page.
+    await detail.screenshot({ path: visualPath(prefix + '-' + viewport.name + '-detail.png'), animations: 'disabled' });
+    if (prefix !== 'payments-v2-selector-empty') {
+      const review = quoteReviewCard(), heading = await review.getByRole('heading', { level: 3 }).innerText();
+      const version = /^Revisión exacta · cotización v(\d+)$/.exec(heading); assert.ok(version);
+      await review.screenshot({ path: visualPath('quote-v' + version[1] + '-' + viewport.name + '-detail.png'), animations: 'disabled' });
+    }
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForFunction(() => window.scrollY === 0);
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await settleViewport();
+};
+const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
+  const draft = draftForQuote(version);
+  await draft.getByText('Pendiente de configuración y aprobación · sin enlace', { exact: true }).waitFor();
+  const label = mode === '50' ? '50 % inicial y 50 % de saldo'
+    : mode === '100' ? '100 % por adelantado' : 'Reserva fija de USD 49 (excepción)';
+  await draft.getByText(label, { exact: true }).waitFor();
+  if (mode === '100') assert.match(await draft.innerText(), /Sin saldo futuro/);
+  assert.match(await draft.innerText(), /Proveedor desactivado y receptor del contrato v2 no disponible/);
+  assert.match(await draft.innerText(), /La aprobación interna de la cotización no autoriza este contrato/);
+  await capturePaymentState('payments-v2-' + mode, draft);
+};
   await page.goto('http://127.0.0.1:4197/quote-test');
   await page.getByTestId('approved-dashboard-summary').waitFor();
   await page.getByRole('button', {name: 'Propuestas', exact: true}).click();
@@ -106,6 +194,10 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   assert.equal(await paymentMode.inputValue(), '', 'Payment mode must require an explicit choice');
   assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
   assert.equal(await paymentMode.locator('option:checked').getAttribute('value'), '', 'Fixed 49 must never be selected automatically');
+  const paymentCard = page.locator('section.gew-card').filter({
+    has: page.getByRole('heading', { name: 'Preparación de enlace de pago', exact: true }),
+  });
+  await capturePaymentState('payments-v2-selector-empty', paymentCard);
   await paymentMode.selectOption('fixed_49_reservation');
   assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true, 'A total below 49 cannot prepare a fixed reservation');
   assert.equal(preparationPosts(), beforePrepare, 'Selecting a mode must not save or execute a request');
@@ -137,6 +229,7 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({path:fileURLToPath(new URL('../../test-results/dashboard-visual/payment-preparation-mobile.png', import.meta.url)), fullPage:true});
   await page.setViewportSize({width:1280,height:900});
+  await captureDraft('50', 1);
   // Recreate the full server composition with the same durable SQL rows and vault.
   await api.close(); api = makeApi(); await api.listen({ host: '127.0.0.1', port: 4198 });
   const requestsBeforeReload = quoteRequests.length;
@@ -190,6 +283,56 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   assert.equal(fullPreparation.blockers.includes('PAYMENT_SCHEDULE_REQUIRED'), false);
   assert.equal(await page.getByTestId('persisted-payment-v2-request').locator('a').count(), 0);
   assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
+  await captureDraft('100', 2);
+  // A third quote reuses the second brief. Its larger synthetic quantity makes
+  // the fixed-49 exception testable without changing the catalog or policies.
+  const quotesBeforeFixed = structuredClone(persisted!.quotes);
+  await page.getByLabel(/Partida sintética/).fill('100');
+  await page.getByRole('button', { name: 'Generar versión de cotización' }).click();
+  await page.getByRole('heading', { name: 'Revisión exacta · cotización v3', exact: true }).waitFor();
+  persisted = await store.read(testScope, eventId);
+  assert.equal(persisted!.revision, 9); assert.equal(persisted!.briefs.length, 2);
+  assert.deepEqual(persisted!.quotes.slice(0, 2), quotesBeforeFixed);
+  assert.equal(persisted!.quotes[2].briefVersion, 2);
+  assert.equal(persisted!.quotes[2].briefDigest, persisted!.quotes[1].briefDigest);
+  assert.equal(persisted!.quotes[2].totalCents, 10807);
+  assert.equal(await page.getByRole('checkbox').isChecked(), false);
+  assert.equal(await paymentMode.inputValue(), '', 'The fixed-49 exception must require another explicit choice');
+  await page.getByRole('checkbox').check(); await page.getByTestId('persisted-quote-approve').click();
+  await page.getByText('Aprobada internamente · sin envío', { exact: true }).first().waitFor();
+  assert.equal((await store.read(testScope, eventId))!.revision, 10);
+  assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
+  await paymentMode.selectOption('fixed_49_reservation');
+  await page.waitForFunction(() => !(document.querySelector('[data-testid="persisted-payment-prepare"]') as HTMLButtonElement)?.disabled);
+  await page.getByTestId('persisted-payment-prepare').click();
+  const fixedDraft = draftForQuote(3);
+  await fixedDraft.getByText('Pendiente de configuración y aprobación · sin enlace', { exact: true }).waitFor();
+  persisted = await store.read(testScope, eventId);
+  assert.equal(persisted!.revision, 11); assert.equal(persisted!.schemaVersion, 3);
+  assert.equal(persisted!.decisions.length, 3); assert.equal(persisted!.paymentContractPreparationsV2!.length, 3);
+  assert.deepEqual(persisted!.paymentPreparations, []);
+  assert.deepEqual(persisted!.paymentContractPreparationsV2!.slice(0, 2), [originalPreparation, fullPreparation]);
+  assert.deepEqual(persisted!.quotes.slice(0, 2), quotesBeforeFixed);
+  const fixedPreparation = structuredClone(persisted!.paymentContractPreparationsV2![2]), fixedQuote = persisted!.quotes[2];
+  assert.equal(fixedPreparation.paymentMode, 'fixed_49_reservation');
+  assert.equal(fixedPreparation.initialPaymentCents, 4900);
+  assert.equal(fixedPreparation.paymentBalanceCents, 5907);
+  assert.equal(fixedPreparation.paymentBalanceCents, fixedQuote.totalCents - 4900);
+  assert.equal(fixedPreparation.depositCents, fixedQuote.depositCents);
+  assert.equal(fixedPreparation.depositCents, 5404);
+  assert.deepEqual(fixedPreparation.depositBasis, { kind: 'quoted_percentage', basisPoints: 5000 });
+  assert.equal(fixedPreparation.terms, fixedQuote.catalog.terms);
+  assert.equal(fixedPreparation.quotedDepositMatchesMode, false);
+  assert.equal(fixedPreparation.providerEnabled, false); assert.equal(fixedPreparation.publicPaymentUrl, null);
+  assert.equal(fixedPreparation.status, 'pending_configuration');
+  for (const field of ['paymentTerms', 'paymentSchedule', 'paymentTermsApproval', 'canonicalLeadId'] as const) assert.equal(fixedPreparation[field], null);
+  assert.ok(fixedPreparation.blockers.includes('QUOTED_PAYMENT_TERMS_REVIEW_REQUIRED'));
+  assert.ok(fixedPreparation.blockers.includes('PAYMENT_SCHEDULE_REQUIRED'));
+  await fixedDraft.getByText('Reserva fija de USD 49 (excepción)', { exact: true }).waitFor();
+  await fixedDraft.getByText(/El importe inicial o la base de cálculo de la modalidad elegida difieren del anticipo cotizado/).waitFor();
+  assert.equal(await fixedDraft.locator('a').count(), 0);
+  assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
+  await captureDraft('49', 3);
   const notifyWithdrawal = () => page.evaluate(() => window.dispatchEvent(new Event('test-access-withdraw')));
   const assertClosed = async () => {
     await page.getByTestId('dashboard-quote-event').waitFor({ state: 'detached' });
@@ -206,7 +349,7 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   await pool.query(`UPDATE ${accessSchema}.sessions SET revoked_at=NULL`);
   await notifyWithdrawal();
   assert.equal(quoteRequests.length, afterWithdraw, 'Restoring SQL authority must not trigger a read');
-  await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
+  await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v3',exact:true}).waitFor();
   // Observe a delayed real event GET, then close it. Its late response cannot revive the view.
   await page.getByRole('button', { name: 'Cerrar expediente', exact: true }).click();
   await page.getByTestId('dashboard-verify-quotes').click();
@@ -232,7 +375,7 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
     assert.equal(completed, false, 'The delayed read must still be pending when the view closes');
     releaseRead(); await finished; await assertClosed();
   } finally { releaseRead(); }
-  await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
+  await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v3',exact:true}).waitFor();
   await page.setViewportSize({width:1280,height:900});
   await page.getByRole('button',{name:'Dashboard',exact:true}).click(); await page.getByTestId('approved-dashboard-summary').waitFor();
   assert.equal(await page.getByTestId('persisted-quote-approve').count(),0);
@@ -240,12 +383,12 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   assert.match(await page.getByTestId('approved-metric-pipeline').innerText(),/—/);
   const beforeBack = quoteRequests.length; await page.goBack(); await page.getByTestId('dashboard-verify-quotes').waitFor();
   assert.equal(quoteRequests.length,beforeBack); assert.equal(await page.getByTestId('dashboard-quote-event').count(),0);
-  await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
+  await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v3',exact:true}).waitFor();
   // No host signal: a shorter SQL session expiry changes the opaque revision.
   await pool.query(`UPDATE ${accessSchema}.sessions SET expires_at=$1`, [new Date(Date.now() + 300_000)]);
   await page.getByRole('button',{name:'Recargar expediente',exact:true}).click();
   await page.getByText(/El servidor retiró o no pudo verificar este acceso/).waitFor(); await assertClosed();
-  await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
+  await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v3',exact:true}).waitFor();
   // Read-only is persisted in the event grant, rather than a fabricated UI flag.
   await pool.query(`UPDATE ${accessSchema}.event_grants SET can_write=false,can_approve=false`);
   await notifyWithdrawal(); await assertClosed(); await openSaved();
@@ -260,27 +403,27 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   const forbidden = await page.request.post(`http://127.0.0.1:4197/api/office/event-quotes/${eventId}/commands`, {
     headers: { Origin: 'http://127.0.0.1:4197', 'x-event-quote-csrf': readOnlySession.csrfToken,
       'x-event-quote-access-revision': readOnlySession.accessRevision },
-    data: { action: 'brief', key: 'blocked-readonly', expectedRevision: 8, brief: {} },
+    data: { action: 'brief', key: 'blocked-readonly', expectedRevision: 11, brief: {} },
   });
   assert.equal(forbidden.status(), 403, 'Direct HTTP cannot bypass the read-only SQL grant');
   // Establish the loaded state before advancing both clocks to the SQL deadline.
   const grantExpiresAt = Date.now() + 120_000;
   await pool.query(`UPDATE ${accessSchema}.event_grants SET can_write=true,can_approve=true,effective_to=$1`, [new Date(grantExpiresAt)]);
-  await notifyWithdrawal(); await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
+  await notifyWithdrawal(); await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v3',exact:true}).waitFor();
   clockOffset = grantExpiresAt - Date.now() + 1;
   await page.clock.fastForward(grantExpiresAt - await page.evaluate(() => Date.now()) + 1);
   await page.getByText(/El acceso o el catálogo venció/).waitFor(); await assertClosed();
   const expired = await page.request.get('http://127.0.0.1:4197/api/office/event-quotes/dashboard/access');
   assert.equal(expired.status(), 403);
   await pool.query(`UPDATE ${accessSchema}.event_grants SET effective_to=NULL`);
-  await notifyWithdrawal(); await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
+  await notifyWithdrawal(); await openSaved(); await page.getByRole('heading',{name:'Revisión exacta · cotización v3',exact:true}).waitFor();
   // An unannounced server change is still enforced and withdraws the stale UI on reload.
   await pool.query(`UPDATE ${accessSchema}.event_grants SET enabled=false`);
   await page.getByRole('button',{name:'Recargar expediente',exact:true}).click();
   await page.getByText(/El servidor retiró o no pudo verificar este acceso/).waitFor(); await assertClosed();
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
-  persisted = await store.read(testScope, eventId); assert.equal(persisted!.revision,8); assert.deepEqual(persisted!.paymentPreparations, []); assert.deepEqual(persisted!.paymentContractPreparationsV2, [originalPreparation, fullPreparation]); assert.equal(persisted!.decisions.length,2);
-  console.log('PASS: durable SQL session and fixed-event Dashboard projection; explicit access with no reads on mount/reload/restore/history; Chromium desktop/mobile create -> quote -> internal approval -> explicit 50-percent double-click-safe v2 payment draft without provider URL -> API restart -> recovery -> stale edit -> quote v2 -> explicit full-upfront draft; no automatic 49 selection; artifact isolation; SQL session revocation and grant withdrawal; delayed real GET discarded on close; persisted read-only enforcement and grant expiry; no JS errors or external requests. PostgreSQL preserves exact revisions and decisions. Screenshots in test-results/dashboard-visual/.');
+  persisted = await store.read(testScope, eventId); assert.equal(persisted!.revision,11); assert.deepEqual(persisted!.paymentPreparations, []); assert.deepEqual(persisted!.paymentContractPreparationsV2, [originalPreparation, fullPreparation, fixedPreparation]); assert.equal(persisted!.decisions.length,3);
+  console.log('PASS: durable SQL session and fixed-event Dashboard projection; explicit access with no reads on mount/reload/restore/history; Chromium desktop/mobile create -> quote -> internal approval -> explicit 50-percent double-click-safe v2 payment draft without provider URL -> API restart -> recovery -> stale edit -> quote v2 -> explicit full-upfront draft -> quote v3 -> explicit fixed-49 draft; no automatic 49 selection; full-page and readable detail screenshots for all three saved modes in desktop/mobile; artifact isolation; SQL session revocation and grant withdrawal; delayed real GET discarded on close; persisted read-only enforcement and grant expiry; no JS errors or external requests. PostgreSQL preserves exact revisions and decisions. Screenshots in test-results/dashboard-visual/.');
 } finally {
   await browser?.close(); await vite?.close(); await api?.close();
   try {

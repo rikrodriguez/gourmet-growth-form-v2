@@ -17,4 +17,8 @@
 .gourmet-event-workspace .gew-table-wrap thead th:nth-child(3){width:22%}
 .gourmet-event-workspace .gew-table-wrap thead th:nth-child(4){width:26%}
 .gourmet-event-workspace .gew-table-wrap tfoot td{white-space:normal}
+/* Saved monetary values must keep every decimal together at narrow widths. */
+.gourmet-event-workspace .gew-table-wrap.gew-quote-amounts table{table-layout:auto}
+.gourmet-event-workspace .gew-table-wrap.gew-quote-amounts thead th{width:auto}
+.gourmet-event-workspace .gew-table-wrap.gew-quote-amounts td{white-space:nowrap;overflow-wrap:normal}
 .gourmet-event-workspace .gew-attachment>.gew-pdf-preview{flex:0 0 100%;width:100%;min-width:0}

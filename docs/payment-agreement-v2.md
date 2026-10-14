@@ -112,7 +112,11 @@ durability/restarts/races/revocation/rollback, UI explicit selection, calendar
 and DST arithmetic, complete fact-preserving JSON round trips, missing facts,
 separate approval and stale-review rejection. They run in `npm run test:office`.
 The existing React–HTTP–PostgreSQL browser flow now selects 50% explicitly, saves
-a separate 100% draft for a new quote and checks recovery and revoked access.
+separate 100% and exceptional USD 49 drafts for new quotes, and checks recovery
+and revoked access. It captures all three modes and exact source quote reviews
+at desktop/mobile sizes, and checks actual monetary text geometry. The manual
+[visual review](payments-v2-visual-review.md) records the corrected mobile decimal
+wrapping defect, captured states and next implementation/data boundaries.
 `npm run test:payments-contract` still runs the 114 original/v1 checks against
 byte-verified original TypeScript and PHP sources in isolated memory.
 
