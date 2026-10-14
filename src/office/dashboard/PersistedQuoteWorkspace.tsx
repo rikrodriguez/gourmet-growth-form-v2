@@ -200,9 +200,10 @@ export function PersistedPaymentPreparation({ view, status, writable = false, di
       <p>Total cotizado: {money(preparation.totalCents)} · anticipo cotizado: {money(preparation.depositCents)} · resto cotizado: {money(preparation.remainingCents)}. Cobrado: desconocido.</p>
       <p>{preparation.terms}</p>
       <ul><li>Proveedor desactivado. Ninguna solicitud se ha enviado.</li>
-        <li>El contrato legado exige una reserva de USD 49; su compatibilidad con estas condiciones está pendiente. No se sustituye el anticipo cotizado.</li>
+        <li>El contrato legado exige una reserva de USD 49 y un saldo futuro; su compatibilidad con estas condiciones está pendiente. No se sustituye el anticipo cotizado. El anticipo sigue siendo porcentual aunque coincida con USD 49.</li>
+        <li>La aprobación interna no autoriza el acuerdo original de Gourmet Payments.</li>
         <li>Falta vincular el lead canónico autorizado.</li>
-        <li>Faltan calendario de pago, zona horaria y expiración aprobados.</li></ul>
+        <li>Faltan calendario de pago, zona horaria y expiración aprobados. La fecha propuesta del evento no aprueba ese calendario, zona horaria ni expiración.</li></ul>
       <p className="gew-muted">Solicitud: <span className="gew-hash">{preparation.id}</span></p>
       <p className="gew-muted">Huella: <span className="gew-hash">{preparation.digest}</span></p>
     </section>)}
