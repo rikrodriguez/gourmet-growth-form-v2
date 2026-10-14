@@ -37,7 +37,8 @@ for (const code of guardProbes) {
   assert.match(probe.stderr, /Blocked contract-test network attempts: 1/);
 }
 const disabled = 'curl_exec,curl_multi_exec,fsockopen,pfsockopen,stream_socket_client,stream_socket_server,socket_create,socket_connect,socket_sendto,dns_get_record,gethostbyname,gethostbynamel,checkdnsrr,mail,exec,shell_exec,system,passthru,popen,proc_open,pcntl_exec,dl';
-const producer = spawnSync(php, ['-d', 'allow_url_fopen=0', '-d', 'allow_url_include=0', '-d', `disable_functions=${disabled}`,
+// Keep optional runner debugging extensions out of the original PHP semantics.
+const producer = spawnSync(php, ['-d', 'xdebug.mode=off', '-d', 'allow_url_fopen=0', '-d', 'allow_url_include=0', '-d', `disable_functions=${disabled}`,
   resolve(references, 'producer-reference/generate-fixtures.php')], {
   cwd: directory, env: environment, encoding: 'utf8', timeout: 10000, maxBuffer: 1048576,
 });

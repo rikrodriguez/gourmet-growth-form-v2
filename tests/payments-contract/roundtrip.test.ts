@@ -30,6 +30,7 @@ type ParsedResult = ParsedRequest | { status: "blocked"; exception: string };
 
 function parseOriginalRaw(input: string): ParsedResult {
   const child = spawnSync(phpBinary, [
+    "-d", "xdebug.mode=off",
     "-d", "allow_url_fopen=0", "-d", "allow_url_include=0",
     "-d", `disable_functions=${disabledFunctions}`, parserPath,
   ], {

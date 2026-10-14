@@ -35,6 +35,11 @@ PHP URL access/network/shell functions are disabled and Node's fetch, HTTP,
 socket and DNS entry points fail the run, including caught attempts. Four probes
 verify those rejections before loading the references. Optional tsx parent-pipe
 IPC is also denied without being counted as an external network attempt.
+Both PHP subprocesses set `xdebug.mode=off` at startup, which disables optional
+[Xdebug features](https://xdebug.org/docs/all_settings#mode). The runner's
+PHP 8.3.6 with Xdebug 3.2.0 otherwise fails while annotating an invalid-timezone
+exception, before the original application can convert it into its expected
+domain rejection. The original sources and rejection assertions stay unchanged.
 
 `test-results/gourmet-payments-contract/` contains the freshly generated PHP
 output, Node test log and current runtime/count summary. Historical evidence from
