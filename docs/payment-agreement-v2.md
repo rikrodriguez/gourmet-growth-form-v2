@@ -102,8 +102,15 @@ No configuration editor, configuration approval API, storage for completed plan
 reviews or runtime caller is registered. The visible/persisted flow therefore
 stays pending until those sources and approvals are deliberately configured.
 The isolated helper and tests exercise that future contract without claiming
-that operational composition or a PHP v2 receiver exists. Never pass v2 facts
-to v1: that adapter/parser can ignore added fields and retain its fixed policy.
+that operational composition exists. An additive, unregistered PHP v2 contract
+validator now validates and echoes that exact internal plan through isolated
+TS → PHP → TS checks; see [the receiver boundary](../integrations/gourmet-payments-v2/README.md).
+It reuses original canonical Money only for the explicit USD 49 mode, does not
+call the original agreement creation service, and always returns
+`authorizationVerified:false`, disabled execution and a null URL. Its successful
+self-consistency check cannot authenticate a sender or attest current source
+records. Never pass v2 facts to v1: that adapter/parser can ignore added fields
+and retain its fixed policy.
 
 ## Verification
 
@@ -118,7 +125,10 @@ at desktop/mobile sizes, and checks actual monetary text geometry. The manual
 [visual review](payments-v2-visual-review.md) records the corrected mobile decimal
 wrapping defect, captured states and next implementation/data boundaries.
 `npm run test:payments-contract` still runs the 114 original/v1 checks against
-byte-verified original TypeScript and PHP sources in isolated memory.
+byte-verified original TypeScript and PHP sources in isolated memory. A separate
+guarded subprocess tests the additive PHP v2 contract, original Money reuse,
+exact source/new fact round trips and incompatibility rejections. Its test count
+and log remain distinct from those original 114 checks.
 
 No receiver/provider registration, payment transport, credential, account, real
 client, link, charge, remote migration, merge or deployment is introduced. The

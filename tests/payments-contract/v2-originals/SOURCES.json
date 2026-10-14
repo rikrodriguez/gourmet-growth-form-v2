@@ -1,0 +1,60 @@
+{
+  "retrieved_at": "2026-10-14",
+  "canonical_folder": "Gourmet Corporation/gourmet-payments",
+  "executed_original": "src/Domain/Money.php",
+  "note": "Only Money.php is copied and executed here. Other entries are inspected integration boundaries, retained in the separate workspace recovery. The 17 historical transferred references are unchanged. Canonical common files differ from the transferred references only by two terminal LF bytes.",
+  "files": [
+    {
+      "relative": "src/Domain/PaymentAgreementService.php",
+      "url": "https://www.dropbox.com/scl/fi/h52bpwx91g9tgemk9k8vb",
+      "file_id": "id:6oCaCdwBOXoAAAAAAAox4Q",
+      "rev": "0165cbd9e2cc6f300000002a3f23be3",
+      "size": 8763,
+      "server_modified": "2026-10-01T01:48:52Z",
+      "client_modified": "2026-09-30T18:52:01Z",
+      "path_display": "/Espacio familiar/CODEX/Gourmet Corporation/gourmet-payments/src/Domain/PaymentAgreementService.php",
+      "dropbox_content_hash": "521a1e94de1a3e9f7974d1e846b55c0c7562c5a6ca71d64c48d532fe331032b6",
+      "sha256": "07d8a07f485ff70ce19622f084ed32edce4de6aac2245503613b780467ddfb55",
+      "materialization": "Dropbox fetch text; one transport terminal LF removed; exact bytes and Dropbox content hash verified"
+    },
+    {
+      "relative": "src/Domain/Money.php",
+      "url": "https://www.dropbox.com/scl/fi/krboohcbw072j5qelqyjy",
+      "file_id": "id:6oCaCdwBOXoAAAAAAAox1Q",
+      "rev": "0165cbd94c3daaf00000002a3f23be3",
+      "size": 985,
+      "server_modified": "2026-10-01T01:46:14Z",
+      "client_modified": "2026-09-28T16:51:38Z",
+      "path_display": "/Espacio familiar/CODEX/Gourmet Corporation/gourmet-payments/src/Domain/Money.php",
+      "dropbox_content_hash": "f5aa10e531868b91071b07e0aab3d9510e0bd4774e4c5c788589595fa17d58ed",
+      "sha256": "d84e7bfb9c5b92357141e91bb9d1738099abce5ae95aa36abe2ccaebacad2cc1",
+      "materialization": "Dropbox fetch text; one transport terminal LF removed; exact bytes and Dropbox content hash verified"
+    },
+    {
+      "relative": "src/Http/Application.php",
+      "url": "https://www.dropbox.com/scl/fi/r1we45gokutmgehpz2bdx",
+      "file_id": "id:6oCaCdwBOXoAAAAAAAox3Q",
+      "rev": "0165cbda184dc9500000002a3f23be3",
+      "size": 57656,
+      "server_modified": "2026-10-01T01:49:48Z",
+      "client_modified": "2026-09-30T18:59:42Z",
+      "path_display": "/Espacio familiar/CODEX/Gourmet Corporation/gourmet-payments/src/Http/Application.php",
+      "dropbox_content_hash": "a501f5003d72e24d93af56293135b1ab62765c7b24c0c6679e2dcedfd8073440",
+      "sha256": "3c1a34248f4482fe2b77a97d7a1b7dbe99c7c270c2dac3b1e72cf7e8a7c1796c",
+      "materialization": "Dropbox fetch text; one transport terminal LF removed; exact bytes and Dropbox content hash verified"
+    },
+    {
+      "relative": "src/Http/InternalPaymentAgreementRequest.php",
+      "url": "https://www.dropbox.com/scl/fi/tbl2di73vuzj1dr86mo2h",
+      "file_id": "id:6oCaCdwBOXoAAAAAAAox2w",
+      "rev": "0165cbd9c0b1d4f00000002a3f23be3",
+      "size": 5317,
+      "server_modified": "2026-10-01T01:48:16Z",
+      "client_modified": "2026-09-29T23:12:56Z",
+      "path_display": "/Espacio familiar/CODEX/Gourmet Corporation/gourmet-payments/src/Http/InternalPaymentAgreementRequest.php",
+      "dropbox_content_hash": "c9f86695e129674516a24b4b900489a601f9363720865859dd5d3438af4d2b27",
+      "sha256": "b96d9706bcdff964f5c80fcc0a4eee3e6e970eb47e531165f9e6f2b1175f5f2f",
+      "materialization": "Dropbox fetch text; one transport terminal LF removed; exact bytes and Dropbox content hash verified"
+    }
+  ]
+}

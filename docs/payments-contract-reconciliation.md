@@ -6,6 +6,9 @@ application only persists internal, unsent preparations. Its original schema 2
 rules and records remain intact. The subsequent product decision adds explicit
 50/50, full upfront and exceptional USD 49 modes under a separate contract v2
 and schema 3 ledger; see [the current v2 boundary](payment-agreement-v2.md).
+The subsequent [additive PHP v2 validator](../integrations/gourmet-payments-v2/README.md)
+uses a separate guarded round-trip suite and the recovered original Money class;
+it does not change the original 114 checks or create an operational receiver.
 
 ## Sources inspected on 2026-10-14
 
@@ -139,3 +142,9 @@ tree, and the parent confirmed the recovered bundle contains none. No legacy
 PHP E2E, recovered persistent database, provider activation, payment call,
 migration, merge or deployment is part of this work. The candidate's successful
 CI 38510606784 belongs to `faa7001e`; it does not validate these later changes.
+
+The subsequent canonical Dropbox inspection found ancestor `AGENTS.md` files in
+`CODEX` and `Gourmet Corporation`. They preserve the canonical project and source
+state and require venture-specific n8n routing for Gmail/Drive. This continuation
+uses only the explicitly authorized cloud checkout, Dropbox source reads and
+GitHub; no Gmail/Drive connector, credential or source configuration is involved.

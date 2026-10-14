@@ -65,6 +65,11 @@ identified separately; no claim is made that their PNG bytes are identical.
 
 ## Minimum next implementation, still non-executing
 
+These steps were recorded at visual-corrective commit `758fa68`. The subsequent
+[additive PHP v2 validator](../integrations/gourmet-payments-v2/README.md) now covers
+the isolated structural contract and original Money reuse. Operational receiver
+registration, authenticated configuration and approval persistence remain absent.
+
 1. Recover and inspect the relevant complete canonical PHP source and repository
    instructions first: the transferred references contain only partial PHP
    source. Extend the canonical `Gourmet Corporation/gourmet-payments` application with

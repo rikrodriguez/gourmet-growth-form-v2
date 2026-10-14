@@ -75,6 +75,23 @@ const count = name => Number(run.stdout.match(new RegExp(`^# ${name} (\\d+)$`, '
 assert.ok(Number.isSafeInteger(count('tests')) && count('tests') > 0, 'Retain the actual test counts');
 assert.equal(count('fail'), 0);
 assert.equal(count('skipped'), 0);
+// Keep the 114 original/v1 checks independently counted. The additive v2
+// receiver has its own isolated process, log and count, using the same guard.
+const v2 = spawnSync(process.execPath, ['--import', resolve(directory, 'no-network.mjs'), '--import', 'tsx', '--test', '--test-reporter=tap',
+  resolve(directory, 'v2-roundtrip.test.ts')], {
+  cwd: root, encoding: 'utf8', timeout: 30000, maxBuffer: 4194304,
+  env: { ...environment, TSX_TSCONFIG_PATH: resolve(directory, 'tsconfig.json'), GOURMET_CONTRACT_PHP_BIN: php },
+});
+writeFileSync(resolve(evidence, 'v2-node-tests.log'), `${v2.stdout || ''}${v2.stderr || ''}`);
+process.stdout.write(v2.stdout || '');
+process.stderr.write(v2.stderr || '');
+assert.ifError(v2.error);
+assert.equal(v2.signal, null, 'V2 receiver checks must finish within their deadline');
+assert.equal(v2.status, 0, 'V2 receiver round trips and rejection checks must all pass');
+const v2Count = name => Number(v2.stdout.match(new RegExp(`^# ${name} (\\d+)$`, 'm'))?.[1] ?? NaN);
+assert.ok(Number.isSafeInteger(v2Count('tests')) && v2Count('tests') > 0, 'Retain actual v2 test counts');
+assert.equal(v2Count('fail'), 0);
+assert.equal(v2Count('skipped'), 0);
 writeFileSync(resolve(evidence, 'summary.json'), JSON.stringify({
   nodeVersion: process.version, phpVersion: result.php_version, verifiedReferences: Object.keys(manifest).length,
   tsxVersion: JSON.parse(readFileSync(resolve(root, 'node_modules/tsx/package.json'), 'utf8')).version,
@@ -83,6 +100,9 @@ writeFileSync(resolve(evidence, 'summary.json'), JSON.stringify({
   storage: result.storage, producerRows: result.rows.length, requestChecks: result.request_checks.length,
   producerReportedExternalCalls: result.external_calls, networkGuardProbes: guardProbes.length,
   contractTestsExitCode: run.status,
+  v2: { tests: v2Count('tests'), passed: v2Count('pass'), failed: v2Count('fail'), skipped: v2Count('skipped'),
+    exitCode: v2.status, canonicalOriginalMoneySha256: 'd84e7bfb9c5b92357141e91bb9d1738099abce5ae95aa36abe2ccaebacad2cc1',
+    receiverRegistered: false, authorizationVerified: false, providerEnabled: false, publicPaymentUrl: null },
   source: 'Current isolated execution; original references are byte verified; no application or provider started',
 }, null, 2) + '\n');
 console.log(`Current isolated evidence: ${relative(root, evidence)}`);

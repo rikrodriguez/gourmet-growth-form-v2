@@ -65,3 +65,17 @@ agreement or inject a calendar/consent through the current command API.
 No payment transport, provider configuration, credentials, runtime registration,
 migration or duplicate Dashboard panel is added. The runtime Docker stages do
 not copy this test reference directory.
+
+## Additive v2 receiver checks
+
+The same command also runs `v2-roundtrip.test.ts` in a separate guarded Node
+process. `receive-v2.php` loads only the hash-verified canonical `Money.php` from
+`v2-originals` and the new isolated PHP v2 validator. The 114 original checks keep
+their own count; additional v2 counts appear under `summary.json` → `v2`, and
+their log is `v2-node-tests.log`. The trusted synthetic clock is an explicit CLI
+argument, not part of the request. No application or agreement service starts.
+
+See [the additive receiver](../../integrations/gourmet-payments-v2/README.md) for
+the exact structural-validation boundary, canonical source provenance and the
+authentication/configuration work still missing. A successful echo always has
+`authorizationVerified:false`, execution disabled and a null public URL.

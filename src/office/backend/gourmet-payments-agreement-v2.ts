@@ -25,6 +25,7 @@ type Prepared = { status: 'prepared_internal'; contractVersion: 2; plan: Interna
   internalApproval: { actorId: string; atMs: number; purpose: 'internal_payment_plan_only'; reviewDigest: string };
   executable: false; providerEnabled: false; publicPaymentUrl: null;
   blockers: ['PROVIDER_DISABLED', 'RECEIVER_V2_UNAVAILABLE'] };
+export type { Prepared as InternalPaymentPreparationV2 };
 
 const block = (code: string, fields: readonly string[] = []): Blocked => ({ status: 'blocked', code, fields });
 function object(raw: unknown, keys: readonly string[]): Record<string, unknown> | null {

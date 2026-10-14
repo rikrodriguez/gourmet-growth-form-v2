@@ -6,5 +6,5 @@
       "@gourmet-sales/contracts": ["./references/candidate/packages/contracts/src/index.ts"]
     }
   },
-  "include": ["./roundtrip.test.ts"]
+  "include": ["./roundtrip.test.ts", "./v2-roundtrip.test.ts"]
 }
