@@ -270,7 +270,7 @@ test('default viewer reads dashboard and history while every write stays blocked
   await closeWorkspace(page);
   await expect(page.getByLabel('Mensaje contextual')).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Guardar pregunta', exact: true })).toBeDisabled();
-  await page.getByRole('tab', { name: 'Dashboard', exact: true }).click();
+  await page.getByRole('tab', { name: 'Operaciones', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Una lectura con cobertura.' })).toBeVisible();
   await expect(page.getByText('Métricas derivadas de 3 casos confirmados por la API.', { exact: false })).toBeVisible();
   await assertNoPageOverflow(page);

@@ -11,7 +11,7 @@ RUN npm ci --no-audit --no-fund
 COPY vite.office.config.ts tsconfig.json ./
 COPY office ./office
 COPY src ./src
-RUN npm run office:build
+RUN npm run office:build && node src/office/build/check-demo-assets.mjs
 
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production \

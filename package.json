@@ -24,7 +24,9 @@
     "test:office:e2e": "playwright test --config office-playwright.config.ts",
     "test:staging:e2e": "playwright test --config staging-playwright.config.ts",
     "office:communications:fixture": "node --import tsx tests/communications-browser/server.ts",
-    "test:communications:e2e": "playwright test --config communications-playwright.config.ts"
+    "test:communications:e2e": "playwright test --config communications-playwright.config.ts",
+    "test:dashboard:e2e": "playwright test --config dashboard-playwright.config.ts",
+    "test:event-quotes:e2e": "node --import tsx tests/event-quote-browser/check.ts"
   },
   "dependencies": {
     "@fastify/static": "10.1.4",

@@ -1,0 +1,48 @@
+{
+  "status": "Owner-approved visual reference; replaces earlier rejected visual proposals",
+  "acceptedAt": "2026-10-13T16:25:41Z",
+  "viewport": {
+    "width": 1440,
+    "height": 960
+  },
+  "synthetic": true,
+  "files": {
+    "gourmet-dashboard-20261013.png": "69a3e754d5800aeb6b2149e02ac7189cb913d6419fb69726faad7a515b6f658c",
+    "gourmet-dashboard-reference.css": "cabc2427528f352074a3a55d9cc8fe6ea9fcdf6162a5894f2539dbe956c9e820"
+  },
+  "tokens": {
+    "canvas": "#f2f3f0",
+    "sidebar": "#f7f7f4",
+    "surface": "#ffffff",
+    "inset": "#eeeee6",
+    "ink": "#191b1c",
+    "active": "#18191b",
+    "bar": "#222630",
+    "greenBar": "#22a34c",
+    "badge": "#d12951",
+    "font": "Inter",
+    "fontWeights": [
+      400,
+      600,
+      700
+    ],
+    "sidebarWidthPx": 222,
+    "mainInsetPx": 24,
+    "cardRadiusPx": 15,
+    "gapPx": 14
+  },
+  "limits": [
+    "Reconstructed approved design, not recovered proprietary CSS",
+    "Original reference font and source CSS not identified",
+    "Approval applies to the complete light Dashboard composition",
+    "Screenshot is a static design render, not a browser test",
+    "Demo numbers do not represent Gourmet performance"
+  ],
+  "behaviorRequirements": [
+    "No provider connection implied",
+    "Unknown source data remain unknown",
+    "Synthetic preview separate from source readings",
+    "Existing Office stays separate",
+    "Review keeps exact account, recipient, content, attachments and context"
+  ]
+}

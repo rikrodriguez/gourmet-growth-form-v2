@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Gourmet authorized catalogue snapshot · supported contract v1",
+  "description": "Structural contract only. A matching JSON document does not grant commercial authority. The server must resolve an owner-approved source and use commercial scope with durable identity. No default prices or percentages.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "authority", "approvalRef", "source", "currency", "validUntilMs", "taxBps", "depositBps", "terms", "items"],
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$", "not": { "enum": ["constructor", "prototype", "__proto__"] } },
+    "text": { "type": "string", "minLength": 1, "allOf": [{ "pattern": "\\S" }, { "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]*$" }] }
+  },
+  "properties": {
+    "id": { "$ref": "#/$defs/id" },
+    "version": { "$ref": "#/$defs/id" },
+    "authority": { "const": "owner_authorized", "description": "Assigned by the trusted server adapter after approval evidence is resolved; never accepted as authority from the browser or an uploaded file alone." },
+    "approvalRef": { "$ref": "#/$defs/text", "maxLength": 200, "description": "Reference to the owner's approval of this exact catalogue snapshot; no credentials." },
+    "source": { "$ref": "#/$defs/text", "maxLength": 500, "description": "Identifiable approved source/version, shown as inert text. This field never instructs the app to fetch a URL." },
+    "currency": { "const": "USD", "description": "Current implementation supports USD cents only. This is a technical limit, not an assertion of Gourmet's business currency. Other currencies require explicit contract changes; no automatic conversion." },
+    "validUntilMs": { "type": "integer", "minimum": 0, "maximum": 8640000000000000, "description": "Unix epoch milliseconds. Runtime additionally requires this to be later than its current clock, including after waiting for the transaction lock." },
+    "taxBps": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "Owner-authorized tax applied once to the subtotal in basis points, half-up. Missing is not zero. Compound/multiple taxes are unsupported." },
+    "depositBps": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "Owner-authorized requested deposit applied to total including tax, half-up. Not a payment, charge or accepted debt." },
+    "terms": { "$ref": "#/$defs/text", "maxLength": 4000, "description": "Approved quotation terms, validity and operational limitations. No assumed reservation or vendor acceptance." },
+    "items": {
+      "type": "array", "minItems": 1, "maxItems": 100,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "label", "unit", "unitPriceCents"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id", "description": "Unique within the snapshot; duplicate IDs are rejected by runtime even if other item fields differ." },
+          "label": { "$ref": "#/$defs/text", "maxLength": 100 },
+          "unit": { "$ref": "#/$defs/text", "maxLength": 40, "description": "Explicit unit basis, for example person or service, supplied by the authorized catalogue; not inferred from the event." },
+          "unitPriceCents": { "type": "integer", "minimum": 0, "maximum": 1000000, "description": "Exact cents from the approved source. Client commands only supply itemId and integer quantity 1–1000." }
+        }
+      }
+    }
+  }
+}

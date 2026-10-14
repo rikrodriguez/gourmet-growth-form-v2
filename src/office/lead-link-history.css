@@ -1,0 +1,8 @@
+.lead-link-history { color:inherit; overflow-wrap:anywhere; }
+.lead-link-history > section { background:#f4f6f1; border:1px solid #d4dcd2; border-radius:12px; padding:16px; margin:16px 0; }
+.lead-link-history ul { list-style:none; padding:0; display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)); gap:16px; }
+.lead-link-history li { background:#fff; border:1px solid #d4dcd2; border-radius:12px; padding:16px; min-width:0; }
+.lead-link-history dt { font-weight:600; margin-top:10px; }
+.lead-link-history dd { margin:3px 0; color:#46584d; }
+.lead-link-history p { line-height:1.5; }
+[data-testid="dashboard-lead-history"] select { font:inherit; max-width:100%; padding:8px; margin:8px; }
