@@ -1,10 +1,10 @@
 import type { FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
-import type { CatalogSnapshot, QuoteScope } from './event-quote-contracts';
-import { createEventQuoteApi } from './event-quote-http';
+import { EventQuoteError, type CatalogSnapshot, type QuoteScope } from './event-quote-contracts';
+import { createEventQuoteApi, type RunQuoteAuthorization } from './event-quote-http';
 import { PostgresQuoteAccessRepository, type ExistingQuoteSession } from './quote-access-postgres';
 import { PostgresEventQuoteStore } from './event-quote-postgres';
-import { createEventQuoteService } from './event-quote-workflow';
+import { assertEventId, createEventQuoteService } from './event-quote-workflow';
 import type { MondayVault } from './monday-store';
 
 /** Opt-in TEST_ONLY composition. Never starts a server or provisions accounts,
@@ -18,22 +18,44 @@ export function createDurableTestQuoteApi(options: {
   catalogFor(scope: QuoteScope): Promise<CatalogSnapshot | null>;
   accessSchema?: string;
   quoteSchema?: string;
+  /** One already assigned event. Omission leaves the Dashboard projection unregistered. */
+  dashboardEventId?: string;
   clock?: () => number;
 }) {
   const clock = options.clock ?? Date.now;
   const access = new PostgresQuoteAccessRepository(options.pool, { schema: options.accessSchema, clock });
-  return createEventQuoteApi({
-    allowedOrigin: options.allowedOrigin,
-    clock,
-    runAuthorized: async (request, target, operation) => {
-      const proof = await options.resolveExistingSession(request);
-      return access.run(proof, target, async (identity, client) => {
-        const store = new PostgresEventQuoteStore(options.pool, {
-          vault: options.vault, schema: options.quoteSchema, transaction: client,
-        });
-        const service = createEventQuoteService({ store, catalogFor: options.catalogFor, clock });
-        return operation(identity, service);
+  const eventId = options.dashboardEventId;
+  if (eventId !== undefined) {
+    assertEventId(eventId);
+    if (eventId === 'status') throw new EventQuoteError('INVALID_ID', 400);
+  }
+  const runAuthorized: RunQuoteAuthorization = async (request, target, operation) => {
+    const proof = await options.resolveExistingSession(request);
+    // With the single-event Dashboard opt-in, even its status uses that grant.
+    // This never derives event authorization from role-only status.
+    return access.run(proof, target.kind === 'status' && eventId !== undefined ? { kind: 'read', eventId } : target, async (identity, client) => {
+      const store = new PostgresEventQuoteStore(options.pool, {
+        vault: options.vault, schema: options.quoteSchema, transaction: client,
       });
-    },
+      const service = createEventQuoteService({ store, catalogFor: options.catalogFor, clock });
+      return operation(identity, service);
+    });
+  };
+  return createEventQuoteApi({
+    allowedOrigin: options.allowedOrigin, clock, runAuthorized,
+    dashboardAccess: eventId === undefined ? undefined : request => runAuthorized(request, { kind: 'read', eventId }, async (identity, service) => {
+      // This status call uses the event-authorized identity, never role-only /status.
+      const status = await service.status(identity.scope, { ...identity.actor, expiresAtMs: identity.expiresAtMs });
+      if (!identity.accessRevision || identity.scope.mode !== 'test' || !identity.actor.durable
+        || !status.catalog || !status.catalogDigest || status.catalog.authority !== 'test_only'
+        || !status.enabled && status.reason !== 'READ_ONLY') throw new EventQuoteError('QUOTE_ACCESS_UNAVAILABLE', 503);
+      const now = clock();
+      const expiresAtMs = Math.min(identity.expiresAtMs, status.catalog.validUntilMs, now + 15 * 60_000);
+      if (!Number.isSafeInteger(now) || expiresAtMs <= now) throw new EventQuoteError('ACCESS_DENIED', 403);
+      return { state: 'ready', identityKey: identity.accessRevision, serverRevision: identity.accessRevision, durableIdentity: true, scope: { ...identity.scope },
+        expiresAtMs, eventIds: [eventId],
+        permissions: { canRead: true, canWrite: identity.actor.canWrite, canApprove: identity.actor.canApprove },
+        catalog: { ready: true, digest: status.catalogDigest, validUntilMs: status.catalog.validUntilMs, authority: 'test_only' } };
+    }),
   });
 }

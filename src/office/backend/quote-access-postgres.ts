@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import type { Pool, PoolClient, QueryResultRow } from 'pg';
@@ -14,7 +14,7 @@ const unavailable = () => new EventQuoteError('QUOTE_ACCESS_UNAVAILABLE', 503);
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const validToken = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{16,512}$/.test(value);
 const safe = (error: unknown) => error instanceof EventQuoteError ? error : unavailable();
-type SessionRow = { organization_id: string; workspace_id: string; mode: string; actor_id: string; role: string;
+type SessionRow = { organization_id: string; workspace_id: string; mode: string; actor_id: string; role: string; membership_id: string;
   enabled: boolean; revoked: boolean; session_version: number; current_session_version: number;
   membership_version: number; current_membership_version: number; csrf_hash: string;
   expires_ms: string; membership_from_ms: string; membership_to_ms: string | null };
@@ -48,6 +48,9 @@ export class PostgresQuoteAccessRepository {
   }
   private readonly clock: () => number;
   private readonly timeoutMs: number;
+  // A process-local key prevents exposing database proof hashes or correlating
+  // versions across API instances. Restarting the API also withdraws old views.
+  private readonly revisionKey = randomBytes(32);
 
   /** Only a fresh loopback test namespace; never the deployed/default schema. */
   async initializeTestSchema(): Promise<void> {
@@ -124,7 +127,7 @@ export class PostgresQuoteAccessRepository {
         const remaining = Math.max(1, Math.ceil(deadlineAt - performance.now()));
         await query("SELECT set_config('statement_timeout',$1,true), set_config('idle_in_transaction_session_timeout',$1,true), set_config('lock_timeout',$2,true)",
           [`${remaining}ms`, `${Math.min(5_000, remaining)}ms`]);
-        const result = await query<SessionRow>(`SELECT s.organization_id,s.workspace_id,s.mode,s.actor_id,u.role,u.enabled,
+        const result = await query<SessionRow>(`SELECT s.organization_id,s.workspace_id,s.mode,s.actor_id,u.role,u.enabled,s.membership_id,
           (s.revoked_at IS NOT NULL) AS revoked,s.session_version,u.session_version AS current_session_version,
           s.membership_version,m.version AS current_membership_version,s.csrf_hash,
           (extract(epoch FROM s.expires_at)*1000)::bigint::text AS expires_ms,
@@ -147,6 +150,7 @@ export class PostgresQuoteAccessRepository {
         if (deadline <= startedAt) throw unauthenticated();
         if (!['ADMIN','MANAGER','OPERATIONS','CLOSER'].includes(row.role)) throw denied();
         let canWrite = true, canApprove = ['ADMIN','MANAGER'].includes(row.role);
+        let eventGrant: GrantRow | undefined;
         if (access.kind !== 'status') {
           const grants = await query<GrantRow>(`SELECT a.assigned_actor_id,a.version,a.active,
             g.assignment_version,g.enabled,g.can_write,g.can_approve,
@@ -162,9 +166,11 @@ export class PostgresQuoteAccessRepository {
           deadline = Math.min(deadline, windowCheck(grant.grant_from_ms, grant.grant_to_ms, this.clock()));
           canWrite = grant.can_write === true; canApprove = canApprove && grant.can_approve === true && canWrite;
           if (['create', 'write', 'approve'].includes(access.kind) && !canWrite || access.kind === 'approve' && !canApprove) throw denied();
+          eventGrant = grant;
         }
         const identity: EventQuoteIdentity = { scope: { organizationId: row.organization_id, workspaceId: row.workspace_id, mode: 'test' },
-          actor: { actorId: row.actor_id, durable: true, canWrite, canApprove }, csrfToken, expiresAtMs: deadline };
+          actor: { actorId: row.actor_id, durable: true, canWrite, canApprove }, csrfToken, expiresAtMs: deadline,
+          accessRevision: createHmac('sha256', this.revisionKey).update(JSON.stringify([tokenHash, row, access.kind === 'status' ? null : access.eventId, eventGrant])).digest('base64url') };
         const value = await operation(identity, client);
         assertActive();
         // Mutable authority rows remain locked through commit. Temporal expiry is

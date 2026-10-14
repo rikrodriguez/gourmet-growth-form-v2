@@ -6,6 +6,8 @@ export type DashboardQuoteGrant = {
   state: 'ready';
   /** Opaque, non-secret version of the existing operator identity. Never a credential. */
   identityKey: string;
+  /** Opt-in durable transport revision, echoed by every JSON response. Never a credential. */
+  serverRevision?: string;
   /** Existing operator durability from the trusted host, never a DEMO session flag. */
   durableIdentity: boolean;
   scope: QuoteScope;
@@ -25,6 +27,36 @@ export const unconfiguredDashboardQuoteAccess: DashboardQuoteAccessSource = {
   async read() { return { state: 'unconfigured' }; },
   subscribe() { return () => {}; },
 };
+/** Opt-in same-origin transport; the existing host owns withdrawal notifications.
+ * No identity, event selector, proof or authority is sent by this source. */
+export function createDashboardQuoteAccessSource(options: {
+  subscribe: DashboardQuoteAccessSource['subscribe'];
+  fetch?: typeof fetch;
+  clock?: () => number;
+}): DashboardQuoteAccessSource {
+  const transport = options.fetch ?? globalThis.fetch;
+  return {
+    subscribe: onWithdraw => options.subscribe(onWithdraw),
+    async read(signal) {
+      if (signal.aborted) return cancelled();
+      const response = await transport('/api/office/event-quotes/dashboard/access', {
+        method: 'GET', credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+        headers: { Accept: 'application/json' }, signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+      });
+      if (signal.aborted) return cancelled();
+      if (!response.ok) throw new EventQuoteClientError('DASHBOARD_ACCESS_UNAVAILABLE', response.status);
+      if (!response.headers.get('content-type')?.includes('application/json')) return denied();
+      const body = await response.text();
+      if (body.length > 16_384) return denied();
+      const value = JSON.parse(body);
+      if (signal.aborted) return cancelled();
+      const access = validateDashboardQuoteAccess(value, (options.clock ?? Date.now)());
+      if (access.state === 'ready' && (!access.serverRevision || !access.durableIdentity || access.scope.mode !== 'test'
+        || access.eventIds.length !== 1 || access.catalog.authority !== 'test_only')) return denied();
+      return access;
+    },
+  };
+}
 const MAX_VIEW_LIFETIME = 15 * 60_000;
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
 const plain = (value: unknown) => !!value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -39,7 +71,8 @@ export function validateDashboardQuoteAccess(value: DashboardQuoteAccess, now = 
   if (value.state === 'unconfigured' || value.state === 'unavailable') return { state: value.state };
   if (value.state !== 'ready') return denied();
   const { identityKey, scope, permissions, catalog, eventIds } = value;
-  if (!safeText(identityKey) || typeof value.durableIdentity !== 'boolean' || !plain(scope) || !safeText(scope.organizationId) || !safeText(scope.workspaceId) || !['test', 'commercial'].includes(scope.mode)
+  if (!safeText(identityKey) || value.serverRevision !== undefined && (!safeText(value.serverRevision) || value.serverRevision !== identityKey)
+    || typeof value.durableIdentity !== 'boolean' || !plain(scope) || !safeText(scope.organizationId) || !safeText(scope.workspaceId) || !['test', 'commercial'].includes(scope.mode)
     || scope.mode === 'commercial' && !value.durableIdentity
     || !Number.isSafeInteger(value.expiresAtMs) || value.expiresAtMs <= now
     || !plain(permissions) || !['canRead', 'canWrite', 'canApprove'].every(key => typeof permissions[key as keyof typeof permissions] === 'boolean') || !permissions.canRead
@@ -50,6 +83,7 @@ export function validateDashboardQuoteAccess(value: DashboardQuoteAccess, now = 
     || eventIds.some(id => typeof id !== 'string' || !ID.test(id) || ['status', 'constructor', 'prototype', '__proto__'].includes(id))) return denied();
   return {
     state: 'ready', identityKey, durableIdentity: value.durableIdentity, scope: { organizationId: scope.organizationId, workspaceId: scope.workspaceId, mode: scope.mode },
+    ...(value.serverRevision !== undefined ? { serverRevision: value.serverRevision } : {}),
     expiresAtMs: Math.min(value.expiresAtMs, now + MAX_VIEW_LIFETIME), eventIds: [...eventIds],
     permissions: { canRead: permissions.canRead, canWrite: permissions.canWrite, canApprove: permissions.canApprove },
     catalog: { ready: true, digest: catalog.digest, validUntilMs: catalog.validUntilMs, authority: catalog.authority },
@@ -91,16 +125,18 @@ export function bindDashboardQuoteClient(client: EventQuoteClient, input: Dashbo
   const checkView = (view: Awaited<ReturnType<EventQuoteClient['read']>>, eventId: string, signal: AbortSignal) => {
     assertCurrent(eventId); if (signal.aborted) cancelled();
     validateQuoteView(view, eventId);
+    if (grant.serverRevision !== undefined && (!('accessRevision' in view) || view.accessRevision !== grant.serverRevision)) denied();
     if (view.record.scope.organizationId !== grant.scope.organizationId || view.record.scope.workspaceId !== grant.scope.workspaceId || view.record.scope.mode !== grant.scope.mode) denied();
     return view;
   };
   return {
     status: signal => protect(signal, async () => {
       assertCurrent(); if (signal.aborted) return cancelled();
-      const status = validateQuoteStatus(await client.status(signalFor(signal)));
+      const status = validateQuoteStatus(await client.status(signalFor(signal), grant.serverRevision));
       assertCurrent(); if (signal.aborted) return cancelled();
       const readOnly = !status.enabled && status.reason === 'READ_ONLY' && !status.session.canWrite;
       if ((!status.enabled && !readOnly) || status.session.mode !== grant.scope.mode || status.session.expiresAtMs <= clock()
+        || grant.serverRevision !== undefined && status.session.accessRevision !== grant.serverRevision
         || status.session.expiresAtMs < grant.expiresAtMs
         || !status.catalog || status.catalog.validUntilMs <= clock() || status.catalogDigest !== grant.catalog.digest || status.catalog.authority !== grant.catalog.authority) return denied();
       return { ...status, session: { ...status.session, canWrite: status.enabled && status.session.canWrite && grant.permissions.canWrite,
@@ -108,11 +144,11 @@ export function bindDashboardQuoteClient(client: EventQuoteClient, input: Dashbo
     }),
     read: (eventId, signal) => protect(signal, async () => {
       assertCurrent(eventId); if (signal.aborted) return cancelled();
-      return checkView(await client.read(eventId, signalFor(signal)), eventId, signal);
+      return checkView(await client.read(eventId, signalFor(signal), grant.serverRevision), eventId, signal);
     }),
     execute: (eventId, command, csrfToken, signal) => protect(signal, async () => {
       assertCurrent(eventId, true, command.action === 'approve'); if (signal.aborted) return cancelled();
-      return checkView(await client.execute(eventId, command, csrfToken, signalFor(signal)), eventId, signal);
+      return checkView(await client.execute(eventId, command, csrfToken, signalFor(signal), grant.serverRevision), eventId, signal);
     }),
   };
 }

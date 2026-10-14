@@ -64,13 +64,14 @@ export function quoteArtifactUrl(eventId: string, version: number): string {
   if (!Number.isSafeInteger(version) || version < 1) throw new EventQuoteClientError('INVALID_VERSION');
   return `${path(eventId)}/quotes/${version}/artifact`;
 }
-async function request(url: string, signal: AbortSignal, command?: QuoteCommand, csrfToken?: string): Promise<unknown> {
+async function request(url: string, signal: AbortSignal, command?: QuoteCommand, csrfToken?: string, accessRevision?: string): Promise<unknown> {
   const body = command === undefined ? undefined : JSON.stringify(command);
   if (body && new TextEncoder().encode(body).byteLength > 65_536) throw new EventQuoteClientError('PAYLOAD_TOO_LARGE', 413);
   let response: Response;
   try {
     response = await fetch(url, { method: command ? 'POST' : 'GET', credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-      headers: { Accept: 'application/json', ...(command ? { 'Content-Type': 'application/json', [EVENT_QUOTE_CSRF_HEADER]: csrfToken ?? '' } : {}) }, body,
+      headers: { Accept: 'application/json', ...(accessRevision !== undefined ? { 'x-event-quote-access-revision': accessRevision } : {}),
+        ...(command ? { 'Content-Type': 'application/json', [EVENT_QUOTE_CSRF_HEADER]: csrfToken ?? '' } : {}) }, body,
       signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]) });
   } catch (error) { if (signal.aborted) throw error; throw new EventQuoteClientError('REQUEST_UNCERTAIN'); }
   if (!response.ok) throw new EventQuoteClientError(response.status === 404 ? 'NOT_FOUND' : response.status === 409 ? 'REVISION_CONFLICT' : 'REQUEST_REJECTED', response.status);
@@ -80,14 +81,14 @@ async function request(url: string, signal: AbortSignal, command?: QuoteCommand,
   } catch { return invalid(); }
 }
 export interface EventQuoteClient {
-  status(signal: AbortSignal): Promise<EventQuoteStatusResponse>;
-  read(eventId: string, signal: AbortSignal): Promise<EventQuoteView>;
-  execute(eventId: string, command: QuoteCommand, csrfToken: string, signal: AbortSignal): Promise<EventQuoteView>;
+  status(signal: AbortSignal, accessRevision?: string): Promise<EventQuoteStatusResponse>;
+  read(eventId: string, signal: AbortSignal, accessRevision?: string): Promise<EventQuoteView>;
+  execute(eventId: string, command: QuoteCommand, csrfToken: string, signal: AbortSignal, accessRevision?: string): Promise<EventQuoteView>;
 }
 export const eventQuoteClient: EventQuoteClient = {
-  async status(signal) { return validateQuoteStatus(await request(`${EVENT_QUOTE_API}/status`, signal)); },
-  async read(eventId, signal) { return validateQuoteView(await request(path(eventId), signal), eventId); },
-  async execute(eventId, command, csrf, signal) { return validateQuoteView(await request(`${path(eventId)}/commands`, signal, command, csrf), eventId); },
+  async status(signal, revision) { return validateQuoteStatus(await request(`${EVENT_QUOTE_API}/status`, signal, undefined, undefined, revision)); },
+  async read(eventId, signal, revision) { return validateQuoteView(await request(path(eventId), signal, undefined, undefined, revision), eventId); },
+  async execute(eventId, command, csrf, signal, revision) { return validateQuoteView(await request(`${path(eventId)}/commands`, signal, command, csrf, revision), eventId); },
 };
 export function latestBriefInput(view: EventQuoteView | null): BriefInput {
   const b = view?.record.briefs.at(-1);
