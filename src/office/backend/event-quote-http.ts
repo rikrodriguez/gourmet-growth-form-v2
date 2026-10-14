@@ -108,12 +108,12 @@ export function registerEventQuoteRoutes(app: FastifyInstance, dependencies: Eve
     routes.post(`${EVENT_QUOTE_API}/:eventId/commands`, { bodyLimit: 65_536 }, request => {
       const id = eventId(request), body = request.body;
       const action = body && typeof body === 'object' && !Array.isArray(body) ? (body as { action?: unknown }).action : null;
-      const kind = action === 'approve' || action === 'prepare_payment' ? 'approve' : action === 'create' ? 'create' : 'write';
+      const kind = action === 'approve' || action === 'prepare_payment' || action === 'prepare_payment_v2' ? 'approve' : action === 'create' ? 'create' : 'write';
       return run(request, { kind, eventId: id }, async (identity, service) => {
         if (!identity.actor.canWrite || !equalToken(request.headers[EVENT_QUOTE_CSRF_HEADER], identity.csrfToken)) fail(403);
         if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400);
         if (['scope', 'actor', 'actorId', 'organizationId', 'workspaceId', 'mode', 'tenantId'].some(key => Object.hasOwn(body, key))) fail(400);
-        if ((action === 'approve' || action === 'prepare_payment') && !identity.actor.canApprove) fail(403);
+        if ((action === 'approve' || action === 'prepare_payment' || action === 'prepare_payment_v2') && !identity.actor.canApprove) fail(403);
         return { ...await service.execute(identity.scope, actorOf(identity), id, body),
           ...(dependencies.dashboardAccess && identity.accessRevision ? { accessRevision: identity.accessRevision } : {}) };
       });

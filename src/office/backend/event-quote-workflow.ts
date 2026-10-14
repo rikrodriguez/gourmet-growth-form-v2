@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { calculateQuoteTotals, QuoteCalculationError } from '../../operations/quote-calculation.mjs';
-import { EventQuoteError, type BriefInput, type BriefVersion, type CatalogSnapshot, type EventQuoteRecord, type EventQuoteService, type EventQuoteStore, type EventQuoteView, type QuoteActor, type QuoteCommand, type QuoteScope, type QuoteVersion, type QuoteDecision, type PaymentLinkPreparation } from './event-quote-contracts';
+import { EventQuoteError, type BriefInput, type BriefVersion, type CatalogSnapshot, type EventQuoteRecord, type EventQuoteService, type EventQuoteStore, type EventQuoteView, type QuoteActor, type QuoteCommand, type QuoteScope, type QuoteVersion, type QuoteDecision, type PaymentLinkPreparation, type PaymentContractPreparationV2, type PaymentContractModeV2 } from './event-quote-contracts';
 import { renderQuoteArtifact } from './event-quote-renderer';
 
 function fail(code: string, status = 400): never { throw new EventQuoteError(code, status); }
@@ -78,11 +78,12 @@ export function assertEventQuoteRecord(raw: unknown, scope: QuoteScope, eventId:
   assertQuoteScope(scope); assertEventId(eventId);
   const clean = plain(raw);
   const version = (clean as { schemaVersion?: unknown } | null)?.schemaVersion;
-  const r = row(clean, ['schemaVersion', 'scope', 'eventId', 'revision', 'briefs', 'quotes', 'decisions', 'audit', 'receipts', ...(version === 2 ? ['paymentPreparations'] : [])]) as unknown as EventQuoteRecord;
-  if (![1, 2].includes(r.schemaVersion) || canonical(r.scope) !== canonical(scope) || r.eventId !== eventId) fail('INVALID_RECORD');
+  const r = row(clean, ['schemaVersion', 'scope', 'eventId', 'revision', 'briefs', 'quotes', 'decisions', 'audit', 'receipts', ...([2, 3].includes(version as number) ? ['paymentPreparations'] : []), ...(version === 3 ? ['paymentContractPreparationsV2'] : [])]) as unknown as EventQuoteRecord;
+  if (![1, 2, 3].includes(r.schemaVersion) || canonical(r.scope) !== canonical(scope) || r.eventId !== eventId) fail('INVALID_RECORD');
   integer(r.revision, 1, 100);
-  const preparations = r.paymentPreparations ?? [];
-  if (r.schemaVersion === 2 && (!Array.isArray(preparations) || !preparations.length || preparations.length > 20)) fail('INVALID_RECORD');
+  const preparations = r.paymentPreparations ?? [], preparationsV2 = r.paymentContractPreparationsV2 ?? [];
+  if (r.schemaVersion >= 2 && (!Array.isArray(r.paymentPreparations) || preparations.length > 20 || r.schemaVersion === 2 && !preparations.length)) fail('INVALID_RECORD');
+  if (r.schemaVersion === 3 && (!Array.isArray(preparationsV2) || !preparationsV2.length || preparationsV2.length > 20)) fail('INVALID_RECORD');
   if (![r.briefs, r.quotes, r.decisions, r.audit, r.receipts].every(Array.isArray) || !r.briefs.length || r.briefs.length > 50 || r.quotes.length > 20 || r.decisions.length > 20 || r.audit.length !== r.revision || r.receipts.length !== r.revision) fail('INVALID_RECORD');
   r.briefs.forEach((b, i) => { row(b, ['contactName', 'recipient', 'originalMessage', 'attendees', 'proposedDate', 'proposedLocation', 'requirements', 'version', 'digest', 'actorId', 'createdAtMs', 'provenance', 'reservationStatus']); const { version, digest: hash, actorId, createdAtMs, provenance, reservationStatus, ...input } = b; briefInput(input); assertEventId(actorId); integer(createdAtMs); if (version !== i + 1 || provenance !== 'manual_intake' || reservationStatus !== 'unconfirmed' || hash !== digest(withoutDigest(b))) fail('INVALID_RECORD'); });
   r.quotes.forEach((q, i) => {
@@ -98,12 +99,12 @@ export function assertEventQuoteRecord(raw: unknown, scope: QuoteScope, eventId:
   });
   r.decisions.forEach(d => { row(d, ['id', 'quoteVersion', 'quoteDigest', 'briefDigest', 'catalogDigest', 'artifactSha256', 'intendedRecipient', 'actorId', 'atMs', 'status', 'digest']); assertEventId(d.id); assertEventId(d.actorId); integer(d.atMs); const q = r.quotes[d.quoteVersion - 1]; if (!q || d.status !== 'approved_internal_unsent' || d.digest !== digest(withoutDigest(d)) || d.quoteDigest !== q.digest || d.briefDigest !== q.briefDigest || d.catalogDigest !== q.catalogDigest || d.artifactSha256 !== q.artifact.sha256 || d.intendedRecipient !== r.briefs[q.briefVersion - 1].recipient) fail('INVALID_RECORD'); });
   const seen = new Set<string>();
-  r.audit.forEach((a, i) => { row(a, ['sequence', 'action', 'actorId', 'atMs', 'commandKey', 'inputDigest', 'previousDigest', 'digest']); assertEventId(a.actorId); assertEventId(a.commandKey); integer(a.atMs); if (a.sequence !== i + 1 || !['create', 'brief', 'quote', 'approve', 'prepare_payment'].includes(a.action) || !/^[a-f0-9]{64}$/.test(a.inputDigest) || a.previousDigest !== (i ? r.audit[i - 1].digest : null) || a.digest !== digest(withoutDigest(a))) fail('INVALID_RECORD'); const receipt = r.receipts[i]; row(receipt, ['key', 'inputDigest', 'actorId', 'resultingRevision']); if (seen.has(receipt.key) || receipt.key !== a.commandKey || receipt.inputDigest !== a.inputDigest || receipt.actorId !== a.actorId || receipt.resultingRevision !== a.sequence) fail('INVALID_RECORD'); seen.add(receipt.key); });
-  if (r.audit[0].action !== 'create' || r.audit.filter(x => x.action === 'create').length !== 1 || r.audit.filter(x => ['create', 'brief'].includes(x.action)).length !== r.briefs.length || r.audit.filter(x => x.action === 'quote').length !== r.quotes.length || r.audit.filter(x => x.action === 'approve').length !== r.decisions.length || r.audit.filter(x => x.action === 'prepare_payment').length !== preparations.length) fail('INVALID_RECORD');
+  r.audit.forEach((a, i) => { row(a, ['sequence', 'action', 'actorId', 'atMs', 'commandKey', 'inputDigest', 'previousDigest', 'digest']); assertEventId(a.actorId); assertEventId(a.commandKey); integer(a.atMs); if (a.sequence !== i + 1 || !['create', 'brief', 'quote', 'approve', 'prepare_payment', 'prepare_payment_v2'].includes(a.action) || !/^[a-f0-9]{64}$/.test(a.inputDigest) || a.previousDigest !== (i ? r.audit[i - 1].digest : null) || a.digest !== digest(withoutDigest(a))) fail('INVALID_RECORD'); const receipt = r.receipts[i]; row(receipt, ['key', 'inputDigest', 'actorId', 'resultingRevision']); if (seen.has(receipt.key) || receipt.key !== a.commandKey || receipt.inputDigest !== a.inputDigest || receipt.actorId !== a.actorId || receipt.resultingRevision !== a.sequence) fail('INVALID_RECORD'); seen.add(receipt.key); });
+  if (r.audit[0].action !== 'create' || r.audit.filter(x => x.action === 'create').length !== 1 || r.audit.filter(x => ['create', 'brief'].includes(x.action)).length !== r.briefs.length || r.audit.filter(x => x.action === 'quote').length !== r.quotes.length || r.audit.filter(x => x.action === 'approve').length !== r.decisions.length || r.audit.filter(x => x.action === 'prepare_payment').length !== preparations.length || r.audit.filter(x => x.action === 'prepare_payment_v2').length !== preparationsV2.length) fail('INVALID_RECORD');
   // Replay the bounded ledger: a self-consistent object hash alone is not proof
   // that this exact input was the command accepted at that revision.
-  let briefIndex = 0, quoteIndex = 0, decisionIndex = 0, preparationIndex = 0;
-  const approved = new Set<number>(), prepared = new Set<number>();
+  let briefIndex = 0, quoteIndex = 0, decisionIndex = 0, preparationIndex = 0, preparationV2Index = 0;
+  const approved = new Set<number>(), prepared = new Set<number>(), preparedV2 = new Set<number>();
   r.audit.forEach((a, index) => {
     let command: QuoteCommand;
     if (index && a.atMs < r.audit[index - 1].atMs) fail('INVALID_RECORD');
@@ -121,13 +122,23 @@ export function assertEventQuoteRecord(raw: unknown, scope: QuoteScope, eventId:
       if (!q || approved.has(q.version) || d.id !== a.commandKey || d.quoteVersion !== quoteIndex || q.briefVersion !== briefIndex || d.actorId !== a.actorId || d.atMs !== a.atMs || q.catalog.validUntilMs <= a.atMs) fail('INVALID_RECORD');
       approved.add(q.version);
       command = { key: a.commandKey, expectedRevision: index, action: 'approve', quoteVersion: d.quoteVersion, quoteDigest: d.quoteDigest, artifactSha256: d.artifactSha256, intendedRecipient: d.intendedRecipient };
-    } else {
+    } else if (a.action === 'prepare_payment') {
       const preparation = preparations[preparationIndex++], q = r.quotes[quoteIndex - 1];
       const d = r.decisions.slice(0, decisionIndex).find(decision => decision.quoteDigest === q?.digest);
       if (!q || !d || !approved.has(q.version) || prepared.has(q.version) || q.briefVersion !== briefIndex || q.catalog.validUntilMs <= a.atMs
         || canonical(preparation) !== canonical(paymentPreparation(scope, eventId, q, d, a.actorId, a.atMs))) fail('INVALID_RECORD');
       prepared.add(q.version);
       command = { key: a.commandKey, expectedRevision: index, action: 'prepare_payment', quoteVersion: q.version, quoteDigest: q.digest, approvalDigest: d.digest, artifactSha256: q.artifact.sha256 };
+    } else {
+      const preparation = preparationsV2[preparationV2Index++], q = r.quotes[quoteIndex - 1];
+      const d = r.decisions.slice(0, decisionIndex).find(decision => decision.quoteDigest === q?.digest);
+      if (!preparation || !q || !d || !approved.has(q.version) || preparedV2.has(q.version)
+        || !['retainer_50', 'full_upfront', 'fixed_49_reservation'].includes(preparation.paymentMode)
+        || q.briefVersion !== briefIndex || q.catalog.validUntilMs <= a.atMs
+        || canonical(preparation) !== canonical(paymentContractPreparationV2(scope, eventId, q, d, preparation.paymentMode, a.actorId, a.atMs))) fail('INVALID_RECORD');
+      preparedV2.add(q.version);
+      command = { key: a.commandKey, expectedRevision: index, action: 'prepare_payment_v2', quoteVersion: q.version,
+        quoteDigest: q.digest, approvalDigest: d.digest, artifactSha256: q.artifact.sha256, paymentMode: preparation.paymentMode };
     }
     commandInput(command);
     if (a.inputDigest !== digest({ scope, eventId, actorId: a.actorId, command })) fail('INVALID_RECORD');
@@ -135,11 +146,12 @@ export function assertEventQuoteRecord(raw: unknown, scope: QuoteScope, eventId:
 }
 function commandInput(raw: unknown): QuoteCommand {
   const clean = plain(raw) as QuoteCommand; if (!clean || typeof clean !== 'object') fail('INVALID_COMMAND');
-  const fields = clean.action === 'create' || clean.action === 'brief' ? ['brief'] : clean.action === 'quote' ? ['expectedBriefDigest', 'expectedCatalogDigest', 'selections'] : clean.action === 'approve' ? ['quoteVersion', 'quoteDigest', 'artifactSha256', 'intendedRecipient'] : clean.action === 'prepare_payment' ? ['quoteVersion', 'quoteDigest', 'approvalDigest', 'artifactSha256'] : fail('INVALID_COMMAND');
+  const fields = clean.action === 'create' || clean.action === 'brief' ? ['brief'] : clean.action === 'quote' ? ['expectedBriefDigest', 'expectedCatalogDigest', 'selections'] : clean.action === 'approve' ? ['quoteVersion', 'quoteDigest', 'artifactSha256', 'intendedRecipient'] : clean.action === 'prepare_payment' ? ['quoteVersion', 'quoteDigest', 'approvalDigest', 'artifactSha256'] : clean.action === 'prepare_payment_v2' ? ['quoteVersion', 'quoteDigest', 'approvalDigest', 'artifactSha256', 'paymentMode'] : fail('INVALID_COMMAND');
   row(clean, ['key', 'expectedRevision', 'action', ...fields]); assertEventId(clean.key); integer(clean.expectedRevision, 0, 100);
   if (clean.action === 'create' || clean.action === 'brief') briefInput(clean.brief);
   else if (clean.action === 'quote') { for (const hash of [clean.expectedBriefDigest, clean.expectedCatalogDigest]) if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) fail('INVALID_COMMAND'); if (!Array.isArray(clean.selections) || !clean.selections.length || clean.selections.length > 100) fail('INVALID_COMMAND'); const seen = new Set<string>(); for (const selection of clean.selections) { row(selection, ['itemId', 'quantity']); assertEventId(selection.itemId); integer(selection.quantity, 1, 1000); if (seen.has(selection.itemId)) fail('DUPLICATE_ITEM'); seen.add(selection.itemId); } }
   else { integer(clean.quoteVersion, 1, 20); for (const hash of [clean.quoteDigest, clean.artifactSha256]) if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) fail('INVALID_COMMAND'); if (clean.action === 'approve') text(clean.intendedRecipient, 254); else if (typeof clean.approvalDigest !== 'string' || !/^[a-f0-9]{64}$/.test(clean.approvalDigest)) fail('INVALID_COMMAND'); }
+  if (clean.action === 'prepare_payment_v2' && !['retainer_50', 'full_upfront', 'fixed_49_reservation'].includes(clean.paymentMode)) fail('INVALID_COMMAND');
   return clean;
 }
 function view(record: EventQuoteRecord, catalog: CatalogSnapshot | null): EventQuoteView {
@@ -157,7 +169,7 @@ export function createEventQuoteService(deps: { store: EventQuoteStore; catalogF
       assertQuoteScope(scope); actorCheck(actor, scope, clock()); assertEventId(eventId); if (!actor.canWrite) fail('WRITE_FORBIDDEN', 403);
       scope = structuredClone(scope); actor = structuredClone(actor);
       const input = commandInput(raw);
-      if (['approve', 'prepare_payment'].includes(input.action) && !actor.canApprove) fail('APPROVAL_FORBIDDEN', 403);
+      if (['approve', 'prepare_payment', 'prepare_payment_v2'].includes(input.action) && !actor.canApprove) fail('APPROVAL_FORBIDDEN', 403);
       const hash = digest({ scope, eventId, actorId: actor.actorId, command: input });
       const result = await deps.store.transact(scope, eventId, async current => {
         // Catalogue, identity deadline and clock are checked after acquiring the
@@ -195,10 +207,19 @@ export function createEventQuoteService(deps: { store: EventQuoteStore; catalogF
           if (!q || !decision || input.quoteVersion !== q.version || input.quoteDigest !== q.digest
             || input.approvalDigest !== decision.digest || input.artifactSha256 !== q.artifact.sha256
             || q.briefDigest !== b.digest || q.catalogDigest !== digest(c)) fail('STALE_PAYMENT_PREPARATION', 409);
-          if (r.paymentPreparations?.some(item => item.quoteDigest === q.digest)) fail('PAYMENT_ALREADY_PREPARED', 409);
-          r.schemaVersion = 2;
-          r.paymentPreparations ??= [];
-          r.paymentPreparations.push(paymentPreparation(scope, eventId, q, decision, actor.actorId, now));
+          if (input.action === 'prepare_payment') {
+            if (r.paymentPreparations?.some(item => item.quoteDigest === q.digest)) fail('PAYMENT_ALREADY_PREPARED', 409);
+            if (r.schemaVersion === 1) r.schemaVersion = 2;
+            r.paymentPreparations ??= [];
+            r.paymentPreparations.push(paymentPreparation(scope, eventId, q, decision, actor.actorId, now));
+          } else {
+            if (r.paymentContractPreparationsV2?.some(item => item.quoteDigest === q.digest)) fail('PAYMENT_V2_ALREADY_PREPARED', 409);
+            const preparation = paymentContractPreparationV2(scope, eventId, q, decision, input.paymentMode, actor.actorId, now);
+            r.schemaVersion = 3;
+            r.paymentPreparations ??= [];
+            r.paymentContractPreparationsV2 ??= [];
+            r.paymentContractPreparationsV2.push(preparation);
+          }
         }
         r.revision++;
         const audit = { sequence: r.revision, action: input.action, actorId: actor.actorId, atMs: now, commandKey: input.key, inputDigest: hash, previousDigest: r.audit.at(-1)?.digest ?? null };
@@ -226,6 +247,37 @@ function paymentPreparation(scope: QuoteScope, eventId: string, quote: QuoteVers
     actorId, atMs, status: 'pending_provider_review' as const, provider: 'gourmet_payments_legacy' as const,
     providerEnabled: false as const, publicPaymentUrl: null, financialMeaning: 'unaccepted_quote' as const,
     blockers: ['PROVIDER_DISABLED', 'LEGACY_TERMS_UNVERIFIED', 'CANONICAL_LEAD_REQUIRED', 'PAYMENT_SCHEDULE_REQUIRED'] as PaymentLinkPreparation['blockers'],
+  };
+  return { ...content, digest: digest(content) };
+}
+
+/** Records an explicit mode selection, never an approved payment agreement.
+ * The original quote remains authoritative history; all new configuration and
+ * terms approval are absent until a separately reviewed workflow supplies them. */
+function paymentContractPreparationV2(scope: QuoteScope, eventId: string, quote: QuoteVersion, decision: QuoteDecision, paymentMode: PaymentContractModeV2, actorId: string, atMs: number): PaymentContractPreparationV2 {
+  if (paymentMode === 'fixed_49_reservation' && quote.totalCents <= 4900) fail('FIXED_RESERVATION_TOTAL_REQUIRED', 422);
+  const initialPaymentCents = paymentMode === 'retainer_50' ? Number((BigInt(quote.totalCents) + 1n) / 2n)
+    : paymentMode === 'full_upfront' ? quote.totalCents : 4900;
+  // This comparison only describes quoted arithmetic. It grants no authority
+  // over the new mode, conditions, schedule, receiver or eventual dispatch.
+  const quotedDepositMatchesMode = paymentMode !== 'fixed_49_reservation' && initialPaymentCents === quote.depositCents
+    && quote.catalog.depositBps === (paymentMode === 'retainer_50' ? 5000 : 10000);
+  const blockers: PaymentContractPreparationV2['blockers'] = ['PROVIDER_DISABLED', 'RECEIVER_V2_UNAVAILABLE', 'CANONICAL_LEAD_REQUIRED', 'LINK_EXPIRATION_REQUIRED'];
+  if (paymentMode !== 'full_upfront') blockers.push('PAYMENT_SCHEDULE_REQUIRED');
+  blockers.push('PAYMENT_TERMS_REQUIRED', 'PAYMENT_TERMS_APPROVAL_REQUIRED');
+  if (!quotedDepositMatchesMode) blockers.push('QUOTED_PAYMENT_TERMS_REVIEW_REQUIRED');
+  const content = {
+    contractVersion: 2 as const,
+    id: `payment-contract-v2-${digest({ contractVersion: 2, scope, eventId, quoteVersion: quote.version, quoteDigest: quote.digest, approvalDigest: decision.digest, paymentMode })}`,
+    eventId, quoteVersion: quote.version, quoteDigest: quote.digest, approvalDigest: decision.digest,
+    briefDigest: quote.briefDigest, catalogDigest: quote.catalogDigest, artifactSha256: quote.artifact.sha256,
+    intendedRecipient: decision.intendedRecipient, currency: quote.currency, totalCents: quote.totalCents,
+    depositCents: quote.depositCents, depositBasis: { kind: 'quoted_percentage' as const, basisPoints: quote.catalog.depositBps },
+    remainingCents: quote.totalCents - quote.depositCents, terms: quote.catalog.terms,
+    paymentMode, initialPaymentCents, paymentBalanceCents: quote.totalCents - initialPaymentCents, quotedDepositMatchesMode,
+    paymentTerms: null, paymentSchedule: null, paymentTermsApproval: null, canonicalLeadId: null,
+    actorId, atMs, status: 'pending_configuration' as const, provider: 'gourmet_payments_v2' as const,
+    providerEnabled: false as const, publicPaymentUrl: null, financialMeaning: 'unaccepted_quote' as const, blockers,
   };
   return { ...content, digest: digest(content) };
 }

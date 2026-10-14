@@ -102,19 +102,34 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   let persisted = await store.read(testScope, eventId); assert.equal(persisted!.decisions.length, 1); assert.equal(persisted!.revision, 3);
   const preparationPosts = () => quoteRequests.filter(method => method === 'POST').length;
   const beforePrepare = preparationPosts();
+  const paymentMode = page.getByTestId('persisted-payment-mode');
+  assert.equal(await paymentMode.inputValue(), '', 'Payment mode must require an explicit choice');
+  assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
+  assert.equal(await paymentMode.locator('option:checked').getAttribute('value'), '', 'Fixed 49 must never be selected automatically');
+  await paymentMode.selectOption('fixed_49_reservation');
+  assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true, 'A total below 49 cannot prepare a fixed reservation');
+  assert.equal(preparationPosts(), beforePrepare, 'Selecting a mode must not save or execute a request');
+  await paymentMode.selectOption('retainer_50');
   await page.waitForFunction(() => !(document.querySelector('[data-testid="persisted-payment-prepare"]') as HTMLButtonElement)?.disabled);
   // Same-turn repeated clicks exercise the synchronous in-flight lock.
   await page.getByTestId('persisted-payment-prepare').evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
-  await page.getByText('Pendiente de revisión del proveedor · sin enlace', { exact: true }).waitFor();
+  await page.getByText('Pendiente de configuración y aprobación · sin enlace', { exact: true }).waitFor();
   await page.waitForFunction(() => !document.querySelector('[data-testid="persisted-quote-workspace"]')?.textContent?.includes('Guardando'));
   assert.equal(preparationPosts(), beforePrepare + 1);
   assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
-  assert.equal(await page.getByTestId('persisted-payment-request').locator('a').count(), 0);
+  assert.equal(await page.getByTestId('persisted-payment-v2-request').locator('a').count(), 0);
   persisted = await store.read(testScope, eventId);
-  assert.equal(persisted!.revision, 4); assert.equal(persisted!.paymentPreparations!.length, 1);
-  const originalPreparation = structuredClone(persisted!.paymentPreparations![0]);
+  assert.equal(persisted!.revision, 4); assert.equal(persisted!.schemaVersion, 3); assert.deepEqual(persisted!.paymentPreparations, []); assert.equal(persisted!.paymentContractPreparationsV2!.length, 1);
+  const originalPreparation = structuredClone(persisted!.paymentContractPreparationsV2![0]);
   assert.equal(originalPreparation.publicPaymentUrl, null); assert.equal(originalPreparation.providerEnabled, false);
+  assert.equal(originalPreparation.paymentMode, 'retainer_50');
   assert.equal(originalPreparation.depositCents, persisted!.quotes[0].depositCents);
+  assert.deepEqual(originalPreparation.depositBasis, { kind: 'quoted_percentage', basisPoints: 5000 });
+  assert.equal(originalPreparation.initialPaymentCents, originalPreparation.depositCents);
+  assert.equal(originalPreparation.paymentBalanceCents, originalPreparation.totalCents - originalPreparation.initialPaymentCents);
+  assert.equal(originalPreparation.quotedDepositMatchesMode, true);
+  assert.equal(originalPreparation.status, 'pending_configuration');
+  for (const field of ['paymentTerms', 'paymentSchedule', 'paymentTermsApproval', 'canonicalLeadId'] as const) assert.equal(originalPreparation[field], null);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({path:fileURLToPath(new URL('../../test-results/dashboard-visual/payment-preparation-desktop.png', import.meta.url)), fullPage:true});
   await page.setViewportSize({width:360,height:780});
@@ -129,15 +144,18 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   assert.equal(await page.getByTestId('persisted-quote-approve').count(), 0);
   assert.equal(quoteRequests.length, requestsBeforeReload, 'Reload must not reopen the existing identity');
   await openSaved(); await page.getByText('Aprobada internamente · sin envío', {exact:true}).first().waitFor(); assert.equal(await page.getByTestId('persisted-quote-approve').isDisabled(), true);
-  await page.getByText('Pendiente de revisión del proveedor · sin enlace', { exact: true }).waitFor();
-  assert.deepEqual((await store.read(testScope, eventId))!.paymentPreparations![0], originalPreparation);
+  await page.getByText('Pendiente de configuración y aprobación · sin enlace', { exact: true }).waitFor();
+  assert.deepEqual((await store.read(testScope, eventId))!.paymentContractPreparationsV2![0], originalPreparation);
+  assert.equal(await paymentMode.inputValue(), '', 'Recovery must not restore a default payment choice');
   await page.getByLabel('Comensales',{exact:true}).fill('25'); assert.equal(await page.getByTestId('persisted-quote-approve').isDisabled(), true);
   await page.getByRole('button', {name:'Guardar nueva versión del brief'}).click(); await page.getByText('Cotización obsoleta', {exact:true}).first().waitFor();
-  await page.getByText('Solicitud obsoleta · conservar solo como historial', { exact: true }).waitFor();
+  await page.getByText('Borrador obsoleto · conservar solo como historial', { exact: true }).waitFor();
   assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
   await page.getByLabel(/Partida sintética/).fill('25'); await page.getByRole('button', {name:'Generar versión de cotización'}).click();
   await page.getByRole('heading',{name:'Revisión exacta · cotización v2',exact:true}).waitFor();
   assert.equal(await page.getByRole('checkbox').isChecked(), false);
+  assert.equal(await paymentMode.inputValue(), '', 'A new quote version requires a fresh explicit payment choice');
+  assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
   const artifact = await page.request.get('http://127.0.0.1:4197/api/office/event-quotes/BROWSER-EVENT/quotes/1/artifact'); assert.equal(artifact.status(), 200); assert.match(await artifact.text(), /Cotización v1/); assert.match(artifact.headers()['content-security-policy'], /sandbox/);
   // Full-page captures must start at the top so sticky navigation is not stitched halfway down.
   await page.evaluate(() => window.scrollTo(0, 0)); await page.waitForFunction(() => window.scrollY === 0);
@@ -145,6 +163,33 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   await page.setViewportSize({width:360,height:780}); assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth <= window.innerWidth), true);
   await page.evaluate(() => window.scrollTo(0, 0)); await page.waitForFunction(() => window.scrollY === 0);
   await page.screenshot({path:fileURLToPath(new URL('../../test-results/dashboard-visual/persisted-quote-mobile.png', import.meta.url)), fullPage:true});
+  // The second approved quote explicitly chooses 100 percent, preserving its
+  // original quoted 50-percent deposit and the previous immutable v2 draft.
+  await page.getByRole('checkbox').check(); await page.getByTestId('persisted-quote-approve').click();
+  await page.getByText('Aprobada internamente · sin envío', { exact: true }).first().waitFor();
+  assert.equal(await paymentMode.inputValue(), '');
+  assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
+  await paymentMode.selectOption('full_upfront');
+  await page.getByText('Pago único del 100 %. Sin saldo futuro. Requiere condiciones explícitas y aprobación.', { exact: true }).waitFor();
+  await page.getByTestId('persisted-payment-prepare').click();
+  await page.getByText('Pendiente de configuración y aprobación · sin enlace', { exact: true }).waitFor();
+  persisted = await store.read(testScope, eventId);
+  assert.equal(persisted!.revision, 8); assert.equal(persisted!.schemaVersion, 3);
+  assert.deepEqual(persisted!.paymentPreparations, []);
+  assert.equal(persisted!.paymentContractPreparationsV2!.length, 2);
+  assert.deepEqual(persisted!.paymentContractPreparationsV2![0], originalPreparation);
+  const fullPreparation = structuredClone(persisted!.paymentContractPreparationsV2![1]);
+  assert.equal(fullPreparation.paymentMode, 'full_upfront');
+  assert.equal(fullPreparation.initialPaymentCents, fullPreparation.totalCents);
+  assert.equal(fullPreparation.paymentBalanceCents, 0);
+  assert.equal(fullPreparation.depositCents, persisted!.quotes[1].depositCents);
+  assert.deepEqual(fullPreparation.depositBasis, { kind: 'quoted_percentage', basisPoints: 5000 });
+  assert.equal(fullPreparation.quotedDepositMatchesMode, false);
+  assert.equal(fullPreparation.paymentSchedule, null); assert.equal(fullPreparation.paymentTermsApproval, null);
+  assert.equal(fullPreparation.providerEnabled, false); assert.equal(fullPreparation.publicPaymentUrl, null);
+  assert.equal(fullPreparation.blockers.includes('PAYMENT_SCHEDULE_REQUIRED'), false);
+  assert.equal(await page.getByTestId('persisted-payment-v2-request').locator('a').count(), 0);
+  assert.equal(await page.getByTestId('persisted-payment-prepare').isDisabled(), true);
   const notifyWithdrawal = () => page.evaluate(() => window.dispatchEvent(new Event('test-access-withdraw')));
   const assertClosed = async () => {
     await page.getByTestId('dashboard-quote-event').waitFor({ state: 'detached' });
@@ -215,7 +260,7 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   const forbidden = await page.request.post(`http://127.0.0.1:4197/api/office/event-quotes/${eventId}/commands`, {
     headers: { Origin: 'http://127.0.0.1:4197', 'x-event-quote-csrf': readOnlySession.csrfToken,
       'x-event-quote-access-revision': readOnlySession.accessRevision },
-    data: { action: 'brief', key: 'blocked-readonly', expectedRevision: 5, brief: {} },
+    data: { action: 'brief', key: 'blocked-readonly', expectedRevision: 8, brief: {} },
   });
   assert.equal(forbidden.status(), 403, 'Direct HTTP cannot bypass the read-only SQL grant');
   // Establish the loaded state before advancing both clocks to the SQL deadline.
@@ -234,8 +279,8 @@ await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { 
   await page.getByRole('button',{name:'Recargar expediente',exact:true}).click();
   await page.getByText(/El servidor retiró o no pudo verificar este acceso/).waitFor(); await assertClosed();
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
-  persisted = await store.read(testScope, eventId); assert.equal(persisted!.revision,6); assert.deepEqual(persisted!.paymentPreparations, [originalPreparation]); assert.equal(persisted!.decisions.length,1);
-  console.log('PASS: durable SQL session and fixed-event Dashboard projection; explicit access with no reads on mount/reload/restore/history; Chromium desktop/mobile create -> quote -> internal approval -> double-click-safe payment preparation without provider URL -> API restart -> recovery -> stale edit -> v2; artifact isolation; SQL session revocation and grant withdrawal; delayed real GET discarded on close; persisted read-only enforcement and grant expiry; no JS errors or external requests. PostgreSQL preserves exact revisions and decisions. Screenshots in test-results/dashboard-visual/.');
+  persisted = await store.read(testScope, eventId); assert.equal(persisted!.revision,8); assert.deepEqual(persisted!.paymentPreparations, []); assert.deepEqual(persisted!.paymentContractPreparationsV2, [originalPreparation, fullPreparation]); assert.equal(persisted!.decisions.length,2);
+  console.log('PASS: durable SQL session and fixed-event Dashboard projection; explicit access with no reads on mount/reload/restore/history; Chromium desktop/mobile create -> quote -> internal approval -> explicit 50-percent double-click-safe v2 payment draft without provider URL -> API restart -> recovery -> stale edit -> quote v2 -> explicit full-upfront draft; no automatic 49 selection; artifact isolation; SQL session revocation and grant withdrawal; delayed real GET discarded on close; persisted read-only enforcement and grant expiry; no JS errors or external requests. PostgreSQL preserves exact revisions and decisions. Screenshots in test-results/dashboard-visual/.');
 } finally {
   await browser?.close(); await vite?.close(); await api?.close();
   try {

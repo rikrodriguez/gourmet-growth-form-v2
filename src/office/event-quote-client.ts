@@ -1,4 +1,4 @@
-import type { BriefInput, CatalogSnapshot, EventQuoteView, QuoteCommand, QuoteVersion, PreparePaymentCommand, PaymentLinkPreparation } from './backend/event-quote-contracts';
+import type { BriefInput, CatalogSnapshot, EventQuoteView, QuoteCommand, QuoteVersion, PreparePaymentCommand, PaymentLinkPreparation, PreparePaymentV2Command, PaymentContractModeV2 } from './backend/event-quote-contracts';
 import type { EventQuoteStatusResponse } from './backend/event-quote-http';
 export type { EventQuoteStatusResponse } from './backend/event-quote-http';
 
@@ -36,7 +36,7 @@ export function validateQuoteStatus(value: unknown): EventQuoteStatusResponse {
 export function validateQuoteView(value: unknown, expectedEventId: string): EventQuoteView {
   const v = row(value), record = row(v.record), scope = row(record.scope);
   if (v.externalEffectsEnabled !== false || !['missing', 'pending_internal_review', 'approved_internal_unsent', 'obsolete'].includes(v.currentQuoteStatus as string)) invalid();
-  if (![1, 2].includes(record.schemaVersion as number) || record.eventId !== expectedEventId || !['test', 'commercial'].includes(scope.mode as string)) invalid();
+  if (![1, 2, 3].includes(record.schemaVersion as number) || record.eventId !== expectedEventId || !['test', 'commercial'].includes(scope.mode as string)) invalid();
   text(scope.organizationId, 128); text(scope.workspaceId, 128); integer(record.revision, 1);
   list(record.briefs).forEach(value => {
     const b = row(value); ['contactName', 'recipient', 'originalMessage', 'proposedDate', 'proposedLocation', 'requirements', 'actorId'].forEach(key => text(b[key]));
@@ -55,8 +55,9 @@ export function validateQuoteView(value: unknown, expectedEventId: string): Even
   list(record.decisions).forEach(value => { const d = row(value); if (d.status !== 'approved_internal_unsent') invalid(); integer(d.quoteVersion, 1); integer(d.atMs); ['id', 'actorId', 'intendedRecipient'].forEach(key => text(d[key])); ['quoteDigest', 'briefDigest', 'catalogDigest', 'artifactSha256', 'digest'].forEach(key => digest(d[key])); });
   list(record.audit); list(record.receipts);
   if (record.schemaVersion === 1 && record.paymentPreparations !== undefined) invalid();
-  if (record.schemaVersion === 2) {
-    const preparations = list(record.paymentPreparations); if (!preparations.length || preparations.length > 20) invalid();
+  if (record.schemaVersion !== 3 && record.paymentContractPreparationsV2 !== undefined) invalid();
+  if (record.schemaVersion === 2 || record.schemaVersion === 3) {
+    const preparations = list(record.paymentPreparations); if ((record.schemaVersion === 2 && !preparations.length) || preparations.length > 20) invalid();
     const seen = new Set<number>();
     for (const value of preparations) {
       const p = row(value); ['id', 'actorId', 'intendedRecipient', 'terms'].forEach(key => text(p[key]));
@@ -73,6 +74,46 @@ export function validateQuoteView(value: unknown, expectedEventId: string): Even
         || q.artifact.sha256 !== p.artifactSha256 || q.totalCents !== p.totalCents || q.depositCents !== p.depositCents
         || q.totalCents - q.depositCents !== p.remainingCents || q.catalog.terms !== p.terms
         || d.quoteDigest !== q.digest || d.intendedRecipient !== p.intendedRecipient || d.atMs > (p.atMs as number)) invalid();
+    }
+  }
+  if (record.schemaVersion === 3) {
+    const preparations = list(record.paymentContractPreparationsV2); if (!preparations.length || preparations.length > 20) invalid();
+    const seen = new Set<number>();
+    const keys = ['id', 'eventId', 'quoteVersion', 'quoteDigest', 'approvalDigest', 'briefDigest', 'catalogDigest', 'artifactSha256', 'intendedRecipient',
+      'currency', 'totalCents', 'depositCents', 'remainingCents', 'terms', 'depositBasis', 'paymentMode', 'initialPaymentCents', 'paymentBalanceCents',
+      'quotedDepositMatchesMode', 'paymentTerms', 'paymentSchedule', 'paymentTermsApproval', 'canonicalLeadId', 'actorId', 'atMs', 'status', 'provider',
+      'providerEnabled', 'publicPaymentUrl', 'financialMeaning', 'blockers', 'digest', 'contractVersion'];
+    for (const value of preparations) {
+      const p = row(value), basis = row(p.depositBasis);
+      if (Object.keys(p).length !== keys.length || Object.keys(p).some(key => !keys.includes(key))
+        || Object.keys(basis).length !== 2 || basis.kind !== 'quoted_percentage') invalid();
+      ['id', 'actorId', 'intendedRecipient', 'terms'].forEach(key => text(p[key]));
+      ['quoteDigest', 'approvalDigest', 'briefDigest', 'catalogDigest', 'artifactSha256', 'digest'].forEach(key => digest(p[key]));
+      integer(p.quoteVersion, 1); integer(p.atMs); integer(basis.basisPoints);
+      ['totalCents', 'depositCents', 'remainingCents', 'initialPaymentCents', 'paymentBalanceCents'].forEach(key => integer(p[key]));
+      if (p.eventId !== expectedEventId || p.contractVersion !== 2 || p.currency !== 'USD' || p.status !== 'pending_configuration'
+        || p.provider !== 'gourmet_payments_v2' || p.providerEnabled !== false || p.publicPaymentUrl !== null || p.financialMeaning !== 'unaccepted_quote'
+        || p.paymentTerms !== null || p.paymentSchedule !== null || p.paymentTermsApproval !== null || p.canonicalLeadId !== null
+        || !isPaymentContractModeV2(p.paymentMode) || seen.has(p.quoteVersion as number)) invalid();
+      seen.add(p.quoteVersion as number);
+      const q = (record.quotes as QuoteVersion[]).find(q => q.version === p.quoteVersion);
+      const d = (record.decisions as EventQuoteView['record']['decisions']).find(d => d.digest === p.approvalDigest);
+      if (!q || !d) return invalid();
+      if (q.digest !== p.quoteDigest || q.briefDigest !== p.briefDigest || q.catalogDigest !== p.catalogDigest
+        || q.artifact.sha256 !== p.artifactSha256 || q.totalCents !== p.totalCents || q.depositCents !== p.depositCents
+        || q.totalCents - q.depositCents !== p.remainingCents || q.catalog.terms !== p.terms || q.catalog.depositBps !== basis.basisPoints
+        || d.quoteVersion !== q.version || d.quoteDigest !== q.digest || d.briefDigest !== q.briefDigest || d.catalogDigest !== q.catalogDigest
+        || d.artifactSha256 !== q.artifact.sha256 || d.intendedRecipient !== p.intendedRecipient || d.atMs > (p.atMs as number)) invalid();
+      const initial = p.paymentMode === 'retainer_50' ? Number((BigInt(q.totalCents) + 1n) / 2n)
+        : p.paymentMode === 'full_upfront' ? q.totalCents : 4900;
+      const quotedDepositMatchesMode = p.paymentMode === 'retainer_50' ? q.catalog.depositBps === 5000 && q.depositCents === initial
+        : p.paymentMode === 'full_upfront' && q.catalog.depositBps === 10000 && q.depositCents === initial;
+      const blockers = ['PROVIDER_DISABLED', 'RECEIVER_V2_UNAVAILABLE', 'CANONICAL_LEAD_REQUIRED', 'LINK_EXPIRATION_REQUIRED',
+        ...(p.paymentMode !== 'full_upfront' ? ['PAYMENT_SCHEDULE_REQUIRED'] : []), 'PAYMENT_TERMS_REQUIRED', 'PAYMENT_TERMS_APPROVAL_REQUIRED',
+        ...(!quotedDepositMatchesMode ? ['QUOTED_PAYMENT_TERMS_REVIEW_REQUIRED'] : [])];
+      if ((p.paymentMode === 'fixed_49_reservation' && q.totalCents <= 4900) || p.initialPaymentCents !== initial
+        || p.paymentBalanceCents !== q.totalCents - initial || p.quotedDepositMatchesMode !== quotedDepositMatchesMode
+        || JSON.stringify(p.blockers) !== JSON.stringify(blockers)) invalid();
     }
   }
   return value as EventQuoteView;
@@ -160,4 +201,24 @@ export function exactPaymentPreparation(view: EventQuoteView, status: EventQuote
   const q = view.record.quotes.at(-1)!, decision = view.record.decisions.find(d => d.quoteDigest === q.digest)!;
   return { action: 'prepare_payment', key, expectedRevision: view.record.revision, quoteVersion: q.version,
     quoteDigest: q.digest, approvalDigest: decision.digest, artifactSha256: q.artifact.sha256 };
+}
+
+/** A V2 mode is chosen explicitly; numerical similarity never selects a contract. */
+export function isPaymentContractModeV2(value: unknown): value is PaymentContractModeV2 {
+  return typeof value === 'string' && ['retainer_50', 'full_upfront', 'fixed_49_reservation'].includes(value);
+}
+export function paymentContractV2PreparationBlocked(view: EventQuoteView | null, status: EventQuoteStatusResponse | null, now = Date.now()): boolean {
+  const q = view?.record.quotes.at(-1), b = view?.record.briefs.at(-1);
+  return !view || !status?.enabled || !status.session.canWrite || !status.session.canApprove || status.session.expiresAtMs <= now
+    || !status.catalog || status.catalog.validUntilMs <= now || view.record.scope.mode !== status.session.mode
+    || view.currentQuoteStatus !== 'approved_internal_unsent' || !q || !b || q.briefVersion !== b.version || q.briefDigest !== b.digest
+    || q.catalogDigest !== status.catalogDigest || !view.record.decisions.some(d => d.quoteDigest === q.digest)
+    || !!view.record.paymentContractPreparationsV2?.some(item => item.quoteDigest === q.digest);
+}
+export function exactPaymentContractV2Preparation(view: EventQuoteView, status: EventQuoteStatusResponse, key: string, mode: PaymentContractModeV2, now = Date.now()): PreparePaymentV2Command {
+  if (!isPaymentContractModeV2(mode) || paymentContractV2PreparationBlocked(view, status, now)) throw new EventQuoteClientError('PAYMENT_PREPARATION_BLOCKED');
+  const q = view.record.quotes.at(-1)!, decision = view.record.decisions.find(d => d.quoteDigest === q.digest)!;
+  if (mode === 'fixed_49_reservation' && q.totalCents <= 4900) throw new EventQuoteClientError('PAYMENT_PREPARATION_BLOCKED');
+  return { action: 'prepare_payment_v2', key, expectedRevision: view.record.revision, quoteVersion: q.version,
+    quoteDigest: q.digest, approvalDigest: decision.digest, artifactSha256: q.artifact.sha256, paymentMode: mode };
 }

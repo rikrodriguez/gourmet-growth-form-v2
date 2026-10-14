@@ -2,8 +2,10 @@
 
 Candidate inspected: PR 2, `faa7001ef26b8aa8ca0419b191b59c57ffba13ff`.
 The original receiver remains the owner of payment agreement creation. This
-application only persists an internal, unsent request; its existing schema 2,
-approval checks, blockers and pending/obsolete presentation remain authoritative.
+application only persists internal, unsent preparations. Its original schema 2
+rules and records remain intact. The subsequent product decision adds explicit
+50/50, full upfront and exceptional USD 49 modes under a separate contract v2
+and schema 3 ledger; see [the current v2 boundary](payment-agreement-v2.md).
 
 ## Sources inspected on 2026-10-14
 
@@ -24,7 +26,7 @@ partial PHP source were transferred byte for byte and reused under
 the parent transfer manifest. These references do not replace the current
 Dashboard application or establish present authorization.
 
-## Semantic boundary
+## Original v1 semantic boundary
 
 | Property | Persistent quote preparation | Original Payments receiver |
 | --- | --- | --- |
