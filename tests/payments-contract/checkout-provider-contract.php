@@ -14,6 +14,7 @@ use Gourmet\Payments\Payments\PayPal\PayPalConfig;
 use Gourmet\Payments\Payments\PayPal\PayPalHttpTransport;
 use Gourmet\Payments\Payments\PayPal\PayPalHttpResponse;
 use Gourmet\Payments\Payments\PayPal\PayPalTransportException;
+use Gourmet\Payments\Payments\PayPal\PayPalApiException;
 
 ini_set('display_errors', 'stderr');
 error_reporting(E_ALL);
@@ -47,12 +48,18 @@ $check = static function (bool $condition, string $label) use (&$assertions, &$c
     ++$assertions;
     $checks[] = $label;
 };
-$reject = static function (string $label, callable $action) use ($check): void {
+$reject = static function (string $label, callable $action, bool $invalidProviderShape = false) use ($check): void {
     try {
         $action();
     } catch (DomainException $exception) {
         $check(preg_match('/\A[A-Z][A-Z0-9_]{0,95}\z/', $exception->getMessage()) === 1,
             $label . ': bounded domain rejection');
+        return;
+    } catch (PayPalApiException $exception) {
+        if (!$invalidProviderShape) { throw $exception; }
+        $check($exception->httpStatus === 200 && $exception->category === 'INVALID_RESPONSE'
+            && $exception->providerName === null && $exception->debugId === null,
+            $label . ': successful HTTP response has an invalid financial JSON shape');
         return;
     }
     throw new RuntimeException('CHECKOUT_PROVIDER_CONTRACT_ACCEPTED_INVALID: ' . $label);
@@ -493,11 +500,25 @@ $responseMutations = [
 foreach ($responseMutations as $label => $mutate) {
     $invalidOrder = $copy($completed); $mutate($invalidOrder);
     [$adapter, $transport] = $adapterFor([$getStep($invalidOrder)]);
-    $reject('Orders authoritative evidence: ' . $label, static fn () => $adapter->get($orderId, $fullConditions, $childUuid));
+    $reject('Orders authoritative evidence: ' . $label, static fn () => $adapter->get($orderId, $fullConditions, $childUuid),
+        $label === 'malformed nested capture list');
     $calls = $finishTransport($transport);
     $check(count($calls) === 1 && $calls[0]['method'] === 'GET', $label . ': incompatible provider evidence cannot trigger any financial POST');
 }
 $providerChecks['incompatibleOrderEvidenceRejected'] = count($responseMutations);
+foreach (['purchase_units', 'captures'] as $field) {
+    $invalidOrder = $copy($completed);
+    // Decoding with associative arrays would collapse {"0": ...} into a PHP
+    // list. The original client's raw JSON boundary must reject that object.
+    if ($field === 'purchase_units') { $invalidOrder['purchase_units'] = (object) $invalidOrder['purchase_units']; }
+    else { $invalidOrder['purchase_units'][0]['payments']['captures'] = (object) $invalidOrder['purchase_units'][0]['payments']['captures']; }
+    [$adapter, $transport] = $adapterFor([$getStep($invalidOrder)]);
+    $reject('Orders numeric-key JSON object is not a ' . $field . ' array',
+        static fn () => $adapter->get($orderId, $fullConditions, $childUuid), true);
+    $calls = $finishTransport($transport);
+    $check(count($calls) === 1 && $calls[0]['method'] === 'GET',
+        $field . ': a numeric-key object never triggers a financial POST');
+}
 foreach (['retainer_50', 'fixed_49_reservation'] as $mode) {
     [$adapter, $transport] = $adapterFor([]);
     $split = CheckoutConditionsV1::fromDraft($drafts[$mode], $nowMs);
