@@ -11,19 +11,32 @@ type ConfirmationClarityDependencies = {
 type ConfirmationNavigation = {
   location: Pick<Location, 'pathname' | 'search' | 'hash'>;
   history: Pick<History, 'state' | 'replaceState'>;
+  document: Pick<Document, 'referrer'>;
 };
 
 /** No query or fragment is part of the confirmation contract. Apache's retired
  * route redirect can preserve a query, so sanitize the destination before any
- * optional vendor is loaded. If history is unavailable, fail closed. */
+ * optional vendor is loaded. The SDK also reads document.referrer, which this
+ * page cannot rewrite: skip Clarity if that metadata is not safely parseable
+ * or contains query/fragment/userinfo. Fail closed on unavailable browser APIs. */
 export function prepareConfirmationUrl(navigation: ConfirmationNavigation = window): boolean {
   try {
-    const { location, history } = navigation;
+    const { location, history, document } = navigation;
     if (!/^\/form2\/request-received\/?$/.test(location.pathname)) return false;
     if (location.search || location.hash) {
       history.replaceState(history.state, '', location.pathname);
     }
-    return location.search === '' && location.hash === '';
+    if (location.search !== '' || location.hash !== '') return false;
+
+    const referrer = document.referrer;
+    if (typeof referrer !== 'string') return false;
+    if (referrer === '') return true;
+    const referringUrl = new URL(referrer);
+    return (referringUrl.protocol === 'https:' || referringUrl.protocol === 'http:')
+      && referringUrl.search === ''
+      && referringUrl.hash === ''
+      && referringUrl.username === ''
+      && referringUrl.password === '';
   } catch {
     return false;
   }

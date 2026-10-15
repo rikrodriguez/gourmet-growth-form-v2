@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { connectConfirmationClarity } from '../../src/measurement/confirmation-clarity';
+import { connectConfirmationClarity, prepareConfirmationUrl } from '../../src/measurement/confirmation-clarity';
 import type { ConsentState, PersistedConsent } from '../../src/measurement/contracts';
 
 type Dependencies = Required<NonNullable<Parameters<typeof connectConfirmationClarity>[0]>>;
@@ -83,6 +83,36 @@ function createHarness(initialPreference: PersistedConsent | null = null) {
 }
 
 describe('confirmation-only Clarity consent lifecycle', () => {
+  for (const referrer of [
+    'https://qa.example/form2/bbq/?phone=synthetic-qa',
+    'https://qa.example/form2/bbq/#details=synthetic-qa',
+    'not-an-absolute-url',
+  ]) {
+    it(`never initializes or subscribes after the real privacy guard rejects referrer ${referrer}`, () => {
+      const harness = createHarness(preference({ analytics_storage: 'granted' }));
+      harness.dependencies.prepareUrl = () => {
+        harness.order.push('prepareUrl');
+        return prepareConfirmationUrl({
+          location: { pathname: '/form2/request-received/', search: '', hash: '' },
+          history: { state: null, replaceState() { assert.fail('clean URLs do not need replacement'); } },
+          document: { referrer },
+        });
+      };
+
+      const cleanup = connectConfirmationClarity(harness.dependencies);
+
+      assert.deepEqual(harness.order, ['prepareUrl']);
+      assert.deepEqual(harness.calls, []);
+      assert.equal(harness.listeners.size, 0);
+      harness.publish(preference());
+      harness.publish(preference({ analytics_storage: 'granted' }));
+      cleanup();
+      assert.deepEqual(harness.order, ['prepareUrl']);
+      assert.deepEqual(harness.calls, []);
+      assert.equal(harness.listeners.size, 0);
+    });
+  }
+
   it('initializes stored consent before reading or applying the effective state', () => {
     const stored = preference({ analytics_storage: 'granted' });
     const harness = createHarness(stored);

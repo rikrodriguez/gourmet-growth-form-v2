@@ -55,7 +55,7 @@ function replaceProperty(t: TestContext, target: object, key: string, value: unk
   });
 }
 
-function setup(t: TestContext, rawConsent: string | null = null, path = '/form2/request-received/') {
+function setup(t: TestContext, rawConsent: string | null = null, path = '/form2/request-received/', referrer = '') {
   const localStorage = new FakeStorage();
   const sessionStorage = new FakeStorage();
   if (rawConsent !== null) localStorage.values.set(CONSENT_KEY, rawConsent);
@@ -72,12 +72,10 @@ function setup(t: TestContext, rawConsent: string | null = null, path = '/form2/
       this.state = state;
     },
   };
-  const fakeWindow: Partial<Omit<Window, 'location' | 'history'>> & Navigation = {
-    localStorage, sessionStorage, location, history,
-  };
   // This DOM records script creation only. It never executes scripts or sends
   // requests, so the production vendor functions remain safe to exercise.
   const fakeDocument = {
+    referrer,
     getElementById(id: string) { return scripts.find((script) => script.id === id) ?? null; },
     createElement(tag: string): FakeScript {
       assert.equal(tag, 'script');
@@ -91,6 +89,9 @@ function setup(t: TestContext, rawConsent: string | null = null, path = '/form2/
         return script;
       },
     },
+  };
+  const fakeWindow: Partial<Omit<Window, 'location' | 'history' | 'document'>> & Navigation = {
+    localStorage, sessionStorage, location, history, document: fakeDocument,
   };
   replaceProperty(t, globalThis, 'window', fakeWindow);
   replaceProperty(t, globalThis, 'document', fakeDocument);
@@ -113,6 +114,63 @@ function assertNoGoogleEffects(harness: ReturnType<typeof setup>) {
 }
 
 describe('confirmation Clarity contract with real consent and vendor functions', () => {
+  for (const referrer of ['https://qa.example/form2/bbq/', 'https://referrer.example/start/']) {
+    it(`allows a clean absolute referrer ${referrer}`, (t) => {
+      const harness = setup(t, JSON.stringify(savedConsent(true)), '/form2/request-received/', referrer);
+
+      const cleanup = connectConfirmationClarity({ consent: harness.consent });
+      t.after(cleanup);
+
+      assert.equal(harness.scripts.length, 1);
+      assert.deepEqual(clarityQueue(harness), [
+        ['consentv2', { ad_Storage: 'denied', analytics_Storage: 'granted' }],
+      ]);
+      assertNoGoogleEffects(harness);
+    });
+  }
+
+  const blockedReferrers = [
+    'https://qa.example/form2/bbq/?utm_source=synthetic-qa',
+    'https://qa.example/form2/bbq/?phone=synthetic-qa&name=synthetic-name',
+    'https://referrer.example/start/#details=synthetic-qa',
+    'not-an-absolute-url',
+  ];
+  for (const referrer of blockedReferrers) {
+    it(`blocks vendors and later consent changes for an unsafe referrer ${referrer}`, (t) => {
+      const harness = setup(t, JSON.stringify(savedConsent(true)), '/form2/request-received/', referrer);
+
+      const cleanup = connectConfirmationClarity({ consent: harness.consent });
+      t.after(cleanup);
+
+      assert.deepEqual(harness.localStorage.operations, []);
+      assert.deepEqual(harness.scripts, []);
+      assert.equal(harness.fakeWindow.clarity, undefined);
+      harness.consent.rejectAll();
+      harness.consent.acceptAll();
+      assert.deepEqual(harness.scripts, []);
+      assert.equal(harness.fakeWindow.clarity, undefined);
+      assert.deepEqual(harness.sessionStorage.operations, []);
+      assertNoGoogleEffects(harness);
+    });
+  }
+
+  it('blocks vendors and later consent changes when the referrer getter throws', (t) => {
+    const harness = setup(t, JSON.stringify(savedConsent(true)));
+    Object.defineProperty(harness.fakeWindow.document, 'referrer', {
+      get() { throw new Error('Referrer access denied'); },
+    });
+
+    const cleanup = connectConfirmationClarity({ consent: harness.consent });
+    t.after(cleanup);
+
+    assert.deepEqual(harness.localStorage.operations, []);
+    assert.deepEqual(harness.scripts, []);
+    harness.consent.acceptAll();
+    assert.deepEqual(harness.scripts, []);
+    assert.equal(harness.fakeWindow.clarity, undefined);
+    assertNoGoogleEffects(harness);
+  });
+
   it('removes an incoming query and fragment before the real vendor function creates a script', (t) => {
     const harness = setup(t, JSON.stringify(savedConsent(true)),
       '/form2/request-received/?phone=synthetic-qa#name=synthetic-name');

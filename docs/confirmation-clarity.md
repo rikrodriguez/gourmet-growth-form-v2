@@ -81,9 +81,16 @@ The existing consent manager does not synchronize preference changes between
 tabs. Script presence and queued consent commands are integration evidence;
 they do not prove that the real SDK recorded or continued a session.
 
-The URL safeguard covers the current document location only; `replaceState`
-cannot rewrite `document.referrer`. The [official Clarity metadata source](https://github.com/microsoft/clarity/blob/master/packages/clarity-js/src/data/metadata.ts)
-reads both `location.href` and `document.referrer`. The mock suite does not
-validate the real SDK's treatment of referrers. Evaluate same-origin legacy
-navigation with a query-bearing referrer before live release; this fix is not
-a claim that all historical URL metadata is sanitized.
+The [official Clarity metadata source](https://github.com/microsoft/clarity/blob/master/packages/clarity-js/src/data/metadata.ts)
+reads both `location.href` and `document.referrer`. Since `replaceState` cannot
+rewrite the latter, the connection also fails closed when the referrer has a
+query, fragment, URL credentials, unsupported protocol, cannot be parsed, or
+cannot be read. Empty referrers and clean absolute HTTP(S) referrers are allowed.
+This conservative rule also omits confirmation recording when a same-origin
+referrer retains ordinary UTM parameters. The page and privacy controls remain
+usable; later consent changes cannot bypass the failed bootstrap.
+
+This safeguard is not a general PII detector for arbitrary URL path segments
+or a claim about actual SDK session recording. The synthetic browser contracts
+include navigation from query-bearing referrers; they still require execution
+in an environment where Chromium can start before live release.

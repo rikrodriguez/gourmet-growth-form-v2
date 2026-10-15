@@ -18,6 +18,7 @@ interface VendorRequest {
   url: string;
   documentPath: string;
   documentUrl: string;
+  documentReferrer: string | null;
 }
 
 interface ApiRequest {
@@ -71,7 +72,10 @@ const test = base.extend<{ isolation: Isolation }>({
       const vendor = /(^|\.)(clarity\.ms|googletagmanager\.com|google-analytics\.com|googleadservices\.com|doubleclick\.net)$/.test(url.hostname);
       if (vendor) {
         const documentUrl = request.frame().url();
-        vendors.push({ url: url.toString(), documentPath: new URL(documentUrl).pathname, documentUrl });
+        const documentReferrer = await request.frame().evaluate(() => {
+          try { return document.referrer; } catch { return null; }
+        });
+        vendors.push({ url: url.toString(), documentPath: new URL(documentUrl).pathname, documentUrl, documentReferrer });
         if (url.hostname === 'www.clarity.ms' && url.pathname.startsWith('/tag/')) {
           if (delayed) await gate;
           await route.fulfill({
@@ -419,6 +423,7 @@ test('direct confirmation strips query and fragment before the first vendor requ
   await expectClarityLoaded(page);
   expect(isolation.vendors).toHaveLength(1);
   expect(isolation.vendors[0].documentUrl).toBe(page.url());
+  expect(isolation.vendors[0].documentReferrer).toBe('');
   for (const request of isolation.vendors) {
     expect(new URL(request.documentUrl).search).toBe('');
     expect(new URL(request.documentUrl).hash).toBe('');
@@ -461,14 +466,113 @@ for (const failure of ['throw', 'noop'] as const) {
   });
 }
 
-test('retired thank-you route redirects without vendors in the intermediate document', async ({ page, isolation }) => {
+async function openReferrerFixture(page: Page, query = '') {
+  // Use a real same-origin document and navigation so the browser, rather than
+  // a test-defined getter, supplies document.referrer including any query.
+  await page.route('**/form2/clarity-referrer-fixture/**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      headers: { 'referrer-policy': 'same-origin' },
+      body: '<!doctype html><html><head><title>Local referrer fixture</title></head><body><a href="/form2/request-received/">Open confirmation</a></body></html>',
+    });
+  });
+  await page.goto(`/form2/clarity-referrer-fixture/${query}`);
+  const sourceUrl = page.url();
+  await page.getByRole('link', { name: 'Open confirmation' }).click();
+  await expect(page).toHaveURL(new RegExp(`${CONFIRMATION_PATH}$`));
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Thank you');
+  await expect(page.getByRole('button', { name: 'Privacy choices' })).toBeVisible();
+  expect(await page.evaluate(() => document.referrer)).toBe(sourceUrl);
+  return sourceUrl;
+}
+
+async function expectReferrerBlocked(page: Page, isolation: Isolation) {
+  await expect(page.locator('#gourmet-growth-clarity')).toHaveCount(0);
+  expect(isolation.vendors).toEqual([]);
+  expect(await queue(page)).toEqual([]);
+  // Changing preferences must remain functional without reconnecting a vendor
+  // to a document whose immutable referrer did not pass the privacy gate.
+  await chooseAnalytics(page, false);
+  await chooseAnalytics(page, true);
+  expect(await page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? '{}').analytics_storage, CONSENT_KEY)).toBe('granted');
+  await expect(page.locator('#gourmet-growth-clarity')).toHaveCount(0);
+  expect(isolation.vendors).toEqual([]);
+  expect(await queue(page)).toEqual([]);
+  await expectClarityOnly(page, isolation);
+  expect(isolation.api).toEqual([]);
+}
+
+for (const example of [
+  { name: 'synthetic personal data', query: `?first_name=${encodeURIComponent(SYNTHETIC_NAME)}&phone=${SYNTHETIC_PHONE}` },
+  { name: 'UTM attribution', query: '?utm_source=synthetic&utm_campaign=confirmation-qa' },
+]) {
+  test(`real same-origin referrer with ${example.name} keeps Clarity disconnected`, async ({ page, isolation }) => {
+    await seed(page, { rawConsent: JSON.stringify(consent(true)) });
+    const sourceUrl = await openReferrerFixture(page, example.query);
+    expect(new URL(sourceUrl).search).toBe(example.query);
+    expect(new URL(page.url()).search).toBe('');
+    expect(new URL(page.url()).hash).toBe('');
+    await expectReferrerBlocked(page, isolation);
+    expect(await page.evaluate(() => document.referrer)).toBe(sourceUrl);
+  });
+}
+
+test('clean same-origin referrer allows Clarity and is recorded with the clean document URL', async ({ page, isolation }) => {
   await seed(page, { rawConsent: JSON.stringify(consent(true)) });
-  await page.goto('/form2/thank-you/?first_name=SyntheticLegacyName');
+  const sourceUrl = await openReferrerFixture(page);
+  await expectClarityLoaded(page);
+  expect(isolation.vendors).toHaveLength(1);
+  expect(isolation.vendors[0]).toMatchObject({ documentUrl: page.url(), documentReferrer: sourceUrl });
+  expect(new URL(sourceUrl).search).toBe('');
+  expect(new URL(sourceUrl).hash).toBe('');
+  expect(await queue(page)).toEqual([['consentv2', { ad_Storage: 'denied', analytics_Storage: 'granted' }]]);
+  await expectClarityOnly(page, isolation);
+  expect(isolation.api).toEqual([]);
+});
+
+for (const example of [
+  { name: 'fragment-bearing', value: 'https://example.test/source/#synthetic-private-fragment' },
+  { name: 'malformed', value: 'http://[invalid-synthetic-referrer' },
+  { name: 'non-HTTP', value: 'data:text/plain,synthetic-referrer' },
+  { name: 'inaccessible', value: null },
+]) {
+  test(`${example.name} document.referrer fails closed without blocking privacy choices`, async ({ page, isolation }) => {
+    await seed(page, { rawConsent: JSON.stringify(consent(true)) });
+    // Real browser referrers strip fragments and cannot normally be malformed;
+    // use a getter only for these defensive failure contracts.
+    await page.addInitScript((value) => {
+      Object.defineProperty(document, 'referrer', {
+        configurable: true,
+        get: () => {
+          if (value === null) throw new DOMException('Referrer is unavailable for this test', 'SecurityError');
+          return value;
+        },
+      });
+    }, example.value);
+    await openConfirmation(page);
+    await expectReferrerBlocked(page, isolation);
+  });
+}
+
+test('retired thank-you route with a query leaves a real unsafe referrer and never starts vendors', async ({ page, isolation }) => {
+  await seed(page, { rawConsent: JSON.stringify(consent(true)) });
+  const legacyPath = '/form2/thank-you/?first_name=SyntheticLegacyName';
+  await page.goto(legacyPath);
+  await expect(page).toHaveURL(new RegExp(`${CONFIRMATION_PATH}$`));
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Thank you');
+  expect(await page.evaluate(() => document.referrer)).toBe(new URL(legacyPath, page.url()).toString());
+  await expectReferrerBlocked(page, isolation);
+});
+
+test('clean retired thank-you route redirects without vendors in the intermediate document', async ({ page, isolation }) => {
+  await seed(page, { rawConsent: JSON.stringify(consent(true)) });
+  await page.goto('/form2/thank-you/');
   await expect(page).toHaveURL(new RegExp(`${CONFIRMATION_PATH}$`));
   await expectClarityLoaded(page);
   expect(isolation.vendors.filter((request) => request.documentPath === '/form2/thank-you/')).toEqual([]);
   expect(clarityRequests(isolation, CONFIRMATION_PATH)).toHaveLength(1);
-  expect(JSON.stringify(await queue(page))).not.toContain('SyntheticLegacyName');
+  expect(isolation.vendors[0].documentReferrer).toBe(new URL('/form2/thank-you/', page.url()).toString());
   await expectClarityOnly(page, isolation);
 });
 

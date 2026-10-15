@@ -5,7 +5,7 @@ import { prepareConfirmationUrl } from '../../src/measurement/confirmation-clari
 type Navigation = NonNullable<Parameters<typeof prepareConfirmationUrl>[0]>;
 type ReplaceCall = { state: unknown; unused: string; url: string | URL | null | undefined };
 
-function navigationFixture(pathname = '/form2/request-received/', search = '', hash = '') {
+function navigationFixture(pathname = '/form2/request-received/', search = '', hash = '', referrer = '') {
   const calls: ReplaceCall[] = [];
   const location: Navigation['location'] = { pathname, search, hash };
   const state = { syntheticNavigation: { value: 'preserve-me' } };
@@ -20,11 +20,100 @@ function navigationFixture(pathname = '/form2/request-received/', search = '', h
       this.state = nextState;
     },
   };
-  const navigation: Navigation = { location, history };
-  return { navigation, location, history, state, calls };
+  const document = { referrer };
+  const navigation: Navigation = { location, history, document };
+  return { navigation, location, history, document, state, calls };
 }
 
 describe('confirmation URL privacy guard', () => {
+  for (const referrer of [
+    '',
+    'https://qa.example/form2/bbq/',
+    'http://qa.example/form2/bbq/',
+    'https://other.example/start/',
+    'http://other.example/start/',
+  ]) {
+    it(`accepts ${referrer ? `a clean absolute HTTP(S) referrer ${referrer}` : 'an empty referrer'}`, () => {
+      const fixture = navigationFixture('/form2/request-received/', '', '', referrer);
+
+      assert.equal(prepareConfirmationUrl(fixture.navigation), true);
+      assert.deepEqual(fixture.calls, []);
+      assert.equal(fixture.document.referrer, referrer);
+    });
+  }
+
+  const blockedReferrers = [
+    'https://qa.example/form2/bbq/?utm_source=synthetic-qa',
+    'https://qa.example/form2/bbq/?phone=synthetic-qa&name=synthetic-name',
+    'https://other.example/start/?id=synthetic-id',
+    'https://qa.example/form2/bbq/#details=synthetic-qa',
+    'https://other.example/start/#details=synthetic-qa',
+    'not-a-url',
+    '/form2/bbq/',
+    '//other.example/start/',
+    'https://',
+    'ftp://other.example/start/',
+    'javascript:void(0)',
+    'data:text/plain,synthetic-qa',
+    'blob:https://qa.example/synthetic-id',
+    'https://synthetic-user@qa.example/form2/bbq/',
+    'https://:synthetic-password@qa.example/form2/bbq/',
+    'https://synthetic-user:synthetic-password@qa.example/form2/bbq/',
+  ];
+  for (const referrer of blockedReferrers) {
+    it(`fails closed for an unsafe or invalid referrer ${referrer}`, () => {
+      const fixture = navigationFixture('/form2/request-received/', '', '', referrer);
+
+      assert.equal(prepareConfirmationUrl(fixture.navigation), false);
+      assert.deepEqual(fixture.calls, []);
+      assert.equal(fixture.document.referrer, referrer);
+    });
+  }
+
+  const invalidReferrerTypes: [string, unknown][] = [
+    ['null', null],
+    ['undefined', undefined],
+    ['a number', 42],
+    ['an object with a URL-shaped string conversion', { toString: () => 'https://qa.example/form2/bbq/' }],
+  ];
+  for (const [label, value] of invalidReferrerTypes) {
+    it(`fails closed when the referrer is ${label}`, () => {
+      const fixture = navigationFixture();
+      Object.defineProperty(fixture.document, 'referrer', { value });
+
+      assert.equal(prepareConfirmationUrl(fixture.navigation), false);
+      assert.deepEqual(fixture.calls, []);
+    });
+  }
+
+  it('cleans the current query and fragment even when the immutable referrer blocks Clarity', () => {
+    const fixture = navigationFixture('/form2/request-received/', '?id=synthetic-qa', '#details=synthetic-qa',
+      'https://qa.example/form2/bbq/?phone=synthetic-qa');
+
+    assert.equal(prepareConfirmationUrl(fixture.navigation), false);
+    assert.deepEqual(fixture.location, { pathname: '/form2/request-received/', search: '', hash: '' });
+    assert.deepEqual(fixture.calls, [{ state: fixture.state, unused: '', url: '/form2/request-received/' }]);
+    assert.equal(fixture.document.referrer, 'https://qa.example/form2/bbq/?phone=synthetic-qa');
+  });
+
+  it('fails closed when the document getter throws', () => {
+    const fixture = navigationFixture();
+    Object.defineProperty(fixture.navigation, 'document', {
+      get() { throw new Error('Document access denied'); },
+    });
+
+    assert.equal(prepareConfirmationUrl(fixture.navigation), false);
+  });
+
+  it('fails closed when the referrer getter throws', () => {
+    const fixture = navigationFixture();
+    Object.defineProperty(fixture.document, 'referrer', {
+      get() { throw new Error('Referrer access denied'); },
+    });
+
+    assert.equal(prepareConfirmationUrl(fixture.navigation), false);
+  });
+
   for (const pathname of ['/form2/request-received/', '/form2/request-received']) {
     it(`accepts the clean confirmation path ${pathname} without replacing history`, () => {
       const fixture = navigationFixture(pathname);
