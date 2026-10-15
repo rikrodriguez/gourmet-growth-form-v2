@@ -18,13 +18,15 @@ const validRevision = (value: number | null) => value === null || Number.isSafeI
 export class PostgresCanonicalBridgeStore implements CanonicalBridgeStore {
   private readonly schema: string;
   private readonly sources: readonly BridgeSourcePolicy[];
-  constructor(private readonly pool: Pool, options: { sources: readonly BridgeSourcePolicy[]; schema?: string }) {
+  private readonly transaction?: PoolClient;
+  constructor(private readonly pool: Pool, options: { sources: readonly BridgeSourcePolicy[]; schema?: string; transaction?: PoolClient }) {
     this.schema = options.schema ?? 'office_canonical_bridge';
     if (!/^(office_canonical_bridge|bridge_test_[a-f0-9]{32})$/.test(this.schema)) throw unavailable();
     // Reuse the core's strict source-registry validation before detaching it.
     // The synthetic schema override is confined to isolated loopback tests.
     new CanonicalBridge({ read: async () => null, compareAndSet: async () => false }, { sources: options.sources });
     this.sources = JSON.parse(JSON.stringify(options.sources)) as BridgeSourcePolicy[];
+    this.transaction = options.transaction;
   }
 
   private selectSql(lock = false): string {
@@ -54,7 +56,8 @@ export class PostgresCanonicalBridgeStore implements CanonicalBridgeStore {
   async read(key: string): Promise<{ revision: number; value: unknown } | null> {
     if (!validKey(key)) throw unavailable();
     try {
-      const result = await this.pool.query<DatabaseRow>(this.selectSql(), [key]);
+      // The composing transaction keeps this row locked through its commit.
+      const result = await (this.transaction ?? this.pool).query<DatabaseRow>(this.selectSql(!!this.transaction), [key]);
       if (result.rows.length === 0) return null;
       if (result.rows.length !== 1) throw invalid();
       const value = await this.validateRow(key, result.rows[0]);
@@ -69,8 +72,8 @@ export class PostgresCanonicalBridgeStore implements CanonicalBridgeStore {
     const candidate = await validateCanonicalBridgeStoredValue(key, value, { sources: this.sources });
     let client: PoolClient | undefined;
     try {
-      client = await this.pool.connect();
-      await client.query('BEGIN');
+      client = this.transaction ?? await this.pool.connect();
+      if (!this.transaction) await client.query('BEGIN');
       await client.query("SET LOCAL lock_timeout = '5s'");
       // Serialize the absent-row case as well as updates, across independent
       // pools. Hash collisions only serialize unrelated keys; they cannot join.
@@ -79,7 +82,7 @@ export class PostgresCanonicalBridgeStore implements CanonicalBridgeStore {
       if (stored.rows.length > 1) throw invalid();
       const current = stored.rows[0];
       if ((current?.revision ?? null) !== expectedRevision) {
-        await client.query('ROLLBACK');
+        if (!this.transaction) await client.query('ROLLBACK');
         return false;
       }
       if (current) {
@@ -92,12 +95,12 @@ export class PostgresCanonicalBridgeStore implements CanonicalBridgeStore {
       }
       // The SQL trigger appends scope/revision/digest/time and exact event to
       // immutable audit in this transaction. Audit failure rolls back the CAS.
-      await client.query('COMMIT');
+      if (!this.transaction) await client.query('COMMIT');
       return true;
     } catch (error) {
-      if (client) { try { await client.query('ROLLBACK'); } catch { /* Keep only the sanitized original failure. */ } }
+      if (client && !this.transaction) { try { await client.query('ROLLBACK'); } catch { /* Keep only the sanitized original failure. */ } }
       throw safeError(error);
-    } finally { client?.release(); }
+    } finally { if (!this.transaction) client?.release(); }
   }
 }
 

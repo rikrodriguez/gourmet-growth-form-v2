@@ -2,6 +2,8 @@
 
 Base verificada: PR2 abierto y en borrador, head `faa7001ef26b8aa8ca0419b191b59c57ffba13ff`. Este corte añade un contrato de documento, un servicio opt-in y un panel de revisión. No añade otro editor ni convierte la propuesta en `QuoteVersion`, tarifas, importes, aprobación comercial o métricas.
 
+El tramo posterior [durable TEST_ONLY](external-proposal-durable-test-only.md) añade una composición transaccional opcional. Los límites de memoria descritos aquí siguen aplicando al servicio y demo originales cuando se usan sin esa composición.
+
 ## Flujo y límites
 
 1. Verificar la identidad existente del fixture y consultar un lead explícito en `LeadLinkHistorySection`.
