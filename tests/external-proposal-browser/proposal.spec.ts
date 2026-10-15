@@ -97,3 +97,26 @@ test('a corrupt hash or a response for another lead is cleared without approval'
   await page.unroute('**/__proposal-fixture', handler); await read(page);
  }
 });
+for (const field of ['intendedRecipient', 'sourceVersion', 'provenance', 'briefDigest', 'bindingDigest']) test(`altered review metadata ${field} is cleared before review or approval`, async ({ page, request }, info) => {
+ await read(page); await associate(page);
+ let original: any; const approvalCommands: unknown[] = [];
+ page.on('request', r => { if (r.url().endsWith('/__proposal-fixture') && r.postDataJSON()?.command?.action === 'approve') approvalCommands.push(r.postDataJSON()); });
+ await page.route('**/__proposal-fixture', async route => {
+  if (route.request().postDataJSON()?.action !== 'proposal-read') { await route.fallback(); return; }
+  const response = await route.fetch(), body = await response.json(); original = structuredClone(body);
+  if (field === 'intendedRecipient') body.snapshot.intendedRecipient = 'shown-to-reviewer@example.test';
+  if (field === 'sourceVersion') body.snapshot.sourceVersion = 'v900';
+  if (field === 'provenance') body.snapshot.provenance.evidenceRef = 'unreviewed-evidence';
+  if (field === 'briefDigest' || field === 'bindingDigest') body.snapshot[field] = '0'.repeat(64);
+  expect(body.snapshot.reviewKey).toBe(original.snapshot.reviewKey);
+  expect(body.snapshot.content).toBe(original.snapshot.content); expect(body.snapshot.sha256).toBe(original.snapshot.sha256);
+  await route.fulfill({ response, json: body });
+ });
+ await panel(page).getByRole('button', { name: 'Consultar propuesta externa', exact: true }).click();
+ await expect(panel(page).getByRole('alert')).toBeVisible(); await expect(panel(page).getByRole('checkbox')).toHaveCount(0);
+ await expect(panel(page).getByRole('button', { name: 'Aprobar documento internamente' })).toHaveCount(0);
+ expect(approvalCommands).toEqual([]);
+ const response = await request.post('/__proposal-fixture', { data: { action: 'proposal-read', target: { leadId: original.leadId, eventId: original.eventId, proposalId: original.proposalId } } });
+ const saved = await response.json(); expect(saved.status).toBe('pending_internal_review'); expect(saved.snapshot.intendedRecipient).toBe('client@example.test');
+ if (field === 'intendedRecipient') await panel(page).screenshot({ path: `test-results/dashboard-visual/${info.project.name}-external-proposal-review-rejected.png` });
+});

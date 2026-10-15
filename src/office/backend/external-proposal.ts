@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { BridgeScope } from '../canonical-bridge-contracts';
 import type { ExternalProposalApproval, ExternalProposalCommand, ExternalProposalSnapshot, ExternalProposalView, ProposalTarget } from '../external-proposal-contracts';
+import { serializeExternalProposalReview } from '../external-proposal-contracts';
 import type { EventQuoteIdentity } from './event-quote-http';
 import type { LeadLinkIdentity } from './lead-link-http';
 import { CanonicalBridge } from './canonical-bridge';
@@ -115,7 +116,7 @@ export class ExternalProposalService {
       content: document.content, sha256: document.content === null ? null : hash(document.content),
       provenance: { ...a.source, observedAt: history.provenance.observedAt, evidenceRef: document.evidenceRef },
       bindingDigest: binding.digest, briefDigest: a.brief.digest, intendedRecipient: a.brief.recipient, associationRevision };
-    return { ...snapshot, reviewKey: digest(snapshot) };
+    return { ...snapshot, reviewKey: hash(serializeExternalProposalReview(snapshot)) };
   }
   private view(a: ProposalAuthority, target: ProposalTarget, record: ProposalRecord | null, live: ExternalProposalSnapshot | null): ExternalProposalView {
     const snapshot = record?.snapshots.at(-1) ?? null;
@@ -150,7 +151,7 @@ export class ExternalProposalService {
       if (record.receipts.length >= 200) fail('LIMIT');
       const { reviewKey: _reviewKey, ...body } = evidence;
       const associated = { ...body, associationRevision: command.action === 'associate' ? record.revision + 1 : record.snapshots.at(-1)?.associationRevision ?? 0 };
-      const live = { ...associated, reviewKey: digest(associated) };
+      const live = { ...associated, reviewKey: hash(serializeExternalProposalReview(associated)) };
       // A new content payload under a used provider version is never accepted as a new revision.
       if (record.snapshots.some(s => s.proposalId === live.proposalId && s.sourceVersion === live.sourceVersion && s.sha256 !== live.sha256)) fail('VERSION_CONFLICT');
       if (command.action === 'associate') record.snapshots.push(live);

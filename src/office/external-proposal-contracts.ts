@@ -7,6 +7,19 @@ export type ExternalProposalSnapshot = ProposalTarget & {
   provenance: { accountId: string; boardId: string; itemId: string; observedAt: string; evidenceRef: string };
   bindingDigest: string; briefDigest: string; intendedRecipient: string; associationRevision: number; reviewKey: string;
 };
+/** Canonical review bytes: fixed field order, UTF-8 JSON, no whitespace. reviewKey
+ * is SHA-256 of this complete payload, independently of transport key order.
+ * Both the trusted service and browser must use this exact serialization. */
+export function serializeExternalProposalReview(snapshot: Omit<ExternalProposalSnapshot, 'reviewKey'>): string {
+  return JSON.stringify({
+    leadId: snapshot.leadId, eventId: snapshot.eventId, proposalId: snapshot.proposalId,
+    provider: snapshot.provider, sourceVersion: snapshot.sourceVersion, content: snapshot.content, sha256: snapshot.sha256,
+    provenance: { accountId: snapshot.provenance.accountId, boardId: snapshot.provenance.boardId, itemId: snapshot.provenance.itemId,
+      observedAt: snapshot.provenance.observedAt, evidenceRef: snapshot.provenance.evidenceRef },
+    bindingDigest: snapshot.bindingDigest, briefDigest: snapshot.briefDigest,
+    intendedRecipient: snapshot.intendedRecipient, associationRevision: snapshot.associationRevision,
+  });
+}
 export type ExternalProposalApproval = { reviewKey: string; actorId: string; atMs: number; status: 'approved_internal_unsent' };
 export type ExternalProposalView = ProposalTarget & {
   identityKey: string; scope: QuoteScope; revision: number; expiresAtMs: number;

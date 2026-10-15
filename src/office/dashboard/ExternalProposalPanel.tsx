@@ -1,25 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { QuoteScope } from '../backend/event-quote-contracts';
 import type { ExternalProposalClient, ExternalProposalCommand, ExternalProposalView, ProposalTarget } from '../external-proposal-contracts';
+import { verifyExternalProposalResponse } from '../external-proposal-response';
 
 type Props = { client: ExternalProposalClient; target: ProposalTarget; identityKey: string; scope: QuoteScope };
 /** Explicit manual read only. No URL, iframe, preview, editor or background provider request. */
 export function ExternalProposalPanel(props: Props) {
   return <BoundPanel key={JSON.stringify([props.identityKey, props.scope, props.target])} {...props} />;
-}
-async function verified(view: ExternalProposalView, props: Props): Promise<boolean> {
-  if (view.identityKey !== props.identityKey || view.scope.organizationId !== props.scope.organizationId
-    || view.scope.workspaceId !== props.scope.workspaceId || view.scope.mode !== props.scope.mode || view.scope.mode !== 'test'
-    || view.externalEffectsEnabled !== false || view.expiresAtMs <= Date.now()
-    || view.leadId !== props.target.leadId || view.eventId !== props.target.eventId || view.proposalId !== props.target.proposalId) throw new Error('Invalid context');
-  const s = view.snapshot;
-  if (!s) return false;
-  if (s.leadId !== view.leadId || s.eventId !== view.eventId || s.proposalId !== view.proposalId) throw new Error('Invalid document');
-  if (s.content === null && s.sha256 === null) return false;
-  if (typeof s.content !== 'string' || typeof s.sha256 !== 'string') throw new Error('Invalid document');
-  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s.content));
-  if (Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, '0')).join('') !== s.sha256) throw new Error('Invalid hash');
-  return true;
 }
 function BoundPanel(props: Props) {
   const { client, target } = props;
@@ -46,9 +33,9 @@ function BoundPanel(props: Props) {
     try {
       const result = command ? await client.execute(target, command, controller.signal) : await client.read(target, controller.signal);
       if (controller.signal.aborted) return;
-      const valid = await verified(result, props);
+      const verified = await verifyExternalProposalResponse(result, props);
       if (controller.signal.aborted || request.current !== controller) return;
-      setView(result); setHashVerified(valid);
+      setView(verified.view); setHashVerified(verified.contentVerified);
     } catch { if (!controller.signal.aborted) { close(); setError(true); } }
     finally { if (request.current === controller) { locked.current = false; setBusy(false); } }
   }
