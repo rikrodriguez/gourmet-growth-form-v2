@@ -1,3 +1,842 @@
+--- a/bin/migrate.php
++++ b/bin/migrate.php
+@@ -8,7 +8,7 @@
+ [$root, $config, $logger] = require __DIR__ . '/bootstrap.php';
+
+ try {
+-    $ran = (new Migrator(Connection::open($config), $root . '/migrations/sqlite'))->migrate();
++    $ran = (new Migrator(Connection::open($config), $config->migrationDirectory()))->migrate();
+     $logger->log('info', 'database.migrations_completed', ['count' => count($ran)]);
+     echo $ran === [] ? "Database is up to date.\n" : "Applied migrations:\n- " . implode("\n- ", $ran) . "\n";
+     exit(0);
+--- a/public/index.php
++++ b/public/index.php
+@@ -42,13 +42,18 @@
+ ini_set('display_errors', '0');
+ error_reporting(E_ALL);
+
+-// This small private ledger is deployed without a shell dependency.  Apply only
+-// the versioned SQLite migrations under an exclusive lock before serving a
+-// request, so a newly deployed instance cannot run against a partial schema.
++// Preserve the SQLite bootstrap. An explicitly selected MySQL ledger must
++// already have its reviewed migrations applied through the CLI; HTTP performs
++// read-only schema verification and never applies remote DDL.
+ try {
+-    (new Migrator(Connection::open($config), $root . '/migrations/sqlite'))->migrate();
++    $migrator = new Migrator(Connection::open($config), $config->migrationDirectory());
++    if ($config->ledgerDriver === 'mysql') {
++        $migrator->assertCurrent();
++    } else {
++        $migrator->migrate();
++    }
+ } catch (\Throwable $exception) {
+-    $logger->log('error', 'sqlite.bootstrap_failed', ['exception_class' => $exception::class]);
++    $logger->log('error', $config->ledgerDriver === 'sqlite' ? 'sqlite.bootstrap_failed' : 'database.bootstrap_failed', ['exception_class' => $exception::class]);
+     http_response_code(503);
+     header('Content-Type: application/json; charset=utf-8');
+     echo '{"status":"degraded"}';
+--- a/src/Auth/AdminBootstrap.php
++++ b/src/Auth/AdminBootstrap.php
+@@ -39,11 +39,29 @@
+             return false;
+         }
+
+-        $this->pdo->exec('BEGIN IMMEDIATE');
+-        $transactionOpen = true;
++        $mysql = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
++        $lockName = null;
++        $transactionOpen = false;
+         try {
++            if ($mysql) {
++                $database = $this->pdo->query('SELECT DATABASE()')->fetchColumn();
++                if (!is_string($database) || $database === '') { return false; }
++                // A single existing row is not available before bootstrap.
++                // Serialize all bootstrap tokens for this database, including
++                // an empty admin table, without relying on gap-lock isolation.
++                $candidate = 'gourmet-admin-bootstrap:' . substr(hash('sha256', $database), 0, 40);
++                $lock = $this->pdo->prepare('SELECT GET_LOCK(:lock_name, 5)');
++                $lock->execute(['lock_name' => $candidate]);
++                if ((int) $lock->fetchColumn() !== 1) { return false; }
++                $lockName = $candidate;
++                $this->pdo->beginTransaction();
++            } else {
++                $this->pdo->exec('BEGIN IMMEDIATE');
++            }
++            $transactionOpen = true;
+             if ((int) $this->pdo->query('SELECT COUNT(*) FROM admin_users')->fetchColumn() !== 0) {
+-                $this->pdo->exec('ROLLBACK');
++                $mysql ? $this->pdo->rollBack() : $this->pdo->exec('ROLLBACK');
++                $transactionOpen = false;
+                 return false;
+             }
+
+@@ -53,7 +71,8 @@
+             $lookup->execute(['public_id' => $publicId, 'now' => $this->now()]);
+             $storedHash = $lookup->fetchColumn();
+             if (!is_string($storedHash) || !hash_equals($storedHash, Secrets::hashToken($rawToken))) {
+-                $this->pdo->exec('ROLLBACK');
++                $mysql ? $this->pdo->rollBack() : $this->pdo->exec('ROLLBACK');
++                $transactionOpen = false;
+                 return false;
+             }
+
+@@ -62,7 +81,8 @@
+             );
+             $consume->execute(['public_id' => $publicId, 'now' => $this->now()]);
+             if ($consume->rowCount() !== 1) {
+-                $this->pdo->exec('ROLLBACK');
++                $mysql ? $this->pdo->rollBack() : $this->pdo->exec('ROLLBACK');
++                $transactionOpen = false;
+                 return false;
+             }
+
+@@ -76,14 +96,20 @@
+                 'password_hash' => Secrets::passwordHash($password),
+             ]);
+
+-            $this->pdo->exec('COMMIT');
++            $mysql ? $this->pdo->commit() : $this->pdo->exec('COMMIT');
+             $transactionOpen = false;
+             return true;
+         } catch (\Throwable) {
+             if ($transactionOpen) {
+-                $this->pdo->exec('ROLLBACK');
++                if (!$mysql) { $this->pdo->exec('ROLLBACK'); }
++                elseif ($this->pdo->inTransaction()) { $this->pdo->rollBack(); }
+             }
+             return false;
++        } finally {
++            if ($lockName !== null) {
++                $unlock = $this->pdo->prepare('SELECT RELEASE_LOCK(:lock_name)');
++                $unlock->execute(['lock_name' => $lockName]);
++            }
+         }
+     }
+
+--- a/src/Database/Connection.php
++++ b/src/Database/Connection.php
+@@ -11,6 +11,12 @@
+ {
+     public static function open(Config $config): PDO
+     {
++        if ($config->ledgerDriver === 'mysql') {
++            return self::openMysql($config);
++        }
++        if ($config->ledgerDriver !== 'sqlite') {
++            throw new \RuntimeException('Unsupported payments ledger driver.');
++        }
+         if (!$config->hasLedgerConfiguration()) {
+             throw new \RuntimeException('SQLite ledger configuration is incomplete.');
+         }
+@@ -34,4 +40,40 @@
+
+         return $pdo;
+     }
++
++    private static function openMysql(Config $config): PDO
++    {
++        if (!$config->hasLedgerConfiguration()) {
++            throw new \RuntimeException('MySQL ledger configuration is incomplete.');
++        }
++        if (!in_array('mysql', PDO::getAvailableDrivers(), true)) {
++            throw new \RuntimeException('PDO MySQL is unavailable.');
++        }
++        $pdo = new PDO('mysql:host=' . $config->mysqlHost . ';port=' . $config->mysqlPort
++            . ';dbname=' . $config->mysqlDatabase . ';charset=utf8mb4', $config->mysqlUser, $config->mysqlPassword, [
++                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
++                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
++                PDO::ATTR_EMULATE_PREPARES => false,
++                PDO::ATTR_STRINGIFY_FETCHES => false,
++                PDO::ATTR_TIMEOUT => 5,
++                PDO::MYSQL_ATTR_MULTI_STATEMENTS => false,
++            ]);
++        $version = $pdo->query('SELECT VERSION()')->fetchColumn();
++        $mariaDb = is_string($version) && str_contains($version, 'MariaDB');
++        if (!is_string($version) || ($mariaDb
++            ? preg_match('/\A(?:5\.5\.5-)?11\.4\.[0-9]+(?:[-+].*)?\z/', $version) !== 1
++            : preg_match('/\A8\.4\.[0-9]+(?:[-+].*)?\z/', $version) !== 1)) {
++            throw new \RuntimeException('Unsupported payments ledger engine version.');
++        }
++        $pdo->exec("SET NAMES utf8mb4 COLLATE utf8mb4_bin");
++        $pdo->exec("SET SESSION time_zone = '+00:00'");
++        $pdo->exec("SET SESSION sql_mode = 'STRICT_ALL_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION,ONLY_FULL_GROUP_BY'");
++        $settings = $pdo->query('SELECT @@session.time_zone AS ledger_timezone, @@session.sql_mode AS ledger_sql_mode, @@character_set_connection AS ledger_charset, @@collation_connection AS ledger_collation')->fetch();
++        if (!is_array($settings) || $settings['ledger_timezone'] !== '+00:00' || $settings['ledger_charset'] !== 'utf8mb4'
++            || $settings['ledger_collation'] !== 'utf8mb4_bin'
++            || !in_array('STRICT_ALL_TABLES', explode(',', (string) $settings['ledger_sql_mode']), true)) {
++            throw new \RuntimeException('Required payments ledger session settings are unavailable.');
++        }
++        return $pdo;
++    }
+ }
+--- a/src/Database/EmailOutbox.php
++++ b/src/Database/EmailOutbox.php
+@@ -91,9 +91,10 @@
+     public function due(\DateTimeImmutable $now, int $limit = 25): array
+     {
+         $statement = $this->pdo->prepare(
+-            "SELECT * FROM email_outbox WHERE status = 'PENDING' AND available_at <= :now AND (locked_until IS NULL OR locked_until <= :now) ORDER BY id ASC LIMIT " . max(1, min(100, $limit))
++            "SELECT * FROM email_outbox WHERE status = 'PENDING' AND available_at <= :available_cutoff AND (locked_until IS NULL OR locked_until <= :lease_cutoff) ORDER BY id ASC LIMIT " . max(1, min(100, $limit))
+         );
+-        $statement->execute(['now' => $now->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u')]);
++        $at = $now->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
++        $statement->execute(['available_cutoff' => $at, 'lease_cutoff' => $at]);
+         return $statement->fetchAll();
+     }
+ }
+--- a/src/Database/Migrator.php
++++ b/src/Database/Migrator.php
+@@ -15,6 +15,9 @@
+     /** @return list<string> */
+     public function migrate(): array
+     {
++        if ($this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
++            return $this->migrateMysql();
++        }
+         $this->pdo->exec('CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
+         $lockPath = dirname($this->directory) . '/.sqlite-migrations.lock';
+         $lock = fopen($lockPath, 'c');
+@@ -39,7 +42,9 @@
+                     throw new \RuntimeException('Unable to read migration: ' . $version);
+                 }
+
+-                if (str_contains($sql, '-- migrate:non-transactional')) {
++                if (str_contains($sql, '-- migrate:atomic-rebuild')) {
++                    $this->runAtomicRebuildMigration($sql, $version);
++                } elseif (str_contains($sql, '-- migrate:non-transactional')) {
+                     $this->runNonTransactionalMigration($sql, $version);
+                 } else {
+                     $this->pdo->beginTransaction();
+@@ -64,10 +69,253 @@
+         }
+     }
+
++    /** HTTP readiness check: never creates tables, runs DDL or adopts history. */
++    public function assertCurrent(): void
++    {
++        if ($this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'mysql') {
++            throw new \RuntimeException('Read-only migration readiness requires the explicitly selected MySQL driver.');
++        }
++        $lock = $this->mysqlLockName();
++        $checkLock = $this->pdo->prepare('SELECT IS_USED_LOCK(:name)');
++        $checkLock->execute(['name' => $lock]);
++        if ($checkLock->fetchColumn() !== null) {
++            throw new \RuntimeException('MYSQL_MIGRATION_IN_PROGRESS');
++        }
++        $files = $this->mysqlFiles();
++        $applied = $this->pdo->query('SELECT version FROM schema_migrations')->fetchAll(PDO::FETCH_COLUMN);
++        if ($this->pdo->query("SELECT version FROM schema_migration_attempts WHERE BINARY state <> BINARY 'APPLIED' LIMIT 1")->fetchColumn() !== false) {
++            throw new \RuntimeException('MYSQL_PARTIAL_MIGRATION_REQUIRES_RECOVERY');
++        }
++        if (count($applied) !== count($files) || array_diff($applied, array_keys($files)) !== []) {
++            throw new \RuntimeException('MYSQL_SCHEMA_MIGRATION_REQUIRED');
++        }
++        $this->assertMysqlAttemptVersions($applied);
++        foreach ($files as $version => $sql) {
++            $this->assertMysqlAttempt($version, $sql);
++        }
++        $this->assertMysqlInnoDb();
++        $checkLock->execute(['name' => $lock]);
++        if ($checkLock->fetchColumn() !== null) {
++            throw new \RuntimeException('MYSQL_MIGRATION_IN_PROGRESS');
++        }
++    }
++
++    private function mysqlLockName(): string
++    {
++        $database = $this->pdo->query('SELECT DATABASE()')->fetchColumn();
++        if (!is_string($database) || $database === '') {
++            throw new \RuntimeException('MYSQL_DATABASE_REQUIRED');
++        }
++        return 'gourmet:migrate:' . substr(hash('sha256', $database), 0, 47);
++    }
++
++    /** @return array<string,string> */
++    private function mysqlFiles(): array
++    {
++        $files = glob($this->directory . '/*.sql') ?: [];
++        sort($files, SORT_STRING);
++        if ($files === []) {
++            throw new \RuntimeException('MYSQL_MIGRATIONS_REQUIRED');
++        }
++        $result = [];
++        foreach ($files as $file) {
++            $name = basename($file);
++            if (preg_match('/^\d{4}_[A-Za-z0-9_]+\.sql$/D', $name) !== 1) {
++                throw new \RuntimeException('MYSQL_MIGRATION_NAME_INVALID');
++            }
++            $sql = file_get_contents($file);
++            if (!is_string($sql) || $sql === '' || str_contains($sql, '-- migrate:atomic-rebuild')
++                || str_contains($sql, '-- migrate:non-transactional')) {
++                throw new \RuntimeException('MYSQL_MIGRATION_DIALECT_INVALID');
++            }
++            $result[$name] = $sql;
++        }
++        return $result;
++    }
++
++    private function assertMysqlAttempt(string $version, string $sql): void
++    {
++        $statement = $this->pdo->prepare('SELECT checksum, state FROM schema_migration_attempts WHERE version = :version');
++        $statement->execute(['version' => $version]);
++        $attempt = $statement->fetch();
++        if (!is_array($attempt)) {
++            // An old version number alone does not attest to the recovered SQL.
++            throw new \RuntimeException('MYSQL_LEGACY_MIGRATION_ATTESTATION_REQUIRED');
++        }
++        if (!is_string($attempt['checksum']) || !hash_equals(hash('sha256', $sql, true), $attempt['checksum'])) {
++            throw new \RuntimeException('MYSQL_MIGRATION_CHECKSUM_MISMATCH');
++        }
++        if ($attempt['state'] !== 'APPLIED') {
++            throw new \RuntimeException('MYSQL_PARTIAL_MIGRATION_REQUIRES_RECOVERY');
++        }
++    }
++
++    /** APPLIED and the version receipt commit together; an orphan is drift. */
++    private function assertMysqlAttemptVersions(array $applied): void
++    {
++        $attempts = $this->pdo->query('SELECT version FROM schema_migration_attempts')->fetchAll(PDO::FETCH_COLUMN);
++        if (array_diff($attempts, $applied) !== []) {
++            throw new \RuntimeException('MYSQL_SCHEMA_VERSION_DRIFT');
++        }
++    }
++
++    private function assertMysqlInnoDb(): void
++    {
++        $tables = $this->pdo->query("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'")->fetchAll(PDO::FETCH_COLUMN);
++        if ($tables === [] || array_filter($tables, static fn (mixed $engine): bool => $engine !== 'InnoDB') !== []) {
++            throw new \RuntimeException('MYSQL_INNODB_REQUIRED');
++        }
++    }
++
++    /** DDL commits implicitly on both supported MySQL-family engines. A durable
++     * STARTED marker survives failure/crash, so a retry cannot silently execute
++     * or attest a partly applied migration. Recovery is an explicit operator task.
++     * @return list<string>
++     */
++    private function migrateMysql(): array
++    {
++        if ($this->pdo->inTransaction()) {
++            throw new \RuntimeException('MYSQL_MIGRATION_OUTSIDE_TRANSACTION_REQUIRED');
++        }
++        $files = $this->mysqlFiles();
++        $lockName = $this->mysqlLockName();
++        $lock = $this->pdo->prepare('SELECT GET_LOCK(:name, 5)');
++        $lock->execute(['name' => $lockName]);
++        if ((int) $lock->fetchColumn() !== 1) {
++            throw new \RuntimeException('MYSQL_MIGRATION_LOCK_UNAVAILABLE');
++        }
++        try {
++            $tables = $this->pdo->query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'")->fetchAll(PDO::FETCH_COLUMN);
++            if ($tables !== [] && !in_array('schema_migrations', $tables, true)) {
++                throw new \RuntimeException('MYSQL_UNTRACKED_SCHEMA');
++            }
++            $this->pdo->exec('CREATE TABLE IF NOT EXISTS schema_migrations (version VARCHAR(190) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY, applied_at DATETIME(6) NOT NULL) ENGINE=InnoDB');
++            $this->pdo->exec("CREATE TABLE IF NOT EXISTS schema_migration_attempts (version VARCHAR(190) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY, checksum VARBINARY(32) NOT NULL, state VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, started_at DATETIME(6) NOT NULL, completed_at DATETIME(6) NULL, CHECK (state IN ('STARTED','APPLIED'))) ENGINE=InnoDB");
++            $this->assertMysqlInnoDb();
++            // A failed DDL file may have been removed from the directory.
++            // Durable unfinished history blocks every CLI retry under the
++            // migration lock, independent of the files currently present.
++            if ($this->pdo->query("SELECT version FROM schema_migration_attempts WHERE BINARY state <> BINARY 'APPLIED' LIMIT 1")->fetchColumn() !== false) {
++                throw new \RuntimeException('MYSQL_PARTIAL_MIGRATION_REQUIRES_RECOVERY');
++            }
++            $applied = $this->pdo->query('SELECT version FROM schema_migrations')->fetchAll(PDO::FETCH_COLUMN);
++            if (array_diff($applied, array_keys($files)) !== []) {
++                throw new \RuntimeException('MYSQL_SCHEMA_VERSION_DRIFT');
++            }
++            $this->assertMysqlAttemptVersions($applied);
++            $ran = [];
++            foreach ($files as $version => $sql) {
++                if (in_array($version, $applied, true)) {
++                    $this->assertMysqlAttempt($version, $sql);
++                    continue;
++                }
++                $attempt = $this->pdo->prepare('SELECT version FROM schema_migration_attempts WHERE version = :version');
++                $attempt->execute(['version' => $version]);
++                if ($attempt->fetchColumn() !== false) {
++                    throw new \RuntimeException('MYSQL_PARTIAL_MIGRATION_REQUIRES_RECOVERY');
++                }
++                if ($version === '0004_current_payment_ledger.sql') {
++                    $conflict = $this->pdo->query('SELECT agreement_id FROM payment_consents GROUP BY agreement_id, consent_type HAVING COUNT(*) > 1 LIMIT 1')->fetchColumn();
++                    if ($conflict !== false) {
++                        throw new \RuntimeException('MYSQL_LEGACY_CONSENT_CONFLICT');
++                    }
++                }
++                $start = $this->pdo->prepare("INSERT INTO schema_migration_attempts (version, checksum, state, started_at) VALUES (:version, :checksum, 'STARTED', :at)");
++                $start->bindValue('version', $version);
++                $start->bindValue('checksum', hash('sha256', $sql, true), PDO::PARAM_LOB);
++                $start->bindValue('at', gmdate('Y-m-d H:i:s.u'));
++                $start->execute();
++                foreach ($this->mysqlStatements($sql) as $statement) {
++                    $this->pdo->exec($statement);
++                }
++                $this->assertMysqlInnoDb();
++                $this->pdo->beginTransaction();
++                try {
++                    $this->recordMigration($version);
++                    $done = $this->pdo->prepare("UPDATE schema_migration_attempts SET state = 'APPLIED', completed_at = :at WHERE version = :version AND state = 'STARTED'");
++                    $done->execute(['at' => gmdate('Y-m-d H:i:s.u'), 'version' => $version]);
++                    if ($done->rowCount() !== 1) {
++                        throw new \RuntimeException('MYSQL_MIGRATION_RECEIPT_INVALID');
++                    }
++                    $this->pdo->commit();
++                } catch (\Throwable $exception) {
++                    if ($this->pdo->inTransaction()) { $this->pdo->rollBack(); }
++                    throw $exception;
++                }
++                $ran[] = $version;
++            }
++            return $ran;
++        } finally {
++            $release = $this->pdo->prepare('SELECT RELEASE_LOCK(:name)');
++            $release->execute(['name' => $lockName]);
++        }
++    }
++
++    /** Only trusted, versioned SQL files are read. New compound triggers use an
++     * explicit statement marker; the unchanged original files use normal SQL.
++     * @return list<string>
++     */
++    private function mysqlStatements(string $sql): array
++    {
++        if (str_contains($sql, '-- migrate:explicit-statements')) {
++            $parts = preg_split('/^-- migrate:statement[ \t]*\r?$/m', $sql) ?: [];
++            return array_values(array_filter(array_map('trim', $parts), static fn (string $part): bool => trim(preg_replace('/^--[^\n]*(?:\n|$)/m', '', $part) ?? '') !== ''));
++        }
++        $statements = []; $current = ''; $quote = null; $lineComment = false; $blockComment = false;
++        $length = strlen($sql);
++        for ($i = 0; $i < $length; ++$i) {
++            $char = $sql[$i]; $next = $sql[$i + 1] ?? '';
++            if ($lineComment) { if ($char === "\n") { $lineComment = false; $current .= "\n"; } continue; }
++            if ($blockComment) { if ($char === '*' && $next === '/') { $blockComment = false; ++$i; $current .= ' '; } continue; }
++            if ($quote !== null) {
++                $current .= $char;
++                if ($char === '\\' && $next !== '') { $current .= $next; ++$i; }
++                elseif ($char === $quote) { if ($next === $quote) { $current .= $next; ++$i; } else { $quote = null; } }
++                continue;
++            }
++            if (($char === '-' && $next === '-' && ctype_space($sql[$i + 2] ?? ' ')) || $char === '#') { $lineComment = true; if ($char === '-') { ++$i; } continue; }
++            if ($char === '/' && $next === '*') { $blockComment = true; ++$i; continue; }
++            if ($char === "'" || $char === '"' || $char === '`') { $quote = $char; $current .= $char; continue; }
++            if ($char === ';') { if (trim($current) !== '') { $statements[] = trim($current); } $current = ''; continue; }
++            $current .= $char;
++        }
++        if ($quote !== null || $blockComment) { throw new \RuntimeException('MYSQL_MIGRATION_SQL_INVALID'); }
++        if (trim($current) !== '') { $statements[] = trim($current); }
++        return $statements;
++    }
++
+     private function recordMigration(string $version): void
+     {
+         $statement = $this->pdo->prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (:version, :applied_at)');
+         $statement->execute(['version' => $version, 'applied_at' => gmdate('Y-m-d H:i:s.u')]);
++    }
++
++    /** Disable foreign keys before BEGIN, then atomically rebuild and record.
++     * Legacy migrations keep their original behavior. The versioned draft
++     * migration cannot leave a partially rebuilt ledger after an exception.
++     */
++    private function runAtomicRebuildMigration(string $sql, string $version): void
++    {
++        if ($this->pdo->inTransaction()) {
++            throw new \RuntimeException('Cannot rebuild the ledger inside another transaction.');
++        }
++        try {
++            $this->pdo->exec('PRAGMA foreign_keys = OFF');
++            $this->pdo->beginTransaction();
++            $this->pdo->exec($sql);
++            if ($this->pdo->query('PRAGMA foreign_key_check')->fetchAll() !== []) {
++                throw new \RuntimeException('SQLite foreign-key validation failed during migration.');
++            }
++            $this->recordMigration($version);
++            $this->pdo->commit();
++        } catch (\Throwable $exception) {
++            if ($this->pdo->inTransaction()) {
++                $this->pdo->rollBack();
++            }
++            throw $exception;
++        } finally {
++            $this->pdo->exec('PRAGMA foreign_keys = ON');
++        }
+     }
+
+     private function runNonTransactionalMigration(string $sql, string $version): void
+--- a/src/Database/MondaySyncOutbox.php
++++ b/src/Database/MondaySyncOutbox.php
+@@ -21,13 +21,14 @@
+     /** @param array<string,mixed> $payload */
+     public function enqueue(string $mondayItemId, string $eventType, string $dedupeKey, array $payload): bool
+     {
++        $uuid = Uuid::v4();
+         try {
+             $statement = $this->pdo->prepare(
+                 'INSERT INTO monday_sync_outbox (public_uuid, monday_item_id, event_type, payload_json, dedupe_key, available_at) ' .
+                 'VALUES (:uuid, :monday_item_id, :event_type, :payload_json, :dedupe_key, :available_at)'
+             );
+             $statement->execute([
+-                'uuid' => Uuid::v4(),
++                'uuid' => $uuid,
+                 'monday_item_id' => $mondayItemId,
+                 'event_type' => $eventType,
+                 'payload_json' => json_encode(Redactor::context($payload), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+@@ -36,8 +37,13 @@
+             ]);
+             return true;
+         } catch (PDOException $exception) {
+-            if (str_contains($exception->getMessage(), 'UNIQUE constraint failed')) {
+-                return false;
++            if ((int) ($exception->errorInfo[1] ?? 0) === 1062 || str_contains($exception->getMessage(), 'UNIQUE constraint failed')) {
++                $current = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
++                $existing = $this->pdo->prepare('SELECT 1 FROM monday_sync_outbox WHERE dedupe_key = :dedupe_key LIMIT 1' . $current);
++                $existing->execute(['dedupe_key' => $dedupeKey]);
++                $collision = $this->pdo->prepare('SELECT 1 FROM monday_sync_outbox WHERE public_uuid = :uuid LIMIT 1' . $current);
++                $collision->execute(['uuid' => $uuid]);
++                if ($existing->fetchColumn() !== false && $collision->fetchColumn() === false) { return false; }
+             }
+             throw $exception;
+         }
+--- a/src/Database/PaymentAgreementRepository.php
++++ b/src/Database/PaymentAgreementRepository.php
+@@ -7,6 +7,7 @@
+ use Gourmet\Payments\Domain\PaymentLink;
+ use Gourmet\Payments\Support\Uuid;
+ use PDO;
++use PDOException;
+
+ final readonly class PaymentAgreementRepository
+ {
+@@ -119,7 +120,7 @@
+         $attention = $this->pdo->prepare(
+             "SELECT public_uuid, recipient_name, service_name, status, balance_due_at_utc, balance_timezone " .
+             "FROM payment_agreements WHERE status IN ('PAYMENT_FAILED', 'CANCELLED') " .
+-            "OR (link_revoked_at IS NULL AND link_expires_at IS NOT NULL AND link_expires_at <= :now " .
++            "OR (contract_version = 1 AND public_token_hash IS NOT NULL AND link_revoked_at IS NULL AND link_expires_at IS NOT NULL AND link_expires_at <= :now " .
+             "AND status NOT IN ('RESERVATION_PAID', 'FULLY_PAID')) " .
+             'ORDER BY created_at DESC LIMIT 8'
+         );
+@@ -137,7 +138,7 @@
+     public function agreements(string $search, string $status, string $linkState): array
+     {
+         $search = mb_substr(trim($search), 0, 120);
+-        $allowedStatuses = ['ALL', 'PENDING_RESERVATION', 'AWAITING_RESERVATION', 'RESERVATION_PROCESSING', 'RESERVATION_PAID', 'FULLY_PAID', 'PAYMENT_FAILED', 'CANCELLED'];
++        $allowedStatuses = ['ALL', 'DRAFT_INTERNAL', 'PENDING_RESERVATION', 'AWAITING_RESERVATION', 'RESERVATION_PROCESSING', 'RESERVATION_PAID', 'FULLY_PAID', 'PAYMENT_FAILED', 'CANCELLED'];
+         $allowedLinkStates = ['ALL', 'ACTIVE', 'EXPIRED', 'REVOKED'];
+         if (!in_array($status, $allowedStatuses, true) || !in_array($linkState, $allowedLinkStates, true)) {
+             throw new \DomainException('Invalid agreement filter.');
+@@ -146,8 +147,10 @@
+         $clauses = ['1 = 1'];
+         $parameters = [];
+         if ($search !== '') {
+-            $clauses[] = '(a.recipient_name LIKE :search OR a.recipient_email LIKE :search OR a.service_name LIKE :search OR a.monday_item_id LIKE :search OR a.public_uuid LIKE :search)';
+-            $parameters['search'] = '%' . $search . '%';
++            $clauses[] = '(a.recipient_name LIKE :search_name OR a.recipient_email LIKE :search_email OR a.service_name LIKE :search_service OR a.monday_item_id LIKE :search_monday OR a.public_uuid LIKE :search_uuid)';
++            foreach (['search_name', 'search_email', 'search_service', 'search_monday', 'search_uuid'] as $key) {
++                $parameters[$key] = '%' . $search . '%';
++            }
+         }
+         if ($status !== 'ALL') {
+             $clauses[] = 'a.status = :status';
+@@ -156,17 +159,17 @@
+
+         $now = gmdate('Y-m-d H:i:s.u');
+         if ($linkState === 'ACTIVE') {
+-            $clauses[] = '(a.link_revoked_at IS NULL AND (a.link_expires_at IS NULL OR a.link_expires_at > :now))';
++            $clauses[] = '(a.contract_version = 1 AND a.public_token_hash IS NOT NULL AND a.link_revoked_at IS NULL AND (a.link_expires_at IS NULL OR a.link_expires_at > :now))';
+             $parameters['now'] = $now;
+         } elseif ($linkState === 'EXPIRED') {
+-            $clauses[] = '(a.link_revoked_at IS NULL AND a.link_expires_at IS NOT NULL AND a.link_expires_at <= :now)';
++            $clauses[] = '(a.contract_version = 1 AND a.public_token_hash IS NOT NULL AND a.link_revoked_at IS NULL AND a.link_expires_at IS NOT NULL AND a.link_expires_at <= :now)';
+             $parameters['now'] = $now;
+         } elseif ($linkState === 'REVOKED') {
+             $clauses[] = 'a.link_revoked_at IS NOT NULL';
+         }
+
+         $statement = $this->pdo->prepare(
+-            'SELECT a.public_uuid, a.recipient_name, a.service_name, a.total_cents, a.balance_cents, a.balance_due_at_utc, a.balance_timezone, a.status, a.link_expires_at, a.link_revoked_at, a.created_at ' .
++            'SELECT a.public_uuid, a.recipient_name, a.service_name, a.total_cents, a.balance_cents, a.balance_due_at_utc, a.balance_timezone, a.status, a.link_expires_at, a.link_revoked_at, a.created_at, a.contract_version, a.payment_mode, a.initial_cents ' .
+             'FROM payment_agreements a WHERE ' . implode(' AND ', $clauses) . ' ORDER BY a.created_at DESC LIMIT 200'
+         );
+         $statement->execute($parameters);
+@@ -215,16 +218,18 @@
+     /** @param array<string, mixed> $agreement */
+     public function recordCheckoutConsents(array $agreement, string $ipHash, string $userAgent): void
+     {
++        $mysql = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
+         $statement = $this->pdo->prepare(
+             'INSERT INTO payment_consents (public_uuid, agreement_id, provider, consent_type, terms_version, amount_cents, scheduled_charge_at, accepted_at, ip_hash, user_agent_summary) ' .
+             'VALUES (:uuid, :agreement_id, :provider, :consent_type, :terms_version, :amount_cents, :scheduled_charge_at, :accepted_at, :ip_hash, :user_agent) ' .
+-            'ON CONFLICT(agreement_id, consent_type) DO NOTHING'
++            ($mysql ? '' : 'ON CONFLICT(agreement_id, consent_type) DO NOTHING')
+         );
+         foreach ([
+             ['NON_REFUNDABLE_RESERVATION', (int) $agreement['reservation_cents'], null],
+             ['FUTURE_BALANCE_CHARGE', (int) $agreement['balance_cents'], (string) $agreement['balance_due_at_utc']],
+         ] as [$type, $amount, $scheduledAt]) {
+-            $statement->bindValue('uuid', Uuid::v4());
++            $uuid = Uuid::v4();
++            $statement->bindValue('uuid', $uuid);
+             $statement->bindValue('agreement_id', (int) $agreement['id'], PDO::PARAM_INT);
+             $statement->bindValue('provider', 'PAYPAL');
+             $statement->bindValue('consent_type', $type);
+@@ -234,7 +239,18 @@
+             $statement->bindValue('accepted_at', gmdate('Y-m-d H:i:s.u'));
+             $statement->bindValue('ip_hash', $ipHash, PDO::PARAM_LOB);
+             $statement->bindValue('user_agent', mb_substr($userAgent, 0, 255));
+-            $statement->execute();
++            try {
++                $statement->execute();
++            } catch (PDOException $exception) {
++                if (!$mysql || (int) ($exception->errorInfo[1] ?? 0) !== 1062) { throw $exception; }
++                // MySQL has no conflict target clause. Only ignore the exact
++                // agreement/type replay, never an unrelated UUID collision.
++                $collision = $this->pdo->prepare('SELECT 1 FROM payment_consents WHERE public_uuid = :uuid LIMIT 1 FOR UPDATE');
++                $collision->execute(['uuid' => $uuid]);
++                $existing = $this->pdo->prepare('SELECT 1 FROM payment_consents WHERE agreement_id = :agreement_id AND consent_type = :consent_type LIMIT 1 FOR UPDATE');
++                $existing->execute(['agreement_id' => (int) $agreement['id'], 'consent_type' => $type]);
++                if ($collision->fetchColumn() !== false || $existing->fetchColumn() === false) { throw $exception; }
++            }
+         }
+     }
+
+@@ -242,6 +258,7 @@
+     {
+         $statement = $this->pdo->prepare(
+             "UPDATE payment_agreements SET link_revoked_at = :now WHERE id = :id AND link_revoked_at IS NULL " .
++            'AND contract_version = 1 ' .
+             "AND status NOT IN ('RESERVATION_PAID', 'FULLY_PAID') AND NOT EXISTS (" .
+             "SELECT 1 FROM provider_resources WHERE agreement_id = :resource_agreement_id AND provider = 'PAYPAL' AND resource_type = 'SUBSCRIPTION')"
+         );
+@@ -251,9 +268,17 @@
+
+     public function replaceLink(int $agreementId, ?\DateTimeImmutable $expiresAt): string
+     {
++        // Deny v2 before generating even an unused raw token. The SQL predicate
++        // below also retains the version guard at the mutation boundary.
++        $version = $this->pdo->prepare('SELECT contract_version FROM payment_agreements WHERE id = :id');
++        $version->execute(['id' => $agreementId]);
++        if ((int) $version->fetchColumn() !== 1) {
++            throw new \DomainException('Payment links are unavailable for this agreement version.');
++        }
+         $token = PaymentLink::generateToken();
+         $statement = $this->pdo->prepare(
+             "UPDATE payment_agreements SET public_token_hash = :token_hash, link_expires_at = :expires_at, link_revoked_at = NULL WHERE id = :id " .
++            'AND contract_version = 1 ' .
+             "AND status NOT IN ('RESERVATION_PAID', 'FULLY_PAID') AND NOT EXISTS (" .
+             "SELECT 1 FROM provider_resources WHERE agreement_id = :resource_agreement_id AND provider = 'PAYPAL' AND resource_type = 'SUBSCRIPTION')"
+         );
+@@ -272,6 +297,7 @@
+     {
+         return 'SELECT a.id, a.public_uuid, a.monday_item_id, a.source_lead_id, a.source_quote_id, a.source_quote_version, a.recipient_name, a.recipient_email, a.recipient_phone, a.service_name, a.event_at_utc, a.event_location, a.internal_notes, a.currency, a.total_cents, a.reservation_cents, a.balance_cents, ' .
+             'a.balance_due_at_utc, a.balance_timezone, a.status, a.provider, a.link_expires_at, a.link_revoked_at, a.link_expired_event_at, a.terms_version, a.reservation_policy_version, a.created_at, ' .
++            'a.contract_version, a.payment_mode, a.initial_cents, a.operation_id, a.operation_json, a.operation_digest, a.configuration_id, a.configuration_digest, ' .
+             'pr.external_id AS paypal_subscription_id, pr.status AS paypal_status, pr.start_at_utc AS paypal_start_at_utc ' .
+             'FROM payment_agreements a ' .
+             "LEFT JOIN provider_resources pr ON pr.agreement_id = a.id AND pr.provider = 'PAYPAL' AND pr.resource_type = 'SUBSCRIPTION'";
+--- a/src/Database/SalesOsEventOutbox.php
++++ b/src/Database/SalesOsEventOutbox.php
+@@ -61,13 +61,14 @@
+     /** @param array<string,mixed> $payload */
+     public function enqueue(string $eventType, string $dedupeKey, array $payload): bool
+     {
++        $uuid = Uuid::v4();
+         try {
+             $statement = $this->pdo->prepare(
+                 'INSERT INTO sales_os_event_outbox (public_uuid, event_type, dedupe_key, payload_json, available_at) ' .
+                 'VALUES (:uuid, :event_type, :dedupe_key, :payload, :available_at)'
+             );
+             $statement->execute([
+-                'uuid' => Uuid::v4(),
++                'uuid' => $uuid,
+                 'event_type' => $eventType,
+                 'dedupe_key' => $dedupeKey,
+                 'payload' => json_encode(Redactor::context($payload), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+@@ -75,8 +76,13 @@
+             ]);
+             return true;
+         } catch (PDOException $exception) {
+-            if (str_contains($exception->getMessage(), 'UNIQUE constraint failed')) {
+-                return false;
++            if ((int) ($exception->errorInfo[1] ?? 0) === 1062 || str_contains($exception->getMessage(), 'UNIQUE constraint failed')) {
++                $current = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
++                $existing = $this->pdo->prepare('SELECT 1 FROM sales_os_event_outbox WHERE dedupe_key = :dedupe_key LIMIT 1' . $current);
++                $existing->execute(['dedupe_key' => $dedupeKey]);
++                $collision = $this->pdo->prepare('SELECT 1 FROM sales_os_event_outbox WHERE public_uuid = :uuid LIMIT 1' . $current);
++                $collision->execute(['uuid' => $uuid]);
++                if ($existing->fetchColumn() !== false && $collision->fetchColumn() === false) { return false; }
+             }
+             throw $exception;
+         }
+@@ -89,10 +95,11 @@
+         $at = $now->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
+         $lease = $now->modify('+' . max($leaseSeconds, 10) . ' seconds')->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
+         $select = $this->pdo->prepare(
+-            "SELECT public_uuid FROM sales_os_event_outbox WHERE status IN ('PENDING', 'RETRY') AND available_at <= :now " .
+-            'AND (locked_until IS NULL OR locked_until <= :now) ORDER BY available_at ASC LIMIT :limit'
++            "SELECT public_uuid FROM sales_os_event_outbox WHERE status IN ('PENDING', 'RETRY') AND available_at <= :available_cutoff " .
++            'AND (locked_until IS NULL OR locked_until <= :lease_cutoff) ORDER BY available_at ASC LIMIT :limit'
+         );
+-        $select->bindValue('now', $at);
++        $select->bindValue('available_cutoff', $at);
++        $select->bindValue('lease_cutoff', $at);
+         $select->bindValue('limit', $limit, PDO::PARAM_INT);
+         $select->execute();
+         $claimed = [];
+--- a/src/Domain/PaymentAgreementService.php
++++ b/src/Domain/PaymentAgreementService.php
+@@ -7,6 +7,7 @@
+ use Gourmet\Payments\Database\AuditLog;
+ use Gourmet\Payments\Database\MondaySyncOutbox;
+ use Gourmet\Payments\Database\SalesOsEventOutbox;
++use Gourmet\Payments\Http\InternalPaymentPlanV2;
+ use Gourmet\Payments\Support\MondayItemReference;
+ use Gourmet\Payments\Support\Uuid;
+ use PDO;
+@@ -165,6 +166,145 @@
+         ];
+     }
+
++    /**
++     * Persists an explicitly authorized v2 draft without issuing a payment link.
++     * Authentication and the disabled-by-default commercial gate belong to the
++     * receiver. This method revalidates all contract facts and never calls a
++     * provider, records customer consent or publishes a payment-link event.
++     *
++     * The callback receives only the agreement UUID, inside this transaction.
++     * A caller-owned transaction remains owned by the caller on success/failure.
++     *
++     * @param array<string,mixed> $operation
++     * @return array{agreement_uuid:string}
++     */
++    public function createDraftV2(array $operation, \DateTimeImmutable $now, ?callable $afterPersisted = null): array
++    {
++        $reject = static function (): never { throw new \DomainException('INVALID_PAYMENT_DRAFT_V2_OPERATION'); };
++        $nodes = 0;
++        $plain = static function (mixed $value, int $depth = 0) use (&$plain, &$nodes, $reject): mixed {
++            if (++$nodes > 20000 || $depth > 32) { $reject(); }
++            if (is_array($value)) {
++                if (array_is_list($value)) {
++                    return array_map(static fn (mixed $item): mixed => $plain($item, $depth + 1), $value);
++                }
++                $object = new \stdClass();
++                foreach ($value as $key => $item) {
++                    if (!is_string($key)) { $reject(); }
++                    $object->{$key} = $plain($item, $depth + 1);
++                }
++                return $object;
++            }
++            if ($value instanceof \stdClass) {
++                $object = new \stdClass();
++                foreach (get_object_vars($value) as $key => $item) { $object->{$key} = $plain($item, $depth + 1); }
++                return $object;
++            }
++            if ($value !== null && !is_string($value) && !is_bool($value) && !is_int($value)) { $reject(); }
++            return $value;
++        };
++        $object = static function (mixed $value, array $keys) use ($reject): \stdClass {
++            if (!$value instanceof \stdClass) { $reject(); }
++            $actual = array_keys(get_object_vars($value)); sort($actual, SORT_STRING); sort($keys, SORT_STRING);
++            if ($actual !== $keys) { $reject(); }
++            return $value;
++        };
++        $text = static function (mixed $value, int $max) use ($reject): void {
++            if (!is_string($value) || trim($value) === '' || !mb_check_encoding($value, 'UTF-8')
++                || intdiv(strlen(mb_convert_encoding($value, 'UTF-16LE', 'UTF-8')), 2) > $max
++                || preg_match('/[\x00-\x1f\x7f]/u', $value) !== 0) { $reject(); }
++        };
++        $hash = static function (mixed $value) use ($reject): void {
++            if (!is_string($value) || preg_match('/^[a-f0-9]{64}$/D', $value) !== 1) { $reject(); }
++        };
++        $identifier = static function (mixed $value) use ($text, $reject): void {
++            $text($value, 96);
++            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]*$/D', $value) !== 1
++                || in_array($value, ['constructor', 'prototype', '__proto__'], true)) { $reject(); }
++        };
++        $value = $object($plain($operation), ['contractVersion', 'operationId', 'configurationId', 'configurationDigest', 'prepared', 'recipient', 'service']);
++        if ($value->contractVersion !== 2) { $reject(); }
++        $hash($value->operationId); $hash($value->configurationDigest); $identifier($value->configurationId);
++        $seconds = $now->getTimestamp();
++        if ($seconds < 0 || $seconds > 8640000000000) { $reject(); }
++        $nowMs = $seconds * 1000 + intdiv((int) $now->format('u'), 1000);
++        // Loading the original pure Money class preserves the fixed-49 branch
++        // required by the shared validator, without generalizing it to 50/100%.
++        $currency = Money::CURRENCY;
++        $validated = InternalPaymentPlanV2::validate(InternalPaymentPlanV2::encodeCanonical($value->prepared), $nowMs);
++        $plan = $validated['prepared']->plan;
++        $quote = $plan->sourceQuote;
++        if ($quote->currency !== $currency || $plan->initialPaymentCents + $plan->paymentBalanceCents !== $quote->totalCents) { $reject(); }
++        $expectedId = hash('sha256', InternalPaymentPlanV2::encodeCanonical((object) [
++            'scope' => $plan->scope, 'eventId' => $plan->eventId, 'configurationId' => $value->configurationId,
++            'configurationDigest' => $value->configurationDigest, 'preparationDigest' => $plan->preparationDigest,
++        ]));
++        if (!hash_equals($expectedId, $value->operationId)) { $reject(); }
++        $recipient = $object($value->recipient, ['name', 'email', 'phone']);
++        $text($recipient->name, 160); $text($recipient->email, 254);
++        if ($recipient->email !== $quote->intendedRecipient || !filter_var($recipient->email, FILTER_VALIDATE_EMAIL)) { $reject(); }
++        if ($recipient->phone !== null) { $text($recipient->phone, 32); }
++        $service = $object($value->service, ['name', 'eventLocation']);
++        $text($service->name, 180);
++        if ($service->eventLocation !== null) { $text($service->eventLocation, 500); }
++        $operationJson = InternalPaymentPlanV2::encodeCanonical($value);
++        if (strlen($operationJson) > 196608) { $reject(); }
++        $operationDigest = hash('sha256', $operationJson);
++        $utc = new \DateTimeZone('UTC');
++        $at = $now->setTimezone($utc)->format('Y-m-d H:i:s.u');
++        $date = static fn (?string $instant): ?string => $instant === null ? null
++            : (new \DateTimeImmutable($instant))->setTimezone($utc)->format('Y-m-d H:i:s.u');
++        $schedule = $plan->paymentSchedule;
++        $balanceAt = $date($schedule?->balanceInstant);
++        $balanceTimezone = $schedule?->configured->timezone;
++        $agreementUuid = Uuid::v4();
++        $ownsTransaction = !$this->pdo->inTransaction();
++        if ($ownsTransaction) { $this->pdo->beginTransaction(); }
++        try {
++            $agreement = $this->pdo->prepare(
++                'INSERT INTO payment_agreements (' .
++                'public_uuid,monday_item_id,source_lead_id,source_quote_id,source_quote_version,recipient_name,recipient_email,recipient_phone,' .
++                'service_name,event_at_utc,event_location,internal_notes,currency,total_cents,reservation_cents,balance_cents,balance_due_at_utc,balance_timezone,' .
++                'status,provider,public_token_hash,link_expires_at,terms_version,reservation_policy_version,created_at,updated_at,' .
++                'contract_version,payment_mode,initial_cents,operation_id,operation_json,operation_digest,configuration_id,configuration_digest' .
++                ') VALUES (:uuid,NULL,:lead,:quote,:quote_version,:recipient_name,:email,:phone,:service,:event_at,:location,NULL,:currency,:total,:reservation,:balance,:balance_due,:timezone,' .
++                "'DRAFT_INTERNAL',NULL,NULL,:expires,'v2-draft','v2-draft',:created,:updated,2,:mode,:initial,:operation_id,:operation_json,:operation_digest,:configuration_id,:configuration_digest)"
++            );
++            $agreement->execute([
++                'uuid' => $agreementUuid, 'lead' => $plan->canonicalLeadId, 'quote' => $quote->digest, 'quote_version' => (string) $quote->version,
++                'recipient_name' => $recipient->name, 'email' => $recipient->email, 'phone' => $recipient->phone,
++                'service' => $service->name, 'event_at' => $date($schedule?->eventInstant), 'location' => $service->eventLocation,
++                'currency' => $currency, 'total' => $quote->totalCents, 'reservation' => $plan->paymentMode === 'fixed_49_reservation' ? 4900 : null,
++                'balance' => $plan->paymentBalanceCents, 'balance_due' => $balanceAt, 'timezone' => $balanceTimezone,
++                'expires' => $date($plan->linkExpiration->instant), 'created' => $at, 'updated' => $at,
++                'mode' => $plan->paymentMode, 'initial' => $plan->initialPaymentCents, 'operation_id' => $value->operationId,
++                'operation_json' => $operationJson, 'operation_digest' => $operationDigest,
++                'configuration_id' => $value->configurationId, 'configuration_digest' => $value->configurationDigest,
++            ]);
++            $agreementId = (int) $this->pdo->lastInsertId();
++            $insertSchedule = $this->pdo->prepare(
++                "INSERT INTO payment_schedules (public_uuid,agreement_id,kind,amount_cents,due_at_utc,status,created_at,updated_at) VALUES (:uuid,:agreement_id,:kind,:amount,:due,'DRAFT',:created,:updated)"
++            );
++            $schedules = [[$plan->paymentMode === 'fixed_49_reservation' ? 'RESERVATION' : 'INITIAL', $plan->initialPaymentCents, $at]];
++            if ($plan->paymentBalanceCents > 0) { $schedules[] = ['BALANCE', $plan->paymentBalanceCents, $balanceAt]; }
++            foreach ($schedules as [$kind, $amount, $due]) {
++                $insertSchedule->execute(['uuid' => Uuid::v4(), 'agreement_id' => $agreementId, 'kind' => $kind, 'amount' => $amount,
++                    'due' => $due, 'created' => $at, 'updated' => $at]);
++            }
++            (new AuditLog($this->pdo))->record('SYSTEM', 'PAYMENT_AGREEMENT_DRAFT_V2_CREATED', 'PAYMENT_AGREEMENT', null, $agreementUuid, null, [
++                'contract_version' => 2, 'payment_mode' => $plan->paymentMode, 'currency' => $currency,
++                'total_cents' => $quote->totalCents, 'initial_cents' => $plan->initialPaymentCents, 'balance_cents' => $plan->paymentBalanceCents,
++                'operation_id' => $value->operationId, 'operation_digest' => $operationDigest,
++            ]);
++            if ($afterPersisted !== null) { $afterPersisted($agreementUuid); }
++            if ($ownsTransaction) { $this->pdo->commit(); }
++        } catch (\Throwable $exception) {
++            if ($ownsTransaction && $this->pdo->inTransaction()) { $this->pdo->rollBack(); }
++            throw $exception;
++        }
++        return ['agreement_uuid' => $agreementUuid];
++    }
++
+     private function normalizeMondayItemId(?string $reference): ?string
+     {
+         $reference = $reference === null ? '' : trim($reference);
 --- a/src/Http/Application.php
 +++ b/src/Http/Application.php
 @@ -20,6 +20,7 @@
@@ -332,282 +1171,131 @@
 
          return new self(
              method: mb_strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')),
---- a/src/Domain/PaymentAgreementService.php
-+++ b/src/Domain/PaymentAgreementService.php
-@@ -7,6 +7,7 @@
- use Gourmet\Payments\Database\AuditLog;
- use Gourmet\Payments\Database\MondaySyncOutbox;
+--- a/src/Payments/PayPal/PayPalReconciler.php
++++ b/src/Payments/PayPal/PayPalReconciler.php
+@@ -10,6 +10,7 @@
  use Gourmet\Payments\Database\SalesOsEventOutbox;
-+use Gourmet\Payments\Http\InternalPaymentPlanV2;
- use Gourmet\Payments\Support\MondayItemReference;
  use Gourmet\Payments\Support\Uuid;
  use PDO;
-@@ -165,6 +166,145 @@
-         ];
++use PDOException;
+
+ final readonly class PayPalReconciler
+ {
+@@ -228,22 +229,42 @@
+     private function recordAttempt(array $schedule, string $providerPaymentId, string $status): void
+     {
+         $mapped = $status === 'COMPLETED' ? 'SUCCEEDED' : (in_array($status, ['FAILED', 'DECLINED'], true) ? 'FAILED' : 'PENDING');
++        $mysql = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
+         $statement = $this->pdo->prepare(
+             'INSERT INTO payment_attempts (' .
+             'public_uuid, schedule_id, provider, provider_payment_id, idempotency_key, amount_cents, currency, status, failure_code' .
+             ') VALUES (' .
+             ":uuid, :schedule_id, 'PAYPAL', :provider_payment_id, :idempotency_key, :amount_cents, 'USD', :status, :failure_code" .
+-            ') ON CONFLICT(provider, provider_payment_id) DO UPDATE SET status = excluded.status, failure_code = excluded.failure_code, updated_at = CURRENT_TIMESTAMP'
++            ')' . ($mysql ? '' : ' ON CONFLICT(provider, provider_payment_id) DO UPDATE SET status = excluded.status, failure_code = excluded.failure_code, updated_at = CURRENT_TIMESTAMP')
+         );
+-        $statement->execute([
+-            'uuid' => Uuid::v4(),
++        $uuid = Uuid::v4();
++        $idempotencyKey = 'paypal:transaction:' . $providerPaymentId;
++        $failureCode = $mapped === 'FAILED' ? $status : null;
++        $parameters = [
++            'uuid' => $uuid,
+             'schedule_id' => $schedule['id'],
+             'provider_payment_id' => $providerPaymentId,
+-            'idempotency_key' => 'paypal:transaction:' . $providerPaymentId,
++            'idempotency_key' => $idempotencyKey,
+             'amount_cents' => $schedule['amount_cents'],
+             'status' => $mapped,
+-            'failure_code' => $mapped === 'FAILED' ? $status : null,
+-        ]);
++            'failure_code' => $failureCode,
++        ];
++        try {
++            $statement->execute($parameters);
++        } catch (PDOException $exception) {
++            if (!$mysql || (int) ($exception->errorInfo[1] ?? 0) !== 1062) { throw $exception; }
++            $existing = $this->pdo->prepare("SELECT id FROM payment_attempts WHERE provider = 'PAYPAL' AND provider_payment_id = :provider_payment_id LIMIT 1 FOR UPDATE");
++            $existing->execute(['provider_payment_id' => $providerPaymentId]);
++            $id = $existing->fetchColumn();
++            if ($id === false) { throw $exception; }
++            // A duplicate on any other unique key must remain an error. The
++            // canonical provider/payment pair alone permits this state update.
++            $collision = $this->pdo->prepare('SELECT 1 FROM payment_attempts WHERE (public_uuid = :uuid OR idempotency_key = :idempotency_key) AND id <> :id LIMIT 1 FOR UPDATE');
++            $collision->execute(['uuid' => $uuid, 'idempotency_key' => $idempotencyKey, 'id' => $id]);
++            if ($collision->fetchColumn() !== false) { throw $exception; }
++            $update = $this->pdo->prepare('UPDATE payment_attempts SET status = :status, failure_code = :failure_code, updated_at = CURRENT_TIMESTAMP WHERE id = :id');
++            $update->execute(['status' => $mapped, 'failure_code' => $failureCode, 'id' => $id]);
++        }
      }
 
-+    /**
-+     * Persists an explicitly authorized v2 draft without issuing a payment link.
-+     * Authentication and the disabled-by-default commercial gate belong to the
-+     * receiver. This method revalidates all contract facts and never calls a
-+     * provider, records customer consent or publishes a payment-link event.
-+     *
-+     * The callback receives only the agreement UUID, inside this transaction.
-+     * A caller-owned transaction remains owned by the caller on success/failure.
-+     *
-+     * @param array<string,mixed> $operation
-+     * @return array{agreement_uuid:string}
-+     */
-+    public function createDraftV2(array $operation, \DateTimeImmutable $now, ?callable $afterPersisted = null): array
-+    {
-+        $reject = static function (): never { throw new \DomainException('INVALID_PAYMENT_DRAFT_V2_OPERATION'); };
-+        $nodes = 0;
-+        $plain = static function (mixed $value, int $depth = 0) use (&$plain, &$nodes, $reject): mixed {
-+            if (++$nodes > 20000 || $depth > 32) { $reject(); }
-+            if (is_array($value)) {
-+                if (array_is_list($value)) {
-+                    return array_map(static fn (mixed $item): mixed => $plain($item, $depth + 1), $value);
-+                }
-+                $object = new \stdClass();
-+                foreach ($value as $key => $item) {
-+                    if (!is_string($key)) { $reject(); }
-+                    $object->{$key} = $plain($item, $depth + 1);
-+                }
-+                return $object;
-+            }
-+            if ($value instanceof \stdClass) {
-+                $object = new \stdClass();
-+                foreach (get_object_vars($value) as $key => $item) { $object->{$key} = $plain($item, $depth + 1); }
-+                return $object;
-+            }
-+            if ($value !== null && !is_string($value) && !is_bool($value) && !is_int($value)) { $reject(); }
-+            return $value;
-+        };
-+        $object = static function (mixed $value, array $keys) use ($reject): \stdClass {
-+            if (!$value instanceof \stdClass) { $reject(); }
-+            $actual = array_keys(get_object_vars($value)); sort($actual, SORT_STRING); sort($keys, SORT_STRING);
-+            if ($actual !== $keys) { $reject(); }
-+            return $value;
-+        };
-+        $text = static function (mixed $value, int $max) use ($reject): void {
-+            if (!is_string($value) || trim($value) === '' || !mb_check_encoding($value, 'UTF-8')
-+                || intdiv(strlen(mb_convert_encoding($value, 'UTF-16LE', 'UTF-8')), 2) > $max
-+                || preg_match('/[\x00-\x1f\x7f]/u', $value) !== 0) { $reject(); }
-+        };
-+        $hash = static function (mixed $value) use ($reject): void {
-+            if (!is_string($value) || preg_match('/^[a-f0-9]{64}$/D', $value) !== 1) { $reject(); }
-+        };
-+        $identifier = static function (mixed $value) use ($text, $reject): void {
-+            $text($value, 96);
-+            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]*$/D', $value) !== 1
-+                || in_array($value, ['constructor', 'prototype', '__proto__'], true)) { $reject(); }
-+        };
-+        $value = $object($plain($operation), ['contractVersion', 'operationId', 'configurationId', 'configurationDigest', 'prepared', 'recipient', 'service']);
-+        if ($value->contractVersion !== 2) { $reject(); }
-+        $hash($value->operationId); $hash($value->configurationDigest); $identifier($value->configurationId);
-+        $seconds = $now->getTimestamp();
-+        if ($seconds < 0 || $seconds > 8640000000000) { $reject(); }
-+        $nowMs = $seconds * 1000 + intdiv((int) $now->format('u'), 1000);
-+        // Loading the original pure Money class preserves the fixed-49 branch
-+        // required by the shared validator, without generalizing it to 50/100%.
-+        $currency = Money::CURRENCY;
-+        $validated = InternalPaymentPlanV2::validate(InternalPaymentPlanV2::encodeCanonical($value->prepared), $nowMs);
-+        $plan = $validated['prepared']->plan;
-+        $quote = $plan->sourceQuote;
-+        if ($quote->currency !== $currency || $plan->initialPaymentCents + $plan->paymentBalanceCents !== $quote->totalCents) { $reject(); }
-+        $expectedId = hash('sha256', InternalPaymentPlanV2::encodeCanonical((object) [
-+            'scope' => $plan->scope, 'eventId' => $plan->eventId, 'configurationId' => $value->configurationId,
-+            'configurationDigest' => $value->configurationDigest, 'preparationDigest' => $plan->preparationDigest,
-+        ]));
-+        if (!hash_equals($expectedId, $value->operationId)) { $reject(); }
-+        $recipient = $object($value->recipient, ['name', 'email', 'phone']);
-+        $text($recipient->name, 160); $text($recipient->email, 254);
-+        if ($recipient->email !== $quote->intendedRecipient || !filter_var($recipient->email, FILTER_VALIDATE_EMAIL)) { $reject(); }
-+        if ($recipient->phone !== null) { $text($recipient->phone, 32); }
-+        $service = $object($value->service, ['name', 'eventLocation']);
-+        $text($service->name, 180);
-+        if ($service->eventLocation !== null) { $text($service->eventLocation, 500); }
-+        $operationJson = InternalPaymentPlanV2::encodeCanonical($value);
-+        if (strlen($operationJson) > 196608) { $reject(); }
-+        $operationDigest = hash('sha256', $operationJson);
-+        $utc = new \DateTimeZone('UTC');
-+        $at = $now->setTimezone($utc)->format('Y-m-d H:i:s.u');
-+        $date = static fn (?string $instant): ?string => $instant === null ? null
-+            : (new \DateTimeImmutable($instant))->setTimezone($utc)->format('Y-m-d H:i:s.u');
-+        $schedule = $plan->paymentSchedule;
-+        $balanceAt = $date($schedule?->balanceInstant);
-+        $balanceTimezone = $schedule?->configured->timezone;
-+        $agreementUuid = Uuid::v4();
-+        $ownsTransaction = !$this->pdo->inTransaction();
-+        if ($ownsTransaction) { $this->pdo->beginTransaction(); }
-+        try {
-+            $agreement = $this->pdo->prepare(
-+                'INSERT INTO payment_agreements (' .
-+                'public_uuid,monday_item_id,source_lead_id,source_quote_id,source_quote_version,recipient_name,recipient_email,recipient_phone,' .
-+                'service_name,event_at_utc,event_location,internal_notes,currency,total_cents,reservation_cents,balance_cents,balance_due_at_utc,balance_timezone,' .
-+                'status,provider,public_token_hash,link_expires_at,terms_version,reservation_policy_version,created_at,updated_at,' .
-+                'contract_version,payment_mode,initial_cents,operation_id,operation_json,operation_digest,configuration_id,configuration_digest' .
-+                ') VALUES (:uuid,NULL,:lead,:quote,:quote_version,:recipient_name,:email,:phone,:service,:event_at,:location,NULL,:currency,:total,:reservation,:balance,:balance_due,:timezone,' .
-+                "'DRAFT_INTERNAL',NULL,NULL,:expires,'v2-draft','v2-draft',:created,:updated,2,:mode,:initial,:operation_id,:operation_json,:operation_digest,:configuration_id,:configuration_digest)"
-+            );
-+            $agreement->execute([
-+                'uuid' => $agreementUuid, 'lead' => $plan->canonicalLeadId, 'quote' => $quote->digest, 'quote_version' => (string) $quote->version,
-+                'recipient_name' => $recipient->name, 'email' => $recipient->email, 'phone' => $recipient->phone,
-+                'service' => $service->name, 'event_at' => $date($schedule?->eventInstant), 'location' => $service->eventLocation,
-+                'currency' => $currency, 'total' => $quote->totalCents, 'reservation' => $plan->paymentMode === 'fixed_49_reservation' ? 4900 : null,
-+                'balance' => $plan->paymentBalanceCents, 'balance_due' => $balanceAt, 'timezone' => $balanceTimezone,
-+                'expires' => $date($plan->linkExpiration->instant), 'created' => $at, 'updated' => $at,
-+                'mode' => $plan->paymentMode, 'initial' => $plan->initialPaymentCents, 'operation_id' => $value->operationId,
-+                'operation_json' => $operationJson, 'operation_digest' => $operationDigest,
-+                'configuration_id' => $value->configurationId, 'configuration_digest' => $value->configurationDigest,
-+            ]);
-+            $agreementId = (int) $this->pdo->lastInsertId();
-+            $insertSchedule = $this->pdo->prepare(
-+                "INSERT INTO payment_schedules (public_uuid,agreement_id,kind,amount_cents,due_at_utc,status,created_at,updated_at) VALUES (:uuid,:agreement_id,:kind,:amount,:due,'DRAFT',:created,:updated)"
-+            );
-+            $schedules = [[$plan->paymentMode === 'fixed_49_reservation' ? 'RESERVATION' : 'INITIAL', $plan->initialPaymentCents, $at]];
-+            if ($plan->paymentBalanceCents > 0) { $schedules[] = ['BALANCE', $plan->paymentBalanceCents, $balanceAt]; }
-+            foreach ($schedules as [$kind, $amount, $due]) {
-+                $insertSchedule->execute(['uuid' => Uuid::v4(), 'agreement_id' => $agreementId, 'kind' => $kind, 'amount' => $amount,
-+                    'due' => $due, 'created' => $at, 'updated' => $at]);
-+            }
-+            (new AuditLog($this->pdo))->record('SYSTEM', 'PAYMENT_AGREEMENT_DRAFT_V2_CREATED', 'PAYMENT_AGREEMENT', null, $agreementUuid, null, [
-+                'contract_version' => 2, 'payment_mode' => $plan->paymentMode, 'currency' => $currency,
-+                'total_cents' => $quote->totalCents, 'initial_cents' => $plan->initialPaymentCents, 'balance_cents' => $plan->paymentBalanceCents,
-+                'operation_id' => $value->operationId, 'operation_digest' => $operationDigest,
-+            ]);
-+            if ($afterPersisted !== null) { $afterPersisted($agreementUuid); }
-+            if ($ownsTransaction) { $this->pdo->commit(); }
-+        } catch (\Throwable $exception) {
-+            if ($ownsTransaction && $this->pdo->inTransaction()) { $this->pdo->rollBack(); }
-+            throw $exception;
-+        }
-+        return ['agreement_uuid' => $agreementUuid];
-+    }
-+
-     private function normalizeMondayItemId(?string $reference): ?string
-     {
-         $reference = $reference === null ? '' : trim($reference);
---- a/src/Database/PaymentAgreementRepository.php
-+++ b/src/Database/PaymentAgreementRepository.php
-@@ -119,7 +119,7 @@
-         $attention = $this->pdo->prepare(
-             "SELECT public_uuid, recipient_name, service_name, status, balance_due_at_utc, balance_timezone " .
-             "FROM payment_agreements WHERE status IN ('PAYMENT_FAILED', 'CANCELLED') " .
--            "OR (link_revoked_at IS NULL AND link_expires_at IS NOT NULL AND link_expires_at <= :now " .
-+            "OR (contract_version = 1 AND public_token_hash IS NOT NULL AND link_revoked_at IS NULL AND link_expires_at IS NOT NULL AND link_expires_at <= :now " .
-             "AND status NOT IN ('RESERVATION_PAID', 'FULLY_PAID')) " .
-             'ORDER BY created_at DESC LIMIT 8'
-         );
-@@ -137,7 +137,7 @@
-     public function agreements(string $search, string $status, string $linkState): array
-     {
-         $search = mb_substr(trim($search), 0, 120);
--        $allowedStatuses = ['ALL', 'PENDING_RESERVATION', 'AWAITING_RESERVATION', 'RESERVATION_PROCESSING', 'RESERVATION_PAID', 'FULLY_PAID', 'PAYMENT_FAILED', 'CANCELLED'];
-+        $allowedStatuses = ['ALL', 'DRAFT_INTERNAL', 'PENDING_RESERVATION', 'AWAITING_RESERVATION', 'RESERVATION_PROCESSING', 'RESERVATION_PAID', 'FULLY_PAID', 'PAYMENT_FAILED', 'CANCELLED'];
-         $allowedLinkStates = ['ALL', 'ACTIVE', 'EXPIRED', 'REVOKED'];
-         if (!in_array($status, $allowedStatuses, true) || !in_array($linkState, $allowedLinkStates, true)) {
-             throw new \DomainException('Invalid agreement filter.');
-@@ -156,17 +156,17 @@
+     /** @param array<string,mixed> $agreement @param array<string,mixed> $schedule */
+--- a/src/Support/Config.php
++++ b/src/Support/Config.php
+@@ -16,11 +16,18 @@
+         public int $sessionTtl,
+         public int $loginMaxAttempts,
+         public int $loginWindowSeconds,
++        public string $ledgerDriver = 'sqlite',
++        public string $mysqlHost = '',
++        public int $mysqlPort = 3306,
++        public string $mysqlDatabase = '',
++        public string $mysqlUser = '',
++        public ?string $mysqlPassword = null,
+     ) {
+     }
 
-         $now = gmdate('Y-m-d H:i:s.u');
-         if ($linkState === 'ACTIVE') {
--            $clauses[] = '(a.link_revoked_at IS NULL AND (a.link_expires_at IS NULL OR a.link_expires_at > :now))';
-+            $clauses[] = '(a.contract_version = 1 AND a.public_token_hash IS NOT NULL AND a.link_revoked_at IS NULL AND (a.link_expires_at IS NULL OR a.link_expires_at > :now))';
-             $parameters['now'] = $now;
-         } elseif ($linkState === 'EXPIRED') {
--            $clauses[] = '(a.link_revoked_at IS NULL AND a.link_expires_at IS NOT NULL AND a.link_expires_at <= :now)';
-+            $clauses[] = '(a.contract_version = 1 AND a.public_token_hash IS NOT NULL AND a.link_revoked_at IS NULL AND a.link_expires_at IS NOT NULL AND a.link_expires_at <= :now)';
-             $parameters['now'] = $now;
-         } elseif ($linkState === 'REVOKED') {
-             $clauses[] = 'a.link_revoked_at IS NOT NULL';
+     public static function fromEnv(string $root, Env $env): self
+     {
++        $mysqlPort = $env->get('PAYMENTS_MYSQL_PORT', '3306');
+         return new self(
+             root: $root,
+             environment: $env->get('APP_ENV', 'staging') ?? 'staging',
+@@ -31,11 +38,31 @@
+             sessionTtl: $env->int('SESSION_TTL_SECONDS', 28800),
+             loginMaxAttempts: $env->int('LOGIN_MAX_ATTEMPTS', 5),
+             loginWindowSeconds: $env->int('LOGIN_WINDOW_SECONDS', 900),
++            ledgerDriver: $env->get('PAYMENTS_LEDGER_DRIVER', 'sqlite') ?? 'sqlite',
++            mysqlHost: $env->get('PAYMENTS_MYSQL_HOST', '') ?? '',
++            mysqlPort: is_string($mysqlPort) && preg_match('/\A[0-9]{1,5}\z/', $mysqlPort) === 1 ? (int) $mysqlPort : 0,
++            mysqlDatabase: $env->get('PAYMENTS_MYSQL_DATABASE', '') ?? '',
++            mysqlUser: $env->get('PAYMENTS_MYSQL_USER', '') ?? '',
++            mysqlPassword: $env->get('PAYMENTS_MYSQL_PASSWORD'),
+         );
+     }
+
+     public function hasLedgerConfiguration(): bool
+     {
++        if ($this->ledgerDriver === 'mysql') {
++            // Structured, server-owned fields only. Never interpolate an
++            // arbitrary DSN or accept connection options from an HTTP request.
++            $validHost = preg_match('/\A[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\z/i', $this->mysqlHost) === 1
++                || filter_var($this->mysqlHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
++            return $validHost && $this->mysqlPort >= 1 && $this->mysqlPort <= 65535
++                && preg_match('/\A[A-Za-z0-9_$-]{1,64}\z/', $this->mysqlDatabase) === 1
++                && $this->mysqlUser !== '' && strlen($this->mysqlUser) <= 128
++                && preg_match('/[\x00-\x1f\x7f]/', $this->mysqlUser) === 0
++                && $this->mysqlPassword !== null && !str_contains($this->mysqlPassword, "\0");
++        }
++        if ($this->ledgerDriver !== 'sqlite') {
++            return false;
++        }
+         if ($this->sqlitePath === '' || str_starts_with($this->sqlitePath, $this->root . '/public/')) {
+             return false;
          }
-
-         $statement = $this->pdo->prepare(
--            'SELECT a.public_uuid, a.recipient_name, a.service_name, a.total_cents, a.balance_cents, a.balance_due_at_utc, a.balance_timezone, a.status, a.link_expires_at, a.link_revoked_at, a.created_at ' .
-+            'SELECT a.public_uuid, a.recipient_name, a.service_name, a.total_cents, a.balance_cents, a.balance_due_at_utc, a.balance_timezone, a.status, a.link_expires_at, a.link_revoked_at, a.created_at, a.contract_version, a.payment_mode, a.initial_cents ' .
-             'FROM payment_agreements a WHERE ' . implode(' AND ', $clauses) . ' ORDER BY a.created_at DESC LIMIT 200'
-         );
-         $statement->execute($parameters);
-@@ -242,6 +242,7 @@
-     {
-         $statement = $this->pdo->prepare(
-             "UPDATE payment_agreements SET link_revoked_at = :now WHERE id = :id AND link_revoked_at IS NULL " .
-+            'AND contract_version = 1 ' .
-             "AND status NOT IN ('RESERVATION_PAID', 'FULLY_PAID') AND NOT EXISTS (" .
-             "SELECT 1 FROM provider_resources WHERE agreement_id = :resource_agreement_id AND provider = 'PAYPAL' AND resource_type = 'SUBSCRIPTION')"
-         );
-@@ -251,9 +252,17 @@
-
-     public function replaceLink(int $agreementId, ?\DateTimeImmutable $expiresAt): string
-     {
-+        // Deny v2 before generating even an unused raw token. The SQL predicate
-+        // below also retains the version guard at the mutation boundary.
-+        $version = $this->pdo->prepare('SELECT contract_version FROM payment_agreements WHERE id = :id');
-+        $version->execute(['id' => $agreementId]);
-+        if ((int) $version->fetchColumn() !== 1) {
-+            throw new \DomainException('Payment links are unavailable for this agreement version.');
-+        }
-         $token = PaymentLink::generateToken();
-         $statement = $this->pdo->prepare(
-             "UPDATE payment_agreements SET public_token_hash = :token_hash, link_expires_at = :expires_at, link_revoked_at = NULL WHERE id = :id " .
-+            'AND contract_version = 1 ' .
-             "AND status NOT IN ('RESERVATION_PAID', 'FULLY_PAID') AND NOT EXISTS (" .
-             "SELECT 1 FROM provider_resources WHERE agreement_id = :resource_agreement_id AND provider = 'PAYPAL' AND resource_type = 'SUBSCRIPTION')"
-         );
-@@ -272,6 +281,7 @@
-     {
-         return 'SELECT a.id, a.public_uuid, a.monday_item_id, a.source_lead_id, a.source_quote_id, a.source_quote_version, a.recipient_name, a.recipient_email, a.recipient_phone, a.service_name, a.event_at_utc, a.event_location, a.internal_notes, a.currency, a.total_cents, a.reservation_cents, a.balance_cents, ' .
-             'a.balance_due_at_utc, a.balance_timezone, a.status, a.provider, a.link_expires_at, a.link_revoked_at, a.link_expired_event_at, a.terms_version, a.reservation_policy_version, a.created_at, ' .
-+            'a.contract_version, a.payment_mode, a.initial_cents, a.operation_id, a.operation_json, a.operation_digest, a.configuration_id, a.configuration_digest, ' .
-             'pr.external_id AS paypal_subscription_id, pr.status AS paypal_status, pr.start_at_utc AS paypal_start_at_utc ' .
-             'FROM payment_agreements a ' .
-             "LEFT JOIN provider_resources pr ON pr.agreement_id = a.id AND pr.provider = 'PAYPAL' AND pr.resource_type = 'SUBSCRIPTION'";
---- a/src/Database/Migrator.php
-+++ b/src/Database/Migrator.php
-@@ -39,7 +39,9 @@
-                     throw new \RuntimeException('Unable to read migration: ' . $version);
-                 }
-
--                if (str_contains($sql, '-- migrate:non-transactional')) {
-+                if (str_contains($sql, '-- migrate:atomic-rebuild')) {
-+                    $this->runAtomicRebuildMigration($sql, $version);
-+                } elseif (str_contains($sql, '-- migrate:non-transactional')) {
-                     $this->runNonTransactionalMigration($sql, $version);
-                 } else {
-                     $this->pdo->beginTransaction();
-@@ -70,6 +72,34 @@
-         $statement->execute(['version' => $version, 'applied_at' => gmdate('Y-m-d H:i:s.u')]);
+@@ -49,6 +76,15 @@
+             || str_starts_with($this->sqlitePath, dirname($this->root) . '/.private/');
      }
 
-+    /** Disable foreign keys before BEGIN, then atomically rebuild and record.
-+     * Legacy migrations keep their original behavior. The versioned draft
-+     * migration cannot leave a partially rebuilt ledger after an exception.
-+     */
-+    private function runAtomicRebuildMigration(string $sql, string $version): void
++    public function migrationDirectory(): string
 +    {
-+        if ($this->pdo->inTransaction()) {
-+            throw new \RuntimeException('Cannot rebuild the ledger inside another transaction.');
-+        }
-+        try {
-+            $this->pdo->exec('PRAGMA foreign_keys = OFF');
-+            $this->pdo->beginTransaction();
-+            $this->pdo->exec($sql);
-+            if ($this->pdo->query('PRAGMA foreign_key_check')->fetchAll() !== []) {
-+                throw new \RuntimeException('SQLite foreign-key validation failed during migration.');
-+            }
-+            $this->recordMigration($version);
-+            $this->pdo->commit();
-+        } catch (\Throwable $exception) {
-+            if ($this->pdo->inTransaction()) {
-+                $this->pdo->rollBack();
-+            }
-+            throw $exception;
-+        } finally {
-+            $this->pdo->exec('PRAGMA foreign_keys = ON');
-+        }
++        return match ($this->ledgerDriver) {
++            'sqlite' => $this->root . '/migrations/sqlite',
++            'mysql' => $this->root . '/migrations',
++            default => throw new \RuntimeException('Unsupported payments ledger driver.'),
++        };
 +    }
 +
-     private function runNonTransactionalMigration(string $sql, string $version): void
+     public function hasValidAppKey(): bool
      {
-         try {
+         return preg_match('/\A[a-f0-9]{64}\z/i', $this->appKey) === 1;

@@ -18,8 +18,8 @@ if (!is_file($directory . '/synthetic-fixture-only') || !is_file($root . '/boots
     throw new RuntimeException('Disposable synthetic HTTP fixture required.');
 }
 require $root . '/bootstrap/autoload.php';
-$config = new Config($root, 'test', 'https://synthetic.invalid', str_repeat('ab', 32),
-    $directory . '/storage/ledger.sqlite', 1000, 3600, 5, 900);
+require __DIR__ . '/operational-config.php';
+$config = operationalFixtureConfigV2($root, $directory);
 $transport = new class($directory) implements PayPalHttpTransport {
     public function __construct(private string $directory) {}
     public function send(string $method, string $url, array $headers, ?string $body, int $timeoutSeconds): PayPalHttpResponse
