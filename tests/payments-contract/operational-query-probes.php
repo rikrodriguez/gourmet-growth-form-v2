@@ -25,7 +25,11 @@ function runOperationalQueryProbesV2(PDO $pdo): array
     };
     $before = $counts();
     $driver = (string) $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
-    if ($driver === 'mysql') { $assert($pdo->getAttribute(PDO::ATTR_EMULATE_PREPARES) === false, 'native_prepares'); }
+    if ($driver === 'mysql') {
+        // PDO MySQL reports int 0 on PHP 8.3 and bool false on PHP 8.4.
+        $emulatePrepares = $pdo->getAttribute(PDO::ATTR_EMULATE_PREPARES);
+        $assert($emulatePrepares === false || $emulatePrepares === 0, 'native_prepares');
+    }
     $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
     $uuid = Gourmet\Payments\Support\Uuid::v4();
     $marker = 'synthetic-query-' . $uuid;
