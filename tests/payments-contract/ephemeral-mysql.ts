@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { connect, createServer } from 'node:net';
+import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
@@ -42,14 +42,30 @@ export async function assertEphemeralPaymentDatabaseV2(binding: EphemeralPayment
   assert.equal(binding.user, 'root'); assert.equal(binding.password, '');
 }
 
-async function socketReady(port: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const socket = connect({ host: '127.0.0.1', port });
-    let finished = false;
-    const end = (ready: boolean) => { if (!finished) { finished = true; socket.destroy(); resolve(ready); } };
-    socket.setTimeout(500); socket.once('connect', () => end(true));
-    socket.once('error', () => end(false)); socket.once('timeout', () => end(false));
-  });
+/** Read-only test-infrastructure probe over the exact published PDO path.
+ * A Docker proxy can accept TCP while only MySQL's temporary UNIX-socket
+ * initialization server is available; neither proves this connection ready.
+ */
+export async function ephemeralPaymentDatabaseTcpReadyV2(port: number, database: string): Promise<boolean> {
+  assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
+  assert.match(database, /^gourmet_payment_test_[a-f0-9]{32}$/);
+  const php = process.env.GOURMET_CONTRACT_MYSQL_PHP_BIN || process.env.GOURMET_CONTRACT_PHP_BIN || 'php';
+  try {
+    const result = await exec(php, ['-d', 'xdebug.mode=off', '-d', 'mysqlnd.net_read_timeout=1', '-r', `
+      try {
+        $pdo = new PDO('mysql:host=127.0.0.1;port=' . $argv[1] . ';dbname=' . $argv[2] . ';charset=utf8mb4', 'root', '', [
+          PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false,
+          PDO::ATTR_STRINGIFY_FETCHES => false, PDO::ATTR_TIMEOUT => 1,
+        ]);
+        $query = $pdo->prepare('SELECT DATABASE(), 1'); $query->execute();
+        $row = $query->fetch(PDO::FETCH_NUM);
+        if (!is_array($row) || $row[0] !== $argv[2] || (int) $row[1] !== 1) { exit(1); }
+        echo 'database_ready';
+      } catch (Throwable) { exit(1); }
+    `, String(port), database], { timeout: 2500, maxBuffer: 4096,
+      env: { PATH: process.env.PATH || '/usr/bin:/bin', TZ: 'UTC', LC_ALL: 'C' } });
+    return result.stdout === 'database_ready' && result.stderr === '';
+  } catch { return false; }
 }
 
 async function availableLoopbackPort(): Promise<number> {
@@ -102,9 +118,7 @@ export async function startEphemeralPaymentDatabaseV2(engine: 'mariadb' | 'mysql
     while (Date.now() < deadline) {
       const current = await requireOwner();
       if (!current.State.Running) throw new Error('Synthetic storage engine exited before readiness');
-      if (await socketReady(binding.port)) {
-        try { if (await sql('SELECT 1') === '1') return; } catch { /* initialization still finishing */ }
-      }
+      if (await ephemeralPaymentDatabaseTcpReadyV2(binding.port, binding.database)) return;
       await delay(250);
     }
     throw new Error('Synthetic storage engine readiness timed out');

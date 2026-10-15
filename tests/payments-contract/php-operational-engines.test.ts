@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { canonical, digest } from '../../src/office/backend/event-quote-workflow';
@@ -30,6 +31,19 @@ function missingCapability(): string | null {
   });
   return docker.error || docker.status !== 0 ? 'Disposable Docker database capability is unavailable' : null;
 }
+
+test('database readiness rejects a published TCP accept without an authenticated MySQL greeting and query', async t => {
+  if (requested.size === 0) { t.skip('NOT_VALIDATED: database engines are not selected for this local run'); return; }
+  const { ephemeralPaymentDatabaseTcpReadyV2 } = await import('./ephemeral-mysql');
+  let accepted = 0;
+  const proxy = createServer(socket => { ++accepted; socket.end(); });
+  await new Promise<void>((resolve, reject) => { proxy.once('error', reject); proxy.listen(0, '127.0.0.1', resolve); });
+  try {
+    const address = proxy.address(); assert.ok(address && typeof address !== 'string');
+    assert.equal(await ephemeralPaymentDatabaseTcpReadyV2(address.port, 'gourmet_payment_test_' + 'a'.repeat(32)), false);
+    assert.ok(accepted > 0, 'The published TCP connection really succeeded; readiness must require the actual PDO query');
+  } finally { await new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve())); }
+});
 
 for (const engine of engines) test(`original Payments Application/Connection on ephemeral ${engine}`, async t => {
   if (!requested.has(engine)) {
