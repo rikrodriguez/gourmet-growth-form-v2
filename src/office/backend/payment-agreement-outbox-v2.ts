@@ -6,6 +6,8 @@ import { canonical, digest } from './event-quote-workflow';
 import { eventQuoteStorageKey } from './event-quote-postgres';
 import type { MondayVault } from './monday-store';
 import { decodePaymentAgreementReceiptV2, paymentAgreementOperationIdV2, type PaymentAgreementHandoffV2, type PaymentAgreementOutboxV2, type PaymentAgreementOperationSummaryV2, type PaymentAgreementReceiptV2 } from './payment-agreement-operations-v2';
+import { prepareGourmetCheckoutConditionsV1 } from './gourmet-checkout-conditions-v1';
+import { checkoutIssuanceIdV1, decodeGourmetCheckoutEmissionReceiptV1, type CheckoutEmissionReceiptV1 } from './gourmet-checkout-emission-v1';
 
 const unavailable = () => new EventQuoteError('PAYMENT_AGREEMENT_OUTBOX_UNAVAILABLE', 503);
 const invalid = () => new EventQuoteError('PAYMENT_AGREEMENT_OUTBOX_INVALID', 503);
@@ -45,6 +47,20 @@ export class PostgresPaymentAgreementOutboxV2 implements PaymentAgreementOutboxV
         || (h.attemptId === null) !== (h.leaseUntilMs === null) || h.leaseUntilMs !== null && (!Number.isSafeInteger(h.leaseUntilMs) || h.summary.status !== 'reconciliation_required')) throw invalid();
       if (h.receipt) { decodePaymentAgreementReceiptV2(canonical(h.receipt), h.operation); if (h.summary.status !== 'draft_persisted' || h.summary.agreementId !== h.receipt.agreementId || h.summary.serviceAuthenticated !== true || h.attemptId !== null) throw invalid(); }
       else if (h.summary.status === 'draft_persisted' || h.summary.agreementId !== null || h.summary.serviceAuthenticated !== false) throw invalid();
+      if (h.summary.checkout) {
+        const checkout = h.summary.checkout;
+        const conditions = this.checkoutConditions(h);
+        const expectedId = checkoutIssuanceIdV1({ sourceDraftId: h.receipt!.agreementId, operationId: h.operation.operationId,
+          operationDigest: h.operationDigest, conditionsDigest: conditions.conditionsDigest });
+        if (checkout.issuanceId !== expectedId || checkout.conditionsDigest !== conditions.conditionsDigest
+          || checkout.executable !== false || checkout.providerEnabled !== false || checkout.authorizationVerified !== false
+          || !['pending', 'reconciliation_required', 'checkout_issued'].includes(checkout.status) || !h.checkoutOrigin) throw invalid();
+        if (h.checkoutReceipt) {
+          this.validateCheckoutReceipt(h, h.checkoutReceipt);
+          if (checkout.status !== 'checkout_issued' || checkout.checkoutId !== h.checkoutReceipt.checkoutId
+            || checkout.publicPaymentUrl !== h.checkoutReceipt.publicPaymentUrl || checkout.serviceAuthenticated !== true) throw invalid();
+        } else if (checkout.status === 'checkout_issued' || checkout.checkoutId !== null || checkout.publicPaymentUrl !== null || checkout.serviceAuthenticated !== false) throw invalid();
+      } else if (h.checkoutReceipt || h.checkoutOrigin) throw invalid();
       if (!Array.isArray(row.audit) || row.audit.length !== row.revision) throw invalid();
       let previousDigest: string | null = null;
       for (let i = 0; i < row.audit.length; i++) {
@@ -68,7 +84,10 @@ export class PostgresPaymentAgreementOutboxV2 implements PaymentAgreementOutboxV
   async get(scope: QuoteScope, eventId: string, id: string, c?: PoolClient) { try { return await this.load(scope, eventId, id, c ?? this.pool); } catch (e) { throw safe(e); } }
   async list(scope: QuoteScope, eventId: string, c?: PoolClient): Promise<PaymentAgreementOperationSummaryV2[]> {
     try { const db = c ?? this.pool, r = await db.query<{ operation_id: string }>(`SELECT operation_id FROM ${this.schema}.payment_handoffs_v2 WHERE event_key=$1 ORDER BY operation_id`, [eventQuoteStorageKey(scope, eventId)]);
-      if (r.rows.length > 20) throw invalid(); const list = []; for (const row of r.rows) list.push((await this.load(scope, eventId, row.operation_id, db))!.summary); return list;
+      if (r.rows.length > 20) throw invalid(); const list = []; for (const row of r.rows) {
+        const handoff = (await this.load(scope, eventId, row.operation_id, db))!;
+        list.push({ ...handoff.summary, ...(handoff.receipt ? { checkoutConditionsDigest: this.checkoutConditions(handoff).conditionsDigest } : {}) });
+      } return list;
     } catch (e) { throw safe(e); }
   }
   private async save(scope: QuoteScope, eventId: string, h: PaymentAgreementHandoffV2, kind: string, c: PoolClient, prior: number) {
@@ -117,6 +136,67 @@ export class PostgresPaymentAgreementOutboxV2 implements PaymentAgreementOutboxV
       if(result.receipt){h.receipt=decodePaymentAgreementReceiptV2(canonical(result.receipt),h.operation);h.summary.status='draft_persisted';h.summary.agreementId=h.receipt.agreementId;h.summary.serviceAuthenticated=true;}
       else h.summary.status=result.rejected?'rejected':'reconciliation_required';
       await this.save(scope,eventId,h,h.receipt?'receipt_reconciled':result.rejected?'delivery_rejected':'delivery_ambiguous',c,prior); });
+  }
+  private checkoutConditions(h: PaymentAgreementHandoffV2) {
+    if (!h.receipt || h.summary.status !== 'draft_persisted') throw invalid();
+    const result = prepareGourmetCheckoutConditionsV1({ receipt: h.receipt, nowMs: h.operation.prepared.internalApproval.atMs });
+    if (result.status === 'blocked') throw invalid();
+    return result;
+  }
+  private validateCheckoutReceipt(h: PaymentAgreementHandoffV2, receipt: CheckoutEmissionReceiptV1) {
+    const conditions = this.checkoutConditions(h);
+    if (!h.summary.checkout || !h.checkoutOrigin) throw invalid();
+    return decodeGourmetCheckoutEmissionReceiptV1(canonical(receipt), {
+      command: { issuanceId: h.summary.checkout.issuanceId, sourceDraftId: h.receipt!.agreementId,
+        conditionsDigest: conditions.conditionsDigest } as Parameters<typeof decodeGourmetCheckoutEmissionReceiptV1>[1]['command'],
+      conditions: conditions.conditions, providerAssessment: conditions.providerAssessment, publicCheckoutOrigin: h.checkoutOrigin,
+    });
+  }
+  async putCheckoutIntent(input: Parameters<NonNullable<PaymentAgreementOutboxV2['putCheckoutIntent']>>[0], client: PoolClient): Promise<void> {
+    try {
+      const { scope, eventId, operationId, atMs } = input, eventKey = eventQuoteStorageKey(scope, eventId);
+      await client.query('SELECT pg_advisory_xact_lock($1,hashtext($2))', [47001907, eventKey]);
+      const h = await this.load(scope, eventId, operationId, client, true);
+      if (!h || !Number.isSafeInteger(atMs) || atMs < h.summary.updatedAtMs) throw invalid();
+      const conditions = this.checkoutConditions(h);
+      const expectedId = checkoutIssuanceIdV1({ sourceDraftId: h.receipt!.agreementId, operationId, operationDigest: h.operationDigest,
+        conditionsDigest: conditions.conditionsDigest });
+      if (input.issuanceId !== expectedId || input.conditionsDigest !== conditions.conditionsDigest) throw invalid();
+      const origin = new URL(input.publicCheckoutOrigin);
+      if (origin.origin !== input.publicCheckoutOrigin || origin.username || origin.password
+        || !(origin.protocol === 'https:' || origin.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname))) throw invalid();
+      const commandDigest = digest({ key: input.key }), actorDigest = digest({ actorId: input.actorId });
+      const priorCommand = (await client.query<{actor_digest:string;input_digest:string;operation_id:string}>(
+        `SELECT actor_digest,input_digest,operation_id FROM ${this.schema}.payment_handoff_commands_v2 WHERE event_key=$1 AND command_digest=$2`, [eventKey, commandDigest])).rows[0];
+      if (priorCommand && (priorCommand.actor_digest !== actorDigest || priorCommand.input_digest !== input.inputDigest || priorCommand.operation_id !== operationId))
+        throw new EventQuoteError('IDEMPOTENCY_CONFLICT', 409);
+      if (h.summary.checkout && (h.summary.checkout.issuanceId !== input.issuanceId || h.checkoutOrigin !== input.publicCheckoutOrigin)) throw invalid();
+      if (!h.summary.checkout) {
+        const prior = h.revision; h.revision++; h.summary.updatedAtMs = atMs; h.checkoutOrigin = input.publicCheckoutOrigin;
+        h.summary.checkout = { issuanceId: input.issuanceId, conditionsDigest: input.conditionsDigest, status: 'pending', checkoutId: null,
+          publicPaymentUrl: null, executable: false, providerEnabled: false, authorizationVerified: false, serviceAuthenticated: false };
+        await this.save(scope, eventId, h, 'intent_committed', client, prior);
+      }
+      if (!priorCommand) await client.query(`INSERT INTO ${this.schema}.payment_handoff_commands_v2 VALUES($1,$2,$3,$4,$5)`,
+        [eventKey, commandDigest, actorDigest, input.inputDigest, operationId]);
+    } catch (error) { throw safe(error); }
+  }
+  async finishCheckout(scope: QuoteScope, eventId: string, operationId: string, issuanceId: string, receipt: CheckoutEmissionReceiptV1 | null, nowMs: number): Promise<void> {
+    await this.transaction(async client => {
+      const h = await this.load(scope, eventId, operationId, client, true);
+      if (!h || !h.summary.checkout || h.summary.checkout.issuanceId !== issuanceId || !Number.isSafeInteger(nowMs) || nowMs < h.summary.updatedAtMs) throw invalid();
+      if (h.checkoutReceipt) {
+        if (receipt && canonical(receipt) !== canonical(h.checkoutReceipt)) throw invalid();
+        return;
+      }
+      const prior = h.revision; h.revision++; h.summary.updatedAtMs = nowMs;
+      if (receipt) {
+        h.checkoutReceipt = this.validateCheckoutReceipt(h, receipt);
+        h.summary.checkout = { ...h.summary.checkout, status: 'checkout_issued', checkoutId: receipt.checkoutId,
+          publicPaymentUrl: receipt.publicPaymentUrl, serviceAuthenticated: true };
+      } else h.summary.checkout.status = 'reconciliation_required';
+      await this.save(scope, eventId, h, receipt ? 'receipt_reconciled' : 'delivery_ambiguous', client, prior);
+    });
   }
 }
 function safe(error:unknown):EventQuoteError { return error instanceof EventQuoteError ? error : unavailable(); }

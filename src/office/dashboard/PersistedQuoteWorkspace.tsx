@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { PaymentConditionsFormV2, PaymentConfigurationReviewV2 } from './PaymentDraftConditionsV2';
 import type { BriefInput, EventQuoteView, QuoteCommand, PaymentContractModeV2 } from '../backend/event-quote-contracts';
 import { EventQuoteClientError, exactPaymentContractV2Preparation, paymentContractV2PreparationBlocked, isPaymentContractModeV2, paymentConfigurationV2IsCurrent, paymentPreparationIsCurrent, exactQuoteApproval, exactQuoteReviewKey, latestBriefInput, quoteApprovalBlocked, quoteArtifactUrl, verifyQuoteArtifact,
-  type EventQuoteClient, type EventQuoteStatusResponse, type PaymentAgreementOperationCommandV2 } from '../event-quote-client';
+  type EventQuoteClient, type EventQuoteStatusResponse, type PaymentAgreementOperationCommandV2, type CheckoutEmissionBrowserCommandV1 } from '../event-quote-client';
 
 export interface PersistedQuoteWorkspaceProps {
   /** Explicit composition only. Reuse event-workflow.css in the containing approved dashboard. */
@@ -90,14 +90,16 @@ function BoundWorkspace({ client, eventId }: PersistedQuoteWorkspaceProps) {
     return () => { clearTimeout(sessionTimer); clearTimeout(catalogTimer); };
   }, [status]);
 
-  async function execute(command: QuoteCommand | PaymentAgreementOperationCommandV2) {
+  async function execute(command: QuoteCommand | PaymentAgreementOperationCommandV2 | CheckoutEmissionBrowserCommandV1) {
     if (locked.current || !writable || !status) return;
     locked.current = true; const controller = new AbortController(); request.current = controller;
     setBusy('Guardando'); setError(null); setReviewed(null); setVerified(null); setPaymentMode('');
     try {
-      const nextView = 'operation' in command
-        ? await (client.executePaymentAgreement ? client.executePaymentAgreement(eventId, command, status.session.csrfToken, controller.signal) : Promise.reject(new EventQuoteClientError('PAYMENT_AGREEMENT_UNAVAILABLE')))
-        : await client.execute(eventId, command, status.session.csrfToken, controller.signal);
+      const nextView = 'expectedConditionsDigest' in command
+        ? await (client.executePaymentCheckout ? client.executePaymentCheckout(eventId, command, status.session.csrfToken, controller.signal) : Promise.reject(new EventQuoteClientError('PAYMENT_CHECKOUT_UNAVAILABLE')))
+        : 'operation' in command
+          ? await (client.executePaymentAgreement ? client.executePaymentAgreement(eventId, command, status.session.csrfToken, controller.signal) : Promise.reject(new EventQuoteClientError('PAYMENT_AGREEMENT_UNAVAILABLE')))
+          : await client.execute(eventId, command, status.session.csrfToken, controller.signal);
       if (controller.signal.aborted) return;
       setView(nextView); setBrief(latestBriefInput(nextView));
       // Re-read authoritative catalogue and permissions. An unavailable refresh blocks further writes.
@@ -154,7 +156,7 @@ function BoundWorkspace({ client, eventId }: PersistedQuoteWorkspaceProps) {
         <p className="gew-muted">Impuesto: {status.catalog.taxBps / 100}% · anticipo solicitado: {status.catalog.depositBps / 100}% · vigencia: {new Date(status.catalog.validUntilMs).toISOString()}</p>
         <fieldset className="gew-attestation" disabled={!writable || !view || dirty}><legend>Cantidades explícitas</legend><div className="gew-editor-fields">{status.catalog.items.map(item => <label key={item.id}>{item.label} · {money(item.unitPriceCents)} / {item.unit}<input type="number" min={0} max={1000} step={1} value={quantities[item.id] ?? ''} placeholder="0" onChange={event => { setQuantities(previous => ({ ...previous, [item.id]: event.target.value })); setReviewed(null); }} /></label>)}</div></fieldset>
         <p>{status.catalog.terms}</p><div className="gew-actions"><button type="button" className="gew-button gew-button-primary" disabled={!writable || !view || dirty || !quantitiesValid} onClick={generate}>Generar versión de cotización</button></div></> : <p>Sin catálogo autorizado disponible. No se completan precios automáticamente.</p>}
-    </Card></div><div><PersistedQuoteReview view={view} status={status} writable={writable} dirty={dirty} reviewed={reviewed} verified={verified} onReviewed={setReviewed} onApprove={approve} /><PersistedPaymentPreparation view={view} status={status} writable={writable} dirty={dirty} verified={verified} paymentMode={paymentMode} onPaymentModeChange={setPaymentMode} onPrepare={preparePayment} onCommand={command => void execute(command)} onPaymentAgreementOperation={client.executePaymentAgreement ? command => void execute(command) : undefined} /></div></div>}
+    </Card></div><div><PersistedQuoteReview view={view} status={status} writable={writable} dirty={dirty} reviewed={reviewed} verified={verified} onReviewed={setReviewed} onApprove={approve} /><PersistedPaymentPreparation view={view} status={status} writable={writable} dirty={dirty} verified={verified} paymentMode={paymentMode} onPaymentModeChange={setPaymentMode} onPrepare={preparePayment} onCommand={command => void execute(command)} onPaymentAgreementOperation={client.executePaymentAgreement ? command => void execute(command) : undefined} onPaymentCheckout={client.executePaymentCheckout ? command => void execute(command) : undefined} /></div></div>}
   </div>;
 }
 
@@ -187,9 +189,9 @@ export function PersistedQuoteReview({ view, status, writable = false, dirty = t
 
 
 /** Reuses the approved card layout; pending preparations never expose a payment link. */
-export function PersistedPaymentPreparation({ view, status, writable = false, dirty = true, verified = null, paymentMode = '', onPaymentModeChange = () => {}, onPrepare = () => {}, onCommand = () => {}, onPaymentAgreementOperation }: {
+export function PersistedPaymentPreparation({ view, status, writable = false, dirty = true, verified = null, paymentMode = '', onPaymentModeChange = () => {}, onPrepare = () => {}, onCommand = () => {}, onPaymentAgreementOperation, onPaymentCheckout }: {
   view: EventQuoteView | null; status: EventQuoteStatusResponse; writable?: boolean; dirty?: boolean;
-  verified?: string | null; paymentMode?: PaymentContractModeV2 | ''; onPaymentModeChange?: (mode: PaymentContractModeV2 | '') => void; onPrepare?: () => void; onCommand?: (command: QuoteCommand) => void; onPaymentAgreementOperation?: (command: PaymentAgreementOperationCommandV2) => void;
+  verified?: string | null; paymentMode?: PaymentContractModeV2 | ''; onPaymentModeChange?: (mode: PaymentContractModeV2 | '') => void; onPrepare?: () => void; onCommand?: (command: QuoteCommand) => void; onPaymentAgreementOperation?: (command: PaymentAgreementOperationCommandV2) => void; onPaymentCheckout?: (command: CheckoutEmissionBrowserCommandV1) => void;
 }) {
   const preparations = view?.record.paymentPreparations ?? [], drafts = view?.record.paymentContractPreparationsV2 ?? [];
   const quote = view?.record.quotes.at(-1);
@@ -197,7 +199,7 @@ export function PersistedPaymentPreparation({ view, status, writable = false, di
   const unavailable = !writable || dirty || !view || verified !== exactQuoteReviewKey(view) || paymentContractV2PreparationBlocked(view, status);
   const blocked = unavailable || !isPaymentContractModeV2(paymentMode) || paymentMode === 'fixed_49_reservation' && (!quote || quote.totalCents <= 4900);
   return <Card title="Preparación de enlace de pago">
-    <p>{status.paymentAgreementsEnabled === true ? 'Revisa las condiciones ligadas a la cotización aprobada y crea un acuerdo deshabilitado en Payments. No genera un enlace ni un cobro.' : 'Guarda un borrador interno ligado a la cotización aprobada y a una modalidad elegida expresamente. No crea un enlace, acuerdo de pago, cobro ni envío.'}</p>
+    <p>{status.paymentCheckoutsEnabled === true ? 'Conserva el borrador y sus condiciones revisadas. Puedes emitir un checkout relacionado, sin activar el proveedor ni cobrar.' : status.paymentAgreementsEnabled === true ? 'Revisa las condiciones ligadas a la cotización aprobada y crea un acuerdo deshabilitado en Payments. No genera un enlace ni un cobro.' : 'Guarda un borrador interno ligado a la cotización aprobada y a una modalidad elegida expresamente. No crea un enlace, acuerdo de pago, cobro ni envío.'}</p>
     {(!hasCurrentPreparation || status.paymentDraftsEnabled !== true && status.paymentAgreementsEnabled !== true) && <><label>Modalidad de pago<select data-testid="persisted-payment-mode" value={paymentMode} disabled={unavailable} onChange={event => onPaymentModeChange(isPaymentContractModeV2(event.target.value) ? event.target.value : '')}>
       <option value="">Selecciona una modalidad</option>
       <option value="retainer_50">50 % inicial y 50 % de saldo</option>
@@ -225,7 +227,13 @@ export function PersistedPaymentPreparation({ view, status, writable = false, di
         && !!status.catalog && status.catalog.validUntilMs > Date.now();
       const canReconcileAgreement = writable && !dirty && operational && status.enabled && status.session.mode === 'test'
         && status.session.canWrite && status.session.canApprove && status.session.expiresAtMs > Date.now();
-      const stage = agreementOperation ? agreementOperation.status === 'draft_persisted' ? 'Acuerdo guardado en Payments · sin enlace'
+      const canIssueCheckout = writable && !dirty && verified === exactQuoteReviewKey(view!) && configurationCurrent && status.enabled
+        && status.paymentCheckoutsEnabled === true && status.session.mode === 'test' && view!.record.scope.mode === 'test'
+        && status.session.canWrite && status.session.canApprove && status.session.expiresAtMs > Date.now();
+      const canReconcileCheckout = writable && !dirty && status.paymentCheckoutsEnabled === true && status.enabled && status.session.mode === 'test'
+        && status.session.canWrite && status.session.canApprove && status.session.expiresAtMs > Date.now();
+      const stage = agreementOperation?.checkout?.status === 'checkout_issued' ? 'Checkout relacionado emitido · proveedor desactivado'
+        : agreementOperation ? agreementOperation.status === 'draft_persisted' ? 'Acuerdo guardado en Payments · sin enlace'
         : agreementOperation.status === 'pending' ? 'Creación de acuerdo pendiente · sin enlace'
           : agreementOperation.status === 'reconciliation_required' ? 'Resultado de Payments por reconciliar · sin enlace' : 'Solicitud de acuerdo rechazada · sin enlace'
         : !current ? 'Borrador obsoleto · conservar solo como historial' : registration
@@ -245,7 +253,7 @@ export function PersistedPaymentPreparation({ view, status, writable = false, di
         {configuration ? <>
           <p data-testid="persisted-payment-v2-configuration"><strong>{configurationCurrent ? 'Configuración sintética guardada' : 'Configuración sintética obsoleta · conservar solo como historial'}</strong>{' '}<span>Datos de prueba guardados, sin autorización comercial.</span></p>
           {registration && <p data-testid="persisted-payment-v2-registration"><strong>{registrationCurrent ? 'Validación contractual sintética registrada' : 'Validación contractual sintética obsoleta · conservar solo como historial'}</strong>{' '}<span>Borrador interno sin enlace; ejecución desactivada y autorización comercial sin verificar.</span></p>}
-          <PaymentConfigurationReviewV2 key={`${configuration.id}:${configuration.digest}:${view!.record.revision}`} view={view!} status={status} configuration={configuration} enabled={canManageDraft && configurationCurrent} showApproval={(!agreementOperation || agreementOperation.status === 'reconciliation_required') && (!registration || operational) && current && configurationCurrent && (status.paymentDraftsEnabled === true || operational) && status.session.mode === 'test'} registered={!!registration || agreementOperation?.status === 'draft_persisted'} agreementOperation={agreementOperation} canReconcile={canReconcileAgreement} onPaymentAgreementOperation={onPaymentAgreementOperation} onCommand={onCommand} />
+          <PaymentConfigurationReviewV2 key={`${configuration.id}:${configuration.digest}:${view!.record.revision}`} view={view!} status={status} configuration={configuration} enabled={canManageDraft && configurationCurrent} showApproval={(!agreementOperation || agreementOperation.status === 'reconciliation_required') && (!registration || operational) && current && configurationCurrent && (status.paymentDraftsEnabled === true || operational) && status.session.mode === 'test'} registered={!!registration || agreementOperation?.status === 'draft_persisted'} agreementOperation={agreementOperation} canReconcile={canReconcileAgreement} onPaymentAgreementOperation={onPaymentAgreementOperation} canIssueCheckout={canIssueCheckout} canReconcileCheckout={canReconcileCheckout} onPaymentCheckout={onPaymentCheckout} onCommand={onCommand} />
           {registration && !agreementOperation && !operational && <p data-testid="payment-v2-draft-agreement">Acuerdo borrador de prueba registrado · sin enlace. Ejecución: desactivada. Proveedor: desactivado. Autorización comercial: sin verificar. Cobrado: desconocido.</p>}
           <p className="gew-muted">{agreementOperation ? 'La preparación original conserva sus importes y condiciones. El proveedor de cobro permanece desactivado.' : 'La preparación original conserva sus importes y condiciones. Proveedor desactivado. Ninguna solicitud se ha enviado.'}</p>
         </> : (status.paymentDraftsEnabled === true || operational) && current ? <p className="gew-muted">Completa las condiciones para revisar este borrador de prueba. El proveedor y la ejecución permanecen desactivados.</p> : <ul><li>Proveedor desactivado y receptor del contrato v2 no disponible. Ninguna solicitud se ha enviado.</li>

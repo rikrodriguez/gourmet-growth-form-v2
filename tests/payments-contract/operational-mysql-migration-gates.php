@@ -130,7 +130,9 @@ function runOperationalMysqlMigrationGateProbesV2(PDO $pdo, Config $config, stri
     $migrator = new Migrator($pdo, $migrationDirectory);
     $businessBefore = $businessSnapshot($pdo);
     $versionsBefore = $versions($pdo);
-    $check(count($versionsBefore) === 5, 'five_attested_fixture_migrations_required');
+    $check($versionsBefore === ['0001_payment_foundation.sql', '0002_paypal_sandbox_poc.sql', '0003_checkout_experience.sql',
+        '0004_current_payment_ledger.sql', '0005_versioned_payment_agreement_drafts.sql', '0006_versioned_payment_checkouts.sql'],
+        'six_attested_fixture_migrations_required');
     $check(!$pdo->inTransaction(), 'fixture_starts_outside_transaction');
 
     $tablesBefore = $tableNames($pdo);
@@ -243,7 +245,7 @@ function runOperationalMysqlMigrationGateProbesV2(PDO $pdo, Config $config, stri
     } finally { $pdo->exec('DROP TABLE synthetic_migration_engine_probe'); }
     $migrator->assertCurrent();
 
-    $faultVersion = '0006_synthetic_migration_fault.sql';
+    $faultVersion = '0007_synthetic_migration_fault.sql';
     $faultSql = "CREATE TABLE synthetic_migration_fault_probe (id INT PRIMARY KEY, fixture VARCHAR(32) NOT NULL) ENGINE=InnoDB;\n"
         . "THIS IS DELIBERATELY INVALID SYNTHETIC SQL;\n";
     $check(!in_array('synthetic_migration_fault_probe', $tableNames($pdo), true), 'partial_ddl_probe_name_unused');

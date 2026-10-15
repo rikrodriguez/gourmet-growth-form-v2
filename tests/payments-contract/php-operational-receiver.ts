@@ -19,6 +19,7 @@ const baseEnvironment: NodeJS.ProcessEnv = {
   PATH: process.env.PATH || '/usr/bin:/bin', TZ: 'UTC', LC_ALL: 'C',
   INTERNAL_API_ENABLED: 'false', INTERNAL_V2_ENABLED: 'true',
   INTERNAL_V2_COMMERCIAL_DRAFT_ENABLED: 'false',
+  INTERNAL_CHECKOUT_V1_ENABLED: 'false',
   INTERNAL_API_SHARED_SECRET: operationalFixtureSharedSecret,
   PAYMENT_LINK_ENCRYPTION_KEY: 'cd'.repeat(32),
 };
@@ -26,13 +27,16 @@ const baseEnvironment: NodeJS.ProcessEnv = {
 export type OperationalLedgerSnapshotV2 = {
   counts: Record<string, number>; agreements: Record<string, any>[]; schedules: Record<string, any>[];
   idempotency: Record<string, any>[]; audit: Record<string, any>[];
+  tableNames: string[]; allRows: Record<string, { rows: number; sha256: string }>;
+  rowHashes: Record<string, string[]>;
+  checkoutIssuances: Record<string, any>[];
   migrations: string[]; foreignKeyViolations: unknown[];
   storage?: { driver: string; engine: string; version: string; database?: string; nativePrepares?: boolean;
     foreignKeysEnabled: boolean; collation?: string; timeZone?: string; sqlMode?: string };
 };
 export type OperationalDatabaseBindingV2 = Readonly<{ engine: 'mariadb' | 'mysql'; host: '127.0.0.1'; port: number;
   database: string; user: 'root'; password: ''; containerId: string; ownershipToken: string }>;
-export type OperationalFixtureOptionsV2 = { seedLegacy?: boolean; phpBinary?: string;
+export type OperationalFixtureOptionsV2 = { seedLegacy?: boolean; phpBinary?: string; checkoutEmission?: boolean;
   database?: { engine: 'mariadb' | 'mysql'; binding: OperationalDatabaseBindingV2 } };
 type FixtureResult = {
   snapshot: OperationalLedgerSnapshotV2; providerCalls: number;
@@ -44,6 +48,11 @@ type FixtureResult = {
   queryProbes?: { assertions: number; facts: Record<string, boolean>; driver: string };
   migrationGates?: { assertions: number; facts: Record<string, boolean>; driver: string; engineVersion: string };
   bootstrapCreated?: boolean; consumedBootstrapTokens?: number;
+  historicalDraftId?: string;
+  checkoutStorageProof?: { tokenHashMatches: boolean; plaintextTokenPresent: boolean; plaintextUrlPresent: boolean };
+  checkoutExpiryProof?: { childPresentInside: boolean; relationPresentInside: boolean;
+    encryptedReceiptPresentInside: boolean; auditPresentInside: boolean; rejectedAtCommit: boolean };
+  checkoutSqlGuards?: { assertions: number; facts: Record<string, boolean> };
   migrationFault?: { failed: boolean; transactionOpen: boolean; before: Record<string, any>;
     afterFailure: Record<string, any>; applied: string[]; reapplied: string[]; afterSuccess: Record<string, any> };
 };
@@ -67,6 +76,8 @@ export async function createOperationalPaymentFixtureV2(options: OperationalFixt
     || process.env.GOURMET_CONTRACT_PHP_BIN || 'php';
   const directory = await mkdtemp(join(tmpdir(), 'gourmet-payments-operational-'));
   const runtime = join(directory, 'runtime');
+  const fixtureEnvironment: NodeJS.ProcessEnv = { ...baseEnvironment,
+    INTERNAL_CHECKOUT_V1_ENABLED: options.checkoutEmission === true ? 'true' : 'false' };
   try {
     await writeFile(join(directory, 'synthetic-fixture-only'), 'Disposable synthetic payment proof\n', { mode: 0o600 });
     await mkdir(join(directory, 'storage'), { mode: 0o700 });
@@ -98,7 +109,7 @@ export async function createOperationalPaymentFixtureV2(options: OperationalFixt
     const invoke = (input: Record<string, unknown>, environment: NodeJS.ProcessEnv = {}): FixtureResult => {
       const child = spawnSync(php, [...phpOptions, fixturePath, runtime, directory], {
         input: JSON.stringify(input), encoding: 'utf8', timeout: 10_000, maxBuffer: 2_097_152,
-        cwd: directory, env: { ...baseEnvironment, ...environment },
+        cwd: directory, env: { ...fixtureEnvironment, ...environment },
       });
       assert.ifError(child.error);
       assert.equal(child.signal, null, 'Synthetic PHP fixture must finish without termination');
@@ -108,7 +119,7 @@ export async function createOperationalPaymentFixtureV2(options: OperationalFixt
     };
     const invokeAsync = (input: Record<string, unknown>, environment: NodeJS.ProcessEnv = {}): Promise<FixtureResult> => new Promise((resolve, reject) => {
       const child = spawn(php, [...phpOptions, fixturePath, runtime, directory], {
-        cwd: directory, stdio: ['pipe', 'pipe', 'pipe'], env: { ...baseEnvironment, ...environment },
+        cwd: directory, stdio: ['pipe', 'pipe', 'pipe'], env: { ...fixtureEnvironment, ...environment },
       });
       const stdout: Buffer[] = [], stderr: Buffer[] = [];
       let bytes = 0, settled = false;
@@ -145,6 +156,7 @@ export async function createOperationalPaymentFixtureV2(options: OperationalFixt
 
 export type OperationalPaymentReceiverV2 = {
   readonly baseUrl: string; readonly sharedSecret: string;
+  readonly fixture: OperationalFixtureV2;
   inspect(): Promise<OperationalLedgerSnapshotV2 & { providerCalls: number }>;
   restart(): Promise<void>; close(): Promise<void>;
 };
@@ -180,7 +192,8 @@ export async function startOperationalPaymentReceiverV2(options: OperationalFixt
     stderr = '';
     const running = spawn(php, [...phpOptions, '-S', `127.0.0.1:${port}`, routerPath], {
       cwd: fixture.directory, stdio: ['ignore', 'ignore', 'pipe'],
-      env: { ...baseEnvironment, GOURMET_SYNTHETIC_RUNTIME_ROOT: fixture.runtime,
+      env: { ...baseEnvironment, INTERNAL_CHECKOUT_V1_ENABLED: options.checkoutEmission === true ? 'true' : 'false',
+        GOURMET_SYNTHETIC_RUNTIME_ROOT: fixture.runtime,
         GOURMET_SYNTHETIC_FIXTURE_DIRECTORY: fixture.directory },
     });
     child = running;
@@ -201,7 +214,7 @@ export async function startOperationalPaymentReceiverV2(options: OperationalFixt
   try { await start(); }
   catch (error) { await stop(); await fixture.close(); throw error; }
   return {
-    baseUrl, sharedSecret: operationalFixtureSharedSecret,
+    baseUrl, sharedSecret: operationalFixtureSharedSecret, fixture,
     async inspect() {
       const snapshot = fixture.invoke({ action: 'snapshot' }).snapshot;
       const attempts = await readFile(join(fixture.directory, 'provider-attempts.log'), 'utf8').catch(error => {

@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import { EventQuoteError, type EventQuoteRecord, type QuoteScope } from './event-quote-contracts';
 import { canonical, digest } from './event-quote-workflow';
 import type { InternalPaymentPreparationV2 } from './gourmet-payments-agreement-v2';
+import type { CheckoutEmissionCommandV1, CheckoutEmissionReceiptV1, CheckoutEmissionSummaryV1, CheckoutIssuanceAuthorityV1 } from './gourmet-checkout-emission-v1';
 
 export type PaymentAgreementOperationCommandV2 = { key: string; configurationId: string; configurationDigest: string; expectedReviewDigest: string; operation: 'create' | 'reconcile' };
 export type PaymentAgreementOperationV2 = {
@@ -24,10 +25,12 @@ export type PaymentAgreementOperationSummaryV2 = {
   status: 'pending' | 'reconciliation_required' | 'draft_persisted' | 'rejected'; agreementId: string | null;
   executable: false; providerEnabled: false; publicPaymentUrl: null; authorizationVerified: false;
   serviceAuthenticated: boolean; updatedAtMs: number;
+  checkoutConditionsDigest?: string; checkout?: CheckoutEmissionSummaryV1;
 };
 export type PaymentAgreementHandoffV2 = {
   operation: PaymentAgreementOperationV2; operationDigest: string; summary: PaymentAgreementOperationSummaryV2;
   receipt: PaymentAgreementReceiptV2 | null; revision: number; attemptId: string | null; leaseUntilMs: number | null;
+  checkoutReceipt?: CheckoutEmissionReceiptV1; checkoutOrigin?: string;
 };
 export interface PaymentAgreementOutboxV2 {
   list(scope: QuoteScope, eventId: string, client?: PoolClient): Promise<PaymentAgreementOperationSummaryV2[]>;
@@ -35,6 +38,9 @@ export interface PaymentAgreementOutboxV2 {
   putIntent(input: { scope: QuoteScope; eventId: string; operation: PaymentAgreementOperationV2; actorId: string; key: string; inputDigest: string; atMs: number }, client: PoolClient): Promise<PaymentAgreementHandoffV2>;
   claim(scope: QuoteScope, eventId: string, operationId: string, nowMs: number): Promise<{ handoff: PaymentAgreementHandoffV2; attemptId: string | null }>;
   finish(scope: QuoteScope, eventId: string, operationId: string, attemptId: string, result: { receipt: PaymentAgreementReceiptV2 | null; rejected?: boolean }, nowMs: number): Promise<void>;
+  putCheckoutIntent?(input: { scope: QuoteScope; eventId: string; operationId: string; issuanceId: string; conditionsDigest: string;
+    publicCheckoutOrigin: string; actorId: string; key: string; inputDigest: string; atMs: number }, client: PoolClient): Promise<void>;
+  finishCheckout?(scope: QuoteScope, eventId: string, operationId: string, issuanceId: string, receipt: CheckoutEmissionReceiptV1 | null, nowMs: number): Promise<void>;
 }
 export type PaymentAgreementTransportV2 = {
   create(operation: PaymentAgreementOperationV2, authorization: PaymentAgreementAuthorizationV2, signal: AbortSignal): Promise<{ status: number; body: string }>;
@@ -45,6 +51,14 @@ export type PaymentAgreementIntegrationV2 = {
   outbox: PaymentAgreementOutboxV2; transport: PaymentAgreementTransportV2;
   resolveSource(scope: QuoteScope, eventId: string, record: EventQuoteRecord): Promise<PaymentAgreementSourceV2 | null>;
   commercialEnabled?: false; deliveryTimeoutMs?: number;
+  checkout?: {
+    transport: { publicCheckoutOrigin: string | null;
+      issue(command: CheckoutEmissionCommandV1, signal: AbortSignal): Promise<{ status: number; body: string }>;
+      reconcile(command: CheckoutEmissionCommandV1, signal: AbortSignal): Promise<{ status: number; body: string }> };
+    /** Fresh server-owned issuance capability; never derived from canApprove. */
+    /** null event advertises the capability only; issuance rechecks a concrete event. */
+    resolveIssuanceAuthority(scope: QuoteScope, eventId: string | null, actorId: string, client: PoolClient): Promise<CheckoutIssuanceAuthorityV1 | null>;
+  };
 };
 export function freezePaymentAgreementV2<T>(value: T): T {
   if (value && typeof value === 'object') { for (const child of Object.values(value)) freezePaymentAgreementV2(child); Object.freeze(value); }

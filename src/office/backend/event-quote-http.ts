@@ -6,6 +6,7 @@ import type { PoolClient } from 'pg';
 import type { PaymentAgreementIntegrationV2 } from './payment-agreement-operations-v2';
 import { executePaymentAgreementOperationV2 } from './payment-agreement-dispatch-v2';
 import { canonical } from './event-quote-workflow';
+import { executePaymentCheckoutOperationV1 } from './payment-checkout-dispatch-v1';
 
 export const EVENT_QUOTE_API = '/api/office/event-quotes';
 export const EVENT_QUOTE_CSRF_HEADER = 'x-event-quote-csrf';
@@ -13,6 +14,7 @@ export type EventQuoteIdentity = { scope: QuoteScope; actor: Omit<QuoteActor, 'e
   /** Non-secret, opaque version issued by the authority repository, never a session token/hash. */
   accessRevision?: string };
 export type EventQuoteStatusResponse = Awaited<ReturnType<EventQuoteService['status']>> & {
+  paymentCheckoutsEnabled?: true;
   session: { mode: QuoteScope['mode']; canWrite: boolean; canApprove: boolean; csrfToken: string; expiresAtMs: number; accessRevision?: string };
   externalEffectsEnabled: false;
 };
@@ -95,9 +97,17 @@ export function registerEventQuoteRoutes(app: FastifyInstance, dependencies: Eve
     };
     const actorOf = (identity: EventQuoteIdentity): QuoteActor => ({ ...identity.actor, expiresAtMs: identity.expiresAtMs });
     if (dependencies.dashboardAccess) routes.get(`${EVENT_QUOTE_API}/dashboard/access`, request => dependencies.dashboardAccess!(request));
-    routes.get(`${EVENT_QUOTE_API}/status`, request => run(request, { kind: 'status' }, async (identity, service) => {
+    routes.get(`${EVENT_QUOTE_API}/status`, request => run(request, { kind: 'status' }, async (identity, service, transaction) => {
       const status = await service.status(identity.scope, actorOf(identity));
+      const checkout = dependencies.paymentAgreements?.checkout;
+      const issuance = checkout && transaction && identity.scope.mode === 'test' && identity.actor.durable
+        ? await checkout.resolveIssuanceAuthority(identity.scope, null, identity.actor.actorId, transaction) : null;
+      const canIssue = issuance && issuance.actorId === identity.actor.actorId && issuance.canIssueCheckout === true && issuance.durable === true
+        && issuance.purpose === 'issue_payment_checkout_v1' && canonical(issuance.scope) === canonical(identity.scope)
+        && Number.isSafeInteger(issuance.expiresAtMs) && issuance.expiresAtMs > clock() && issuance.expiresAtMs <= identity.expiresAtMs;
       const result: EventQuoteStatusResponse = { ...status,
+        ...(canIssue && checkout?.transport.publicCheckoutOrigin && dependencies.paymentAgreements?.outbox.putCheckoutIntent
+          && dependencies.paymentAgreements.outbox.finishCheckout && status.enabled && status.catalog?.authority === 'test_only' ? { paymentCheckoutsEnabled: true as const } : {}),
         ...(dependencies.paymentAgreements && dependencies.runAuthorized && identity.scope.mode === 'test' && identity.actor.durable && status.paymentDraftsEnabled === true && status.enabled && status.catalog?.authority === 'test_only' ? {paymentAgreementsEnabled:true as const}:{}), session: {
         mode: identity.scope.mode, canWrite: identity.actor.canWrite, canApprove: identity.actor.canApprove,
         csrfToken: identity.csrfToken, expiresAtMs: identity.expiresAtMs,
@@ -125,6 +135,21 @@ export function registerEventQuoteRoutes(app: FastifyInstance, dependencies: Eve
         if(!transaction||canonical(identity.scope)!==canonical(view.record.scope))fail(403);
         return {...await service.read(identity.scope,actorOf(identity),id),paymentAgreementOperationsV2:await integration.outbox.list(identity.scope,id,transaction),
           ...(dependencies.dashboardAccess&&identity.accessRevision?{accessRevision:identity.accessRevision}:{})};
+      });
+    });
+    routes.post(`${EVENT_QUOTE_API}/:eventId/payment-checkouts/v1`, { bodyLimit: 4096 }, async request => {
+      const id = eventId(request), integration = dependencies.paymentAgreements;
+      if (!integration?.checkout || !dependencies.runAuthorized) fail(404);
+      const view = await executePaymentCheckoutOperationV1(id, request.body, { integration, clock,
+        authorize: operation => run(request, { kind: 'approve', eventId: id }, async (identity, service, transaction) => {
+          if (!transaction || !identity.actor.canWrite || !identity.actor.canApprove || !equalToken(request.headers[EVENT_QUOTE_CSRF_HEADER], identity.csrfToken)) fail(403);
+          return operation({ scope: identity.scope, actor: actorOf(identity), service, client: transaction });
+        }) });
+      return run(request, { kind: 'read', eventId: id }, async (identity, service, transaction) => {
+        if (!transaction || canonical(identity.scope) !== canonical(view.record.scope)) fail(403);
+        return { ...await service.read(identity.scope, actorOf(identity), id),
+          paymentAgreementOperationsV2: await integration.outbox.list(identity.scope, id, transaction),
+          ...(dependencies.dashboardAccess && identity.accessRevision ? { accessRevision: identity.accessRevision } : {}) };
       });
     });
     routes.post(`${EVENT_QUOTE_API}/:eventId/commands`, { bodyLimit: 65_536 }, request => {

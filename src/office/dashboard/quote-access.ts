@@ -1,5 +1,5 @@
 import type { QuoteScope } from '../backend/event-quote-contracts';
-import { EventQuoteClientError, assertPaymentAgreementOperationCommandV2, assertPaymentDraftCommandV2, validateQuoteStatus, validateQuoteView, type EventQuoteClient } from '../event-quote-client';
+import { EventQuoteClientError, assertPaymentAgreementOperationCommandV2, assertPaymentCheckoutCommandV1, assertPaymentDraftCommandV2, validateQuoteStatus, validateQuoteView, type EventQuoteClient } from '../event-quote-client';
 
 /** A projection from the existing server/session owner, never an identity chooser or tenant grant. */
 export type DashboardQuoteGrant = {
@@ -151,6 +151,11 @@ export function bindDashboardQuoteClient(client: EventQuoteClient, input: Dashbo
       assertPaymentAgreementOperationCommandV2(command);
       return checkView(await client.executePaymentAgreement!(eventId, command, csrfToken, signalFor(signal), grant.serverRevision), eventId, signal);
     }) } satisfies Pick<EventQuoteClient, 'executePaymentAgreement'> : {}),
+    ...(client.executePaymentCheckout ? { executePaymentCheckout: (eventId, command, csrfToken, signal) => protect(signal, async () => {
+      assertCurrent(eventId, true, true); if (signal.aborted) return cancelled();
+      assertPaymentCheckoutCommandV1(command);
+      return checkView(await client.executePaymentCheckout!(eventId, command, csrfToken, signalFor(signal), grant.serverRevision), eventId, signal);
+    }) } satisfies Pick<EventQuoteClient, 'executePaymentCheckout'> : {}),
     execute: (eventId, command, csrfToken, signal) => protect(signal, async () => {
       assertCurrent(eventId, true, command.action === 'approve' || command.action === 'prepare_payment' || command.action === 'prepare_payment_v2' || command.action === 'configure_payment_v2' || command.action === 'register_payment_draft_v2'); if (signal.aborted) return cancelled();
       assertPaymentDraftCommandV2(command);

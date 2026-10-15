@@ -78,7 +78,7 @@ assert.equal(count('skipped'), 0);
 // Keep the 114 original/v1 checks independently counted. The additive v2
 // receiver has its own isolated process, log and count, using the same guard.
 const v2 = spawnSync(process.execPath, ['--import', resolve(directory, 'no-network.mjs'), '--import', 'tsx', '--test', '--test-reporter=tap',
-  resolve(directory, 'v2-roundtrip.test.ts')], {
+  resolve(directory, 'v2-roundtrip.test.ts'), resolve(directory, 'checkout-conditions-v1.test.ts')], {
   cwd: root, encoding: 'utf8', timeout: 30000, maxBuffer: 4194304,
   env: { ...environment, TSX_TSCONFIG_PATH: resolve(directory, 'tsconfig.json'), GOURMET_CONTRACT_PHP_BIN: php },
 });

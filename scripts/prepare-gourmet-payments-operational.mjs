@@ -57,6 +57,18 @@ export async function prepareGourmetPaymentsOperationalRuntime({ destination }) 
   await run('git', ['apply', patch], { cwd: target });
   await copyExtension(join(integration, 'src'), join(target, 'src'), '.php');
   await copyExtension(join(integration, 'migrations'), join(target, 'migrations'), '.sql');
+  // Supplemental original assets retain their own Dropbox revision/byte pins;
+  // the immutable 64-file PHP baseline manifest is left unchanged.
+  const assetsRoot = join(repository, 'tests/payments-contract/operational-assets');
+  const assets = JSON.parse(await readFile(join(assetsRoot, 'SOURCES.json'), 'utf8'));
+  for (const file of assets.files) {
+    if (!['app.css', 'app.js'].includes(file.name)) throw new Error('UNEXPECTED_ORIGINAL_PAYMENT_ASSET');
+    const bytes = await readFile(inside(assetsRoot, file.name));
+    if (bytes.length !== file.size || createHash('sha256').update(bytes).digest('hex') !== file.sha256)
+      throw new Error('ORIGINAL_PAYMENT_ASSET_HASH_MISMATCH:' + file.name);
+    const to = inside(target, 'public/assets/' + file.name);
+    await mkdir(dirname(to), { recursive: true }); await writeFile(to, bytes, { flag: 'wx' });
+  }
   return target;
 }
 

@@ -55,7 +55,7 @@ for (const engine of engines) test(`original Payments Application/Connection on 
   };
   try {
     await runCase('actual Connection selects native PDO MySQL; original root migrations upgrade a preexisting v1 agreement', () => {
-      assert.deepEqual(ledger.initial.applied, ['0004_current_payment_ledger.sql', '0005_versioned_payment_agreement_drafts.sql']);
+      assert.deepEqual(ledger.initial.applied, ['0004_current_payment_ledger.sql', '0005_versioned_payment_agreement_drafts.sql', '0006_versioned_payment_checkouts.sql']);
       const state = ledger.initial.snapshot, storage = state.storage!;
       assert.equal(storage.driver, 'mysql'); assert.equal(storage.engine, engine);
       assert.equal(storage.database, database.binding.database); assert.equal(storage.nativePrepares, true);
@@ -72,7 +72,7 @@ for (const engine of engines) test(`original Payments Application/Connection on 
       assert.equal(long.recipient_name, 'N'.repeat(100) + ' ' + 'L'.repeat(100));
       const longBefore = ledger.initial.legacyBeforeMigration!.find(row => row.public_uuid === long.public_uuid)!;
       assert.equal(long.updated_at, longBefore.updated_at); assert.equal(long.created_at, longBefore.created_at);
-      assert.equal(state.counts.customers, 2); assert.equal(state.migrations.length, 5);
+      assert.equal(state.counts.customers, 2); assert.equal(state.migrations.length, 6);
       assert.deepEqual(state.schedules.map(row => [row.kind, row.amount_cents]), [['RESERVATION', 4900], ['BALANCE', 5101]]);
       assertNoFinancialSideEffects(state); checks.push('original_migrations_v1_upgrade_native_pdo');
     });

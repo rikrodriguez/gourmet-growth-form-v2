@@ -27,7 +27,7 @@ function config(view:EventQuoteView,command:PaymentAgreementOperationCommandV2):
   if(!c||c.digest!==command.configurationDigest||c.reviewDigest!==command.expectedReviewDigest)return fail('STALE_PAYMENT_CONFIGURATION',409);
   return c;
 }
-async function freshOperation(context:PaymentAgreementAuthorizedContextV2,eventId:string,command:PaymentAgreementOperationCommandV2,integration:PaymentAgreementIntegrationV2,clock:()=>number):Promise<{operation:PaymentAgreementOperationV2;authorization:PaymentAgreementAuthorizationV2}> {
+export async function freshOperation(context:PaymentAgreementAuthorizedContextV2,eventId:string,command:PaymentAgreementOperationCommandV2,integration:PaymentAgreementIntegrationV2,clock:()=>number):Promise<{operation:PaymentAgreementOperationV2;authorization:PaymentAgreementAuthorizationV2}> {
   enabled(context,clock());const view=await context.service.read(context.scope,context.actor,eventId),c=config(view,command);enabled(context,clock());
   const source=await integration.resolveSource(structuredClone(context.scope),eventId,structuredClone(view.record));
   enabled(context,clock());

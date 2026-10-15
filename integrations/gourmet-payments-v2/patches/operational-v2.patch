@@ -510,7 +510,7 @@
              "SELECT public_uuid, recipient_name, service_name, status, balance_due_at_utc, balance_timezone " .
              "FROM payment_agreements WHERE status IN ('PAYMENT_FAILED', 'CANCELLED') " .
 -            "OR (link_revoked_at IS NULL AND link_expires_at IS NOT NULL AND link_expires_at <= :now " .
-+            "OR (contract_version = 1 AND public_token_hash IS NOT NULL AND link_revoked_at IS NULL AND link_expires_at IS NOT NULL AND link_expires_at <= :now " .
++            "OR (contract_version IN (1, 3) AND public_token_hash IS NOT NULL AND link_revoked_at IS NULL AND link_expires_at IS NOT NULL AND link_expires_at <= :now " .
              "AND status NOT IN ('RESERVATION_PAID', 'FULLY_PAID')) " .
              'ORDER BY created_at DESC LIMIT 8'
          );
@@ -541,11 +541,11 @@
          $now = gmdate('Y-m-d H:i:s.u');
          if ($linkState === 'ACTIVE') {
 -            $clauses[] = '(a.link_revoked_at IS NULL AND (a.link_expires_at IS NULL OR a.link_expires_at > :now))';
-+            $clauses[] = '(a.contract_version = 1 AND a.public_token_hash IS NOT NULL AND a.link_revoked_at IS NULL AND (a.link_expires_at IS NULL OR a.link_expires_at > :now))';
++            $clauses[] = '(a.contract_version IN (1, 3) AND a.public_token_hash IS NOT NULL AND a.link_revoked_at IS NULL AND (a.link_expires_at IS NULL OR a.link_expires_at > :now))';
              $parameters['now'] = $now;
          } elseif ($linkState === 'EXPIRED') {
 -            $clauses[] = '(a.link_revoked_at IS NULL AND a.link_expires_at IS NOT NULL AND a.link_expires_at <= :now)';
-+            $clauses[] = '(a.contract_version = 1 AND a.public_token_hash IS NOT NULL AND a.link_revoked_at IS NULL AND a.link_expires_at IS NOT NULL AND a.link_expires_at <= :now)';
++            $clauses[] = '(a.contract_version IN (1, 3) AND a.public_token_hash IS NOT NULL AND a.link_revoked_at IS NULL AND a.link_expires_at IS NOT NULL AND a.link_expires_at <= :now)';
              $parameters['now'] = $now;
          } elseif ($linkState === 'REVOKED') {
              $clauses[] = 'a.link_revoked_at IS NOT NULL';
@@ -683,15 +683,28 @@
          $claimed = [];
 --- a/src/Domain/PaymentAgreementService.php
 +++ b/src/Domain/PaymentAgreementService.php
-@@ -7,6 +7,7 @@
+@@ -5,14 +5,20 @@
+ namespace Gourmet\Payments\Domain;
+
  use Gourmet\Payments\Database\AuditLog;
++use Gourmet\Payments\Database\IdempotencyGuard;
  use Gourmet\Payments\Database\MondaySyncOutbox;
  use Gourmet\Payments\Database\SalesOsEventOutbox;
 +use Gourmet\Payments\Http\InternalPaymentPlanV2;
++use Gourmet\Payments\Http\CheckoutConditionsV1;
++use Gourmet\Payments\Http\InternalCheckoutEmissionV1;
++use Gourmet\Payments\Security\PaymentLinkReplayCipher;
  use Gourmet\Payments\Support\MondayItemReference;
  use Gourmet\Payments\Support\Uuid;
  use PDO;
-@@ -165,6 +166,145 @@
+
+ final readonly class PaymentAgreementService
+ {
++    public const CHECKOUT_ISSUANCE_SCOPE = 'internal.payment_checkouts.issue.v1';
+     public function __construct(private PDO $pdo)
+     {
+     }
+@@ -165,6 +171,308 @@
          ];
      }
 
@@ -834,59 +847,254 @@
 +        return ['agreement_uuid' => $agreementUuid];
 +    }
 +
++    /**
++     * Issue exactly one linked checkout from the immutable receiver draft.
++     * No provider call, customer consent or financial notification occurs here.
++     * @return array{receipt:array<string,mixed>,replayed:bool}|null
++     */
++    public function issueCheckoutV1(InternalCheckoutEmissionV1 $command, \DateTimeImmutable $now,
++        string $appUrl, PaymentLinkReplayCipher $cipher, bool $reconcileOnly = false, ?callable $afterPersisted = null): ?array
++    {
++        if ($this->pdo->inTransaction()) { throw new \RuntimeException('Checkout issuance owns its transaction.'); }
++        $nowMs = self::checkoutMilliseconds($now);
++        $command->assertFresh($nowMs);
++        if ($command->authorization->scope->mode !== 'test') { throw new \DomainException('CHECKOUT_TEST_SCOPE_REQUIRED'); }
++        $suffix = $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
++        $this->pdo->beginTransaction();
++        try {
++            $lookup = $this->pdo->prepare('SELECT * FROM payment_agreements WHERE public_uuid = :uuid LIMIT 1' . $suffix);
++            $lookup->execute(['uuid' => $command->sourceDraftId]);
++            $draft = $lookup->fetch();
++            if (!is_array($draft)) { throw new \DomainException('CHECKOUT_SOURCE_NOT_FOUND'); }
++            $existing = $this->pdo->prepare('SELECT * FROM payment_checkout_issuances WHERE parent_draft_id = :parent LIMIT 1' . $suffix);
++            $existing->execute(['parent' => $draft['id']]);
++            $issuance = $existing->fetch();
++            $guard = new IdempotencyGuard($this->pdo);
++            if (is_array($issuance)) {
++                $derived = CheckoutConditionsV1::fromDraft($draft, (int) $issuance['issued_at_ms']);
++                $command->assertMatches($derived, self::checkoutMilliseconds(new \DateTimeImmutable('now', new \DateTimeZone('UTC'))), false);
++                if ($issuance['issuance_id'] !== $command->issuanceId
++                    || $issuance['source_operation_id'] !== $command->operationId
++                    || $issuance['source_operation_digest'] !== $command->operationDigest
++                    || $issuance['conditions_digest'] !== $derived->digest
++                    || $issuance['conditions_json'] !== $derived->canonicalJson()) {
++                    throw new \DomainException('CHECKOUT_SOURCE_CHANGED');
++                }
++                $child = $this->pdo->prepare('SELECT public_uuid FROM payment_agreements WHERE id = :id AND contract_version = 3 LIMIT 1' . $suffix);
++                $child->execute(['id' => $issuance['checkout_agreement_id']]);
++                $checkoutId = $child->fetchColumn();
++                $replay = $guard->replay(self::CHECKOUT_ISSUANCE_SCOPE, $command->idempotencyKey(), $command->requestHash());
++                if (!is_string($checkoutId) || $replay === null) { throw new \RuntimeException('Committed checkout replay is unavailable.'); }
++                $receipt = $command->recoveredReceipt($cipher->decrypt($replay['ciphertext'], $replay['nonce'], $replay['tag']), $derived, $checkoutId);
++                $command->assertMatches($derived, self::checkoutMilliseconds(new \DateTimeImmutable('now', new \DateTimeZone('UTC'))), false);
++                $this->pdo->commit();
++                return ['receipt' => $receipt, 'replayed' => true];
++            }
++            if ($reconcileOnly) {
++                $historical = new \DateTimeImmutable((string) $draft['created_at'], new \DateTimeZone('UTC'));
++                $derived = CheckoutConditionsV1::fromDraft($draft, self::checkoutMilliseconds($historical));
++                $command->assertMatches($derived, self::checkoutMilliseconds(new \DateTimeImmutable('now', new \DateTimeZone('UTC'))), false);
++                // Never consume an idempotency key or allocate anything on an
++                // absent read-only recovery request.
++                $this->pdo->commit();
++                return null;
++            }
++            $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
++            $nowMs = self::checkoutMilliseconds($now);
++            $derived = CheckoutConditionsV1::fromDraft($draft, $nowMs);
++            $command->assertMatches($derived, $nowMs);
++            try { $guard->begin(self::CHECKOUT_ISSUANCE_SCOPE, $command->idempotencyKey(), $command->requestHash()); }
++            catch (\DomainException | \RuntimeException $exception) {
++                if ($exception instanceof \PDOException) { throw $exception; }
++                throw new \DomainException('CHECKOUT_IDEMPOTENCY_CONFLICT');
++            }
++            $checkoutId = Uuid::v4();
++            $token = PaymentLink::generateToken();
++            $at = $now->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
++            $child = $this->pdo->prepare(
++                'INSERT INTO payment_agreements (public_uuid,monday_item_id,source_lead_id,source_quote_id,source_quote_version,' .
++                'recipient_name,recipient_email,recipient_phone,service_name,event_at_utc,event_location,internal_notes,currency,' .
++                'total_cents,reservation_cents,balance_cents,balance_due_at_utc,balance_timezone,status,provider,public_token_hash,' .
++                'link_expires_at,terms_version,reservation_policy_version,created_at,updated_at,contract_version,payment_mode,initial_cents) ' .
++                "VALUES (:uuid,NULL,:lead,:quote,:version,:name,:email,:phone,:service,:event,:location,NULL,:currency,:total,:reservation," .
++                ":balance,:balance_due,:timezone,'PENDING_CHECKOUT',NULL,:token,:expires,:terms,:policy,:created,:updated,3,:mode,:initial)"
++            );
++            $values = [
++                'uuid' => $checkoutId, 'lead' => $draft['source_lead_id'], 'quote' => $draft['source_quote_id'], 'version' => $draft['source_quote_version'],
++                'name' => $draft['recipient_name'], 'email' => $draft['recipient_email'], 'phone' => $draft['recipient_phone'],
++                'service' => $draft['service_name'], 'event' => $draft['event_at_utc'], 'location' => $draft['event_location'],
++                'currency' => $draft['currency'], 'total' => (int) $draft['total_cents'], 'reservation' => $draft['reservation_cents'],
++                'balance' => (int) $draft['balance_cents'], 'balance_due' => $draft['balance_due_at_utc'], 'timezone' => $draft['balance_timezone'],
++                'expires' => $draft['link_expires_at'], 'terms' => $derived->digest, 'policy' => 'checkout-v1-' . $draft['payment_mode'],
++                'created' => $at, 'updated' => $at, 'mode' => $draft['payment_mode'], 'initial' => (int) $draft['initial_cents'],
++            ];
++            foreach ($values as $key => $value) { $child->bindValue($key, $value, $value === null ? PDO::PARAM_NULL : (is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR)); }
++            $child->bindValue('token', PaymentLink::hash($token), PDO::PARAM_LOB);
++            $child->execute();
++            $childId = (int) $this->pdo->lastInsertId();
++            $relation = $this->pdo->prepare('INSERT INTO payment_checkout_issuances (issuance_id,parent_draft_id,checkout_agreement_id,source_operation_id,source_operation_digest,conditions_json,conditions_digest,created_at,issued_at_ms) VALUES (:issuance,:parent,:child,:operation,:operation_digest,:conditions,:digest,:created,:issued_at)');
++            $relation->execute(['issuance' => $command->issuanceId, 'parent' => $draft['id'], 'child' => $childId,
++                'operation' => $command->operationId, 'operation_digest' => $command->operationDigest,
++                'conditions' => $derived->canonicalJson(), 'digest' => $derived->digest, 'created' => $at, 'issued_at' => $nowMs]);
++            $schedule = $this->pdo->prepare("INSERT INTO payment_schedules (public_uuid,agreement_id,kind,amount_cents,due_at_utc,status,created_at,updated_at) VALUES (:uuid,:agreement,:kind,:amount,:due,'PENDING',:created,:updated)");
++            $items = [[$draft['payment_mode'] === 'fixed_49_reservation' ? 'RESERVATION' : 'INITIAL', (int) $draft['initial_cents'], $at]];
++            if ((int) $draft['balance_cents'] > 0) { $items[] = ['BALANCE', (int) $draft['balance_cents'], $draft['balance_due_at_utc']]; }
++            foreach ($items as [$kind, $amount, $due]) {
++                $schedule->execute(['uuid' => Uuid::v4(), 'agreement' => $childId, 'kind' => $kind, 'amount' => $amount, 'due' => $due, 'created' => $at, 'updated' => $at]);
++            }
++            $receipt = $command->issuedReceipt($derived, $checkoutId, rtrim($appUrl, '/') . '/pay/' . $token);
++            $json = InternalPaymentPlanV2::encodeCanonical((object) $receipt);
++            $encrypted = $cipher->encrypt($json);
++            $guard->completeEncrypted(self::CHECKOUT_ISSUANCE_SCOPE, $command->idempotencyKey(), 201, hash('sha256', $json, true),
++                $encrypted['ciphertext'], $encrypted['nonce'], $encrypted['tag']);
++            (new AuditLog($this->pdo))->record('INTERNAL_API', 'PAYMENT_CHECKOUT_V1_ISSUED', 'PAYMENT_AGREEMENT', null, $checkoutId, null,
++                ['source_draft_id' => $command->sourceDraftId, 'issuance_id' => $command->issuanceId, 'conditions_digest' => $derived->digest,
++                    'actor_id' => $command->authorization->actorId, 'payment_mode' => $draft['payment_mode']]);
++            if ($afterPersisted !== null) { $afterPersisted($checkoutId); }
++            // Locks may take time. Authority and every calendar condition must
++            // still be current at the final shared commit.
++            $command->assertMatches($derived, self::checkoutMilliseconds(new \DateTimeImmutable('now', new \DateTimeZone('UTC'))));
++            $this->pdo->commit();
++            return ['receipt' => $receipt, 'replayed' => false];
++        } catch (\Throwable $exception) {
++            if ($this->pdo->inTransaction()) { $this->pdo->rollBack(); }
++            throw $exception;
++        }
++    }
++
++    /** Read stored issuance evidence at its historical acceptance clock. */
++    public function checkoutConditionsForAgreementV1(int $checkoutId): CheckoutConditionsV1
++    {
++        $lookup = $this->pdo->prepare('SELECT i.conditions_json,i.conditions_digest,i.issued_at_ms,p.* FROM payment_checkout_issuances i JOIN payment_agreements p ON p.id = i.parent_draft_id WHERE i.checkout_agreement_id = :id LIMIT 1');
++        $lookup->execute(['id' => $checkoutId]);
++        $draft = $lookup->fetch();
++        if (!is_array($draft)) { throw new \DomainException('CHECKOUT_SOURCE_NOT_FOUND'); }
++        $derived = CheckoutConditionsV1::fromDraft($draft, (int) $draft['issued_at_ms']);
++        if ($draft['conditions_json'] !== $derived->canonicalJson() || $draft['conditions_digest'] !== $derived->digest) {
++            throw new \DomainException('CHECKOUT_SOURCE_CHANGED');
++        }
++        return $derived;
++    }
++
++    /** @param array<string,mixed> $checkout */
++    public function recordCheckoutConsentsV1(array $checkout, string $ipHash, string $userAgent): void
++    {
++        $derived = $this->checkoutConditionsForAgreementV1((int) $checkout['id']);
++        $plan = $derived->conditions->operation->prepared->plan;
++        $types = $plan->paymentMode === 'full_upfront'
++            ? [['ONE_TIME_PAYMENT', $plan->initialPaymentCents, null]]
++            : [['INITIAL_PAYMENT', $plan->initialPaymentCents, null], ['FUTURE_BALANCE_CHARGE', $plan->paymentBalanceCents, $checkout['balance_due_at_utc']]];
++        $this->pdo->beginTransaction();
++        try {
++            foreach ($types as [$type, $amount, $due]) {
++                $existing = $this->pdo->prepare('SELECT 1 FROM payment_consents WHERE agreement_id = :agreement AND consent_type = :type LIMIT 1');
++                $existing->execute(['agreement' => $checkout['id'], 'type' => $type]);
++                if ($existing->fetchColumn() !== false) { continue; }
++                $insert = $this->pdo->prepare("INSERT INTO payment_consents (public_uuid,agreement_id,provider,consent_type,terms_version,amount_cents,scheduled_charge_at,accepted_at,ip_hash,user_agent_summary) VALUES (:uuid,:agreement,'PAYPAL',:type,:terms,:amount,:due,:accepted,:ip,:agent)");
++                $values = ['uuid' => Uuid::v4(), 'agreement' => (int) $checkout['id'], 'type' => $type, 'terms' => $derived->digest,
++                    'amount' => $amount, 'due' => $due, 'accepted' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u'),
++                    'agent' => mb_substr($userAgent, 0, 255)];
++                foreach ($values as $key => $value) { $insert->bindValue($key, $value, $value === null ? PDO::PARAM_NULL : (is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR)); }
++                $insert->bindValue('ip', $ipHash, PDO::PARAM_LOB);
++                $insert->execute();
++            }
++            $this->pdo->commit();
++        } catch (\Throwable $exception) {
++            if ($this->pdo->inTransaction()) { $this->pdo->rollBack(); }
++            throw $exception;
++        }
++    }
++
++    private static function checkoutMilliseconds(\DateTimeImmutable $now): int
++    {
++        return $now->getTimestamp() * 1000 + intdiv((int) $now->format('u'), 1000);
++    }
++
      private function normalizeMondayItemId(?string $reference): ?string
      {
          $reference = $reference === null ? '' : trim($reference);
 --- a/src/Http/Application.php
 +++ b/src/Http/Application.php
-@@ -20,6 +20,7 @@
+@@ -15,13 +15,16 @@
+ use Gourmet\Payments\Database\SalesOsEventOutbox;
+ use Gourmet\Payments\Domain\Money;
+ use Gourmet\Payments\Domain\PaymentAgreementService;
++use Gourmet\Payments\Domain\PaymentLink;
+ use Gourmet\Payments\Logging\JsonLogger;
+ use Gourmet\Payments\Logging\Redactor;
  use Gourmet\Payments\Payments\PayPal\CurlPayPalHttpTransport;
  use Gourmet\Payments\Payments\PayPal\PayPalClient;
  use Gourmet\Payments\Payments\PayPal\PayPalConfig;
 +use Gourmet\Payments\Payments\PayPal\PayPalHttpTransport;
  use Gourmet\Payments\Payments\PayPal\PayPalProvisioningService;
  use Gourmet\Payments\Payments\PayPal\PayPalReconciler;
++use Gourmet\Payments\Payments\PayPal\VersionedCheckoutProviderV1;
  use Gourmet\Payments\Security\Csrf;
-@@ -36,7 +37,7 @@
+ use Gourmet\Payments\Security\InternalApiAuthenticator;
+ use Gourmet\Payments\Security\PaymentLinkReplayCipher;
+@@ -36,7 +39,8 @@
      /** @var list<string> */
      private const TIMEZONES = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Phoenix'];
 
 -    public function __construct(private Config $config, private JsonLogger $logger)
-+    public function __construct(private Config $config, private JsonLogger $logger, private ?PayPalHttpTransport $paypalTransport = null)
++    public function __construct(private Config $config, private JsonLogger $logger,
++        private ?PayPalHttpTransport $paypalTransport = null, private ?\Closure $clock = null)
      {
      }
 
-@@ -74,6 +75,9 @@
+@@ -74,6 +78,12 @@
          if ($request->path === '/internal/v1/payment-agreements') {
              return $this->internalPaymentAgreement($request, $requestId);
          }
 +        if (in_array($request->path, ['/internal/v2/payment-agreements', '/internal/v2/payment-agreements/reconcile'], true)) {
 +            return $this->internalPaymentAgreementV2($request, $requestId);
 +        }
++        if (in_array($request->path, ['/internal/payment-checkouts/v1', '/internal/payment-checkouts/v1/reconcile'], true)) {
++            return $this->internalCheckoutEmissionV1($request, $requestId);
++        }
          if ($request->path === '/admin/login') {
              return $request->method === 'POST' ? $this->login($request, $requestId) : $this->loginForm();
          }
-@@ -134,6 +138,9 @@
+@@ -109,6 +119,12 @@
+         if (preg_match('#^/pay/([A-Za-z0-9_-]{43})/status$#', $request->path, $matches) && $request->method === 'GET') {
+             return $this->paymentStatus($matches[1]);
+         }
++        if ($request->method === 'GET' && preg_match('#^/pay/([A-Za-z0-9_-]{43})/paypal/return$#', $request->path, $matches)) {
++            return $this->resumeVersionedCheckoutV1($request, $matches[1]);
++        }
++        if ($request->method === 'POST' && preg_match('#^/pay/([A-Za-z0-9_-]{43})/paypal/capture$#', $request->path, $matches)) {
++            return $this->captureVersionedCheckoutV1($request, $matches[1]);
++        }
+         if (preg_match('#^/pay/([A-Za-z0-9_-]{43})/paypal$#', $request->path, $matches) && $request->method === 'POST') {
+             return $this->startPayPal($request, $matches[1]);
+         }
+@@ -134,6 +150,12 @@
          $agreement = $this->repository()->findUsableByRawToken($token, $this->now());
          if ($agreement === null) {
              return $this->unavailableLinkForToken($token);
 +        }
 +        if ((int) ($agreement['contract_version'] ?? 1) === 2) {
 +            return $this->unavailableLink();
++        }
++        if ((int) ($agreement['contract_version'] ?? 1) === 3) {
++            return $this->versionedCheckoutPageV1($agreement, $token, $error);
          }
          if (in_array((string) $agreement['status'], ['RESERVATION_PAID', 'FULLY_PAID', 'PAYMENT_FAILED'], true)) {
              return Response::redirect('/pay/' . rawurlencode($token) . '/status');
-@@ -162,6 +169,9 @@
+@@ -162,6 +184,12 @@
          if ($agreement === null) {
              return $this->unavailableLinkForToken($token);
          }
 +        if ((int) ($agreement['contract_version'] ?? 1) === 2) {
 +            return $this->unavailableLink();
 +        }
++        if ((int) ($agreement['contract_version'] ?? 1) === 3) {
++            return $this->startVersionedCheckoutV1($request, $agreement, $token);
++        }
          if ($this->checkoutActivationPending()) {
              return $this->paymentLink($token);
          }
-@@ -179,7 +189,7 @@
+@@ -179,7 +207,7 @@
                  Secrets::privacyHash($request->ipAddress, $this->config->appKey),
                  $request->userAgent,
              );
@@ -895,12 +1103,15 @@
              $provisioner = new PayPalProvisioningService($this->pdo(), $paypal, new ProviderResourceRepository($this->pdo()), new IdempotencyGuard($this->pdo()));
              $product = $provisioner->createOrReuseProduct();
              $plan = $provisioner->createOrReusePlan($product->externalId, (int) $agreement['balance_cents']);
-@@ -205,10 +215,13 @@
+@@ -205,10 +233,16 @@
          if ($agreement === null) {
              return $this->unavailableLinkForToken($token);
          }
 +        if ((int) ($agreement['contract_version'] ?? 1) === 2) {
 +            return $this->unavailableLink();
++        }
++        if ((int) ($agreement['contract_version'] ?? 1) === 3) {
++            return $this->versionedCheckoutStatusV1($agreement, $token);
 +        }
          if (is_string($agreement['paypal_subscription_id']) && $agreement['paypal_subscription_id'] !== '') {
              try {
@@ -910,7 +1121,20 @@
                      ->reconcile((string) $agreement['public_uuid'], (string) $agreement['paypal_subscription_id']);
                  $agreement = $this->repository()->findUsableByRawToken($token, $this->now()) ?? $agreement;
              } catch (\Throwable $exception) {
-@@ -261,7 +274,7 @@
+@@ -238,6 +272,12 @@
+     {
+         $pdo = $this->pdo();
+         try {
++            // An expired versioned checkout is a read-only unavailable page.
++            // Do not route it through v1's lifecycle mutation/outbox path.
++            $version = $pdo->prepare('SELECT contract_version FROM payment_agreements WHERE public_token_hash = :hash LIMIT 1');
++            $version->bindValue('hash', PaymentLink::hash($token), PDO::PARAM_LOB);
++            $version->execute();
++            if ((int) $version->fetchColumn() === 3) { return $this->unavailableLink(); }
+             $pdo->beginTransaction();
+             $expired = $this->repository()->recordExpirationByRawToken($token, $this->now());
+             if ($expired !== null) {
+@@ -261,7 +301,7 @@
      {
          try {
              $this->assertPayPalOperational();
@@ -919,7 +1143,7 @@
                  ->verifyWebhook($request->rawBody, $request->headers);
              $accepted = (new PayPalWebhookInbox($this->pdo()))->accept($event);
              $this->logger->log('info', $accepted ? 'paypal.webhook_received' : 'paypal.webhook_duplicate', [
-@@ -380,6 +393,138 @@
+@@ -380,6 +420,329 @@
          }
      }
 
@@ -1055,10 +1279,201 @@
 +        }
 +    }
 +
++    private function internalCheckoutEmissionV1(Request $request, string $requestId): Response
++    {
++        if (!in_array(mb_strtolower((string) $this->paypalEnv()->get('INTERNAL_CHECKOUT_V1_ENABLED', 'false')), ['1', 'true'], true)
++            || !InternalApiAuthenticator::validBearer($request->headers['authorization'] ?? null, $this->internalApiSharedSecret())) {
++            return Response::json(['status' => 'not_found'], 404);
++        }
++        if ($request->method !== 'POST') { return Response::json(['status' => 'method_not_allowed'], 405)->withHeaders(['Allow' => 'POST']); }
++        if (preg_match('/\Aapplication\/json(?:\s*;[^\r\n]*)?\z/i', $request->headers['content-type'] ?? '') !== 1) {
++            return Response::json(['status' => 'invalid_request'], 415);
++        }
++        try {
++            $now = $this->now();
++            $command = InternalCheckoutEmissionV1::fromJson($request->rawBody, $this->milliseconds($now));
++            if (($request->headers['idempotency-key'] ?? '') !== $command->idempotencyKey()) {
++                return Response::json(['status' => 'invalid_request'], 400);
++            }
++            if ($this->config->isProduction() || $command->authorization->scope->mode !== 'test') {
++                return Response::json(['status' => 'checkout_execution_disabled'], 503);
++            }
++            $cipher = $this->paymentLinkReplayCipher();
++            $result = (new PaymentAgreementService($this->pdo()))->issueCheckoutV1($command, $now, $this->config->appUrl, $cipher,
++                $request->path === '/internal/payment-checkouts/v1/reconcile');
++            if ($result === null) { return Response::json(['status' => 'not_found'], 404); }
++            return Response::json($result['receipt'], $result['replayed'] ? 200 : 201);
++        } catch (\DomainException $exception) {
++            $code = $exception->getMessage();
++            if ($code === 'CHECKOUT_SOURCE_NOT_FOUND') { return Response::json(['status' => 'not_found'], 404); }
++            if (in_array($code, ['CHECKOUT_SOURCE_CHANGED', 'CHECKOUT_IDEMPOTENCY_CONFLICT'], true)) {
++                return Response::json(['status' => 'source_conflict'], 409);
++            }
++            return Response::json(['status' => 'invalid_request'], 422);
++        } catch (\PDOException $exception) {
++            $native = (int) ($exception->errorInfo[1] ?? 0);
++            if (($this->config->ledgerDriver === 'sqlite' && in_array($native & 255, [5, 6], true))
++                || ($this->config->ledgerDriver === 'mysql' && in_array($native, [1205, 1213], true))) {
++                return Response::json(['status' => 'issuance_in_progress'], 409);
++            }
++            $this->logger->log('error', 'internal.payment_checkout_v1_ledger_failed', ['request_id' => $requestId, 'exception_class' => $exception::class]);
++            return Response::json(['status' => 'request_unavailable'], 503);
++        } catch (\Throwable $exception) {
++            $this->logger->log('error', 'internal.payment_checkout_v1_failed', ['request_id' => $requestId, 'exception_class' => $exception::class]);
++            return Response::json(['status' => 'request_unavailable'], 503);
++        }
++    }
++
++    /** @param array<string,mixed> $checkout */
++    private function versionedCheckoutPageV1(array $checkout, string $token, ?string $error = null): Response
++    {
++        $derived = (new PaymentAgreementService($this->pdo()))->checkoutConditionsForAgreementV1((int) $checkout['id']);
++        $conditions = $derived->conditions;
++        $plan = $conditions->operation->prepared->plan;
++        $mode = $plan->paymentMode;
++        $full = $mode === 'full_upfront';
++        $modeLabel = $full ? 'Full payment' : ($mode === 'retainer_50' ? '50% initial payment and one future balance' : 'USD 49 reservation and one future balance');
++        $balanceLabel = '';
++        $eventLabel = '';
++        if (!$full) {
++            $configured = $plan->paymentSchedule->configured;
++            $balanceLabel = $configured->balanceDate . ' ' . $configured->balanceTime . ' ' . $configured->timezone;
++            if (isset($configured->eventDate, $configured->eventTime)) {
++                $eventLabel = $configured->eventDate . ' ' . $configured->eventTime . ' ' . $configured->timezone;
++            }
++        }
++        $expiration = $plan->linkExpiration->configured;
++        $expiresLabel = $expiration->kind === 'never' ? 'No expiration date' : $expiration->date . ' ' . $expiration->time . ' ' . $expiration->timezone;
++        $csrf = Csrf::issue();
++        $initial = $this->money($plan->initialPaymentCents);
++        $balance = $this->money($plan->paymentBalanceCents);
++        $consent = $full
++            ? 'I accept the displayed payment terms and authorize one payment of ' . $initial . ' through PayPal.'
++            : 'I accept the displayed payment terms and authorize an initial payment of ' . $initial . ' and exactly one future payment of ' . $balance . ' on ' . $balanceLabel . ' through PayPal.';
++        $alreadyPaid = in_array((string) $checkout['status'], ['INITIAL_PAID', 'RESERVATION_PAID', 'FULLY_PAID'], true);
++        $disabled = !$this->versionedCheckoutProviderEnabled() || $alreadyPaid;
++        $message = $error === null ? '' : '<p class="error" role="alert">' . Html::escape($error) . '</p>';
++        $content = '<section class="checkout-hero"><p class="kicker">Your Gourmet agreement</p><h1>Review your payment agreement.</h1><p class="lead">' . Html::escape($conditions->operation->recipient->name) . '</p></section>';
++        $content .= '<section class="checkout-grid"><div class="checkout-main"><article class="service-card"><p class="event-name">' . Html::escape($conditions->operation->service->name) . '</p><p>' . Html::escape($modeLabel) . '</p>' . ($eventLabel === '' ? '' : '<p class="event-meta">Event: ' . Html::escape($eventLabel) . '</p>') . ($conditions->operation->service->eventLocation === null ? '' : '<p>' . Html::escape($conditions->operation->service->eventLocation) . '</p>') . '</article>';
++        $content .= '<article class="disclosure"><h2>Payment terms</h2><textarea class="agreement-terms" aria-label="Payment terms" rows="8" readonly>' . Html::escape($plan->paymentTerms) . '</textarea></article></div>';
++        $content .= '<aside class="payment-summary"><span class="eyebrow">Payment summary</span><dl class="money-list"><div><dt>Total service</dt><dd>' . $this->money($plan->sourceQuote->totalCents) . '</dd></div><div class="due"><dt>' . ($full ? 'One payment' : 'Due initially') . '</dt><dd>' . $initial . '</dd></div>';
++        if (!$full) { $content .= '<div><dt>Future balance</dt><dd>' . $balance . '</dd></div><div><dt>One future payment</dt><dd>' . Html::escape($balanceLabel) . '</dd></div>'; }
++        $content .= '<div><dt>Link expiration</dt><dd>' . Html::escape($expiresLabel) . '</dd></div></dl>' . $message;
++        if ($alreadyPaid) { $content .= '<section class="activation-pending" role="status"><h2>' . ($checkout['status'] === 'FULLY_PAID' ? 'Payment completed' : 'Initial payment confirmed') . '</h2><p>No additional initial payment is required.</p></section>'; }
++        elseif ($disabled) { $content .= '<section class="activation-pending" role="status"><h2>Payment processing is not activated.</h2><p>Your checkout and agreement are ready for review. No payment has been started.</p></section>'; }
++        $content .= '<form method="post" action="/pay/' . Html::escape($token) . '/paypal" class="checkout-form"><input type="hidden" name="csrf_token" value="' . Html::escape($csrf) . '"><input type="hidden" name="conditions_digest" value="' . Html::escape($derived->digest) . '"><label class="consent"><input type="checkbox" name="consent" value="yes" required><span>' . Html::escape($consent) . '</span></label><button type="submit" class="paypal-button"' . ($disabled ? ' disabled' : '') . '>Pay ' . $initial . ' with PayPal <span>→</span></button></form>';
++        $content .= '<p class="reference">Agreement ' . Html::escape((string) $checkout['public_uuid']) . '<br>Quote version ' . (int) $plan->sourceQuote->version . '</p></aside></section>';
++        return Response::html(Html::page('Review your Gourmet agreement', $content))->withCookie('gp_checkout_csrf', $csrf, time() + 1800, true);
++    }
++
++    /** @param array<string,mixed> $checkout */
++    private function startVersionedCheckoutV1(Request $request, array $checkout, string $token): Response
++    {
++        if (!$this->versionedCheckoutProviderEnabled()) { return Response::json(['status' => 'provider_disabled'], 503); }
++        if (in_array((string) $checkout['status'], ['INITIAL_PAID', 'RESERVATION_PAID', 'FULLY_PAID'], true)) {
++            return Response::redirect($this->linkUrl($token) . '/status');
++        }
++        $service = new PaymentAgreementService($this->pdo());
++        $derived = $service->checkoutConditionsForAgreementV1((int) $checkout['id']);
++        if (!Csrf::validate($request->post['csrf_token'] ?? '', $request->cookies['gp_checkout_csrf'] ?? '')
++            || ($request->post['consent'] ?? '') !== 'yes' || ($request->post['conditions_digest'] ?? '') !== $derived->digest) {
++            return $this->versionedCheckoutPageV1($checkout, $token, 'Please review and accept this agreement before continuing.');
++        }
++        try {
++            $this->assertPayPalCheckoutAllowed();
++            $nowMs = $this->milliseconds($this->now());
++            $derived->assertCurrent($nowMs);
++            $service->recordCheckoutConsentsV1($checkout, Secrets::privacyHash($request->ipAddress, $this->config->appKey), $request->userAgent);
++            $result = $this->versionedCheckoutProviderV1()->start($checkout, $derived->conditions,
++                $this->linkUrl($token) . '/paypal/return', $this->linkUrl($token), $nowMs);
++            return is_string($result['approvalUrl'] ?? null) && $result['approvalUrl'] !== ''
++                ? Response::redirect($result['approvalUrl']) : Response::redirect($this->linkUrl($token) . '/status');
++        } catch (\Throwable $exception) {
++            $this->logger->log('warning', 'checkout.versioned_start_unavailable', ['exception_class' => $exception::class]);
++            return $this->versionedCheckoutPageV1($checkout, $token, 'We could not start PayPal securely. Check payment status before retrying.');
++        }
++    }
++
++    private function resumeVersionedCheckoutV1(Request $request, string $token): Response
++    {
++        $checkout = $this->repository()->findUsableByRawToken($token, $this->now());
++        if ($checkout === null || (int) $checkout['contract_version'] !== 3) { return $this->unavailableLink(); }
++        if (!$this->versionedCheckoutProviderEnabled()) { return Response::json(['status' => 'provider_disabled'], 503); }
++        $reference = $request->query['token'] ?? $request->query['subscription_id'] ?? '';
++        if (preg_match('/^[A-Za-z0-9-]{1,190}$/D', $reference) !== 1) { return Response::json(['status' => 'invalid_request'], 422); }
++        try {
++            $this->assertPayPalCheckoutAllowed();
++            $derived = (new PaymentAgreementService($this->pdo()))->checkoutConditionsForAgreementV1((int) $checkout['id']);
++            $result = $this->versionedCheckoutProviderV1()->resume($checkout, $derived->conditions, $reference, $this->milliseconds($this->now()));
++            if ($derived->conditions->operation->prepared->plan->paymentMode === 'full_upfront' && ($result['paid'] ?? false) !== true) {
++                $csrf = Csrf::issue();
++                $amount = $this->money($derived->conditions->operation->prepared->plan->initialPaymentCents);
++                $content = '<section class="status-card"><h1>Confirm your one-time payment</h1><p>Confirm one payment of ' . $amount . ' under the agreement you reviewed. There is no future balance or recurring payment.</p><form method="post" action="' . Html::escape($this->linkUrl($token) . '/paypal/capture') . '"><input type="hidden" name="csrf_token" value="' . Html::escape($csrf) . '"><input type="hidden" name="conditions_digest" value="' . Html::escape($derived->digest) . '"><input type="hidden" name="provider_reference" value="' . Html::escape($reference) . '"><button type="submit">Confirm ' . $amount . ' payment</button></form></section>';
++                return Response::html(Html::page('Confirm one-time payment', $content))->withCookie('gp_checkout_csrf', $csrf, time() + 1800, true);
++            }
++            return Response::redirect($this->linkUrl($token) . '/status');
++        } catch (\Throwable $exception) {
++            $this->logger->log('warning', 'checkout.versioned_return_unavailable', ['exception_class' => $exception::class]);
++            return Response::redirect($this->linkUrl($token) . '/status');
++        }
++    }
++
++    private function captureVersionedCheckoutV1(Request $request, string $token): Response
++    {
++        $checkout = $this->repository()->findUsableByRawToken($token, $this->now());
++        if ($checkout === null || (int) $checkout['contract_version'] !== 3) { return $this->unavailableLink(); }
++        if (!$this->versionedCheckoutProviderEnabled()) { return Response::json(['status' => 'provider_disabled'], 503); }
++        $derived = (new PaymentAgreementService($this->pdo()))->checkoutConditionsForAgreementV1((int) $checkout['id']);
++        $reference = $request->post['provider_reference'] ?? '';
++        if ($derived->conditions->operation->prepared->plan->paymentMode !== 'full_upfront'
++            || !Csrf::validate($request->post['csrf_token'] ?? '', $request->cookies['gp_checkout_csrf'] ?? '')
++            || ($request->post['conditions_digest'] ?? '') !== $derived->digest
++            || preg_match('/^[A-Za-z0-9-]{1,190}$/D', $reference) !== 1) {
++            return Response::json(['status' => 'invalid_request'], 403);
++        }
++        try {
++            $this->assertPayPalCheckoutAllowed();
++            $this->versionedCheckoutProviderV1()->capture($checkout, $derived->conditions, $reference, $this->milliseconds($this->now()));
++            return Response::redirect($this->linkUrl($token) . '/status');
++        } catch (\Throwable $exception) {
++            $this->logger->log('warning', 'checkout.versioned_capture_unavailable', ['exception_class' => $exception::class]);
++            return Response::redirect($this->linkUrl($token) . '/status');
++        }
++    }
++
++    /** @param array<string,mixed> $checkout */
++    private function versionedCheckoutStatusV1(array $checkout, string $token): Response
++    {
++        if (!$this->versionedCheckoutProviderEnabled()) { return $this->versionedCheckoutPageV1($checkout, $token); }
++        try {
++            $this->assertPayPalCheckoutAllowed();
++            $derived = (new PaymentAgreementService($this->pdo()))->checkoutConditionsForAgreementV1((int) $checkout['id']);
++            $status = $this->versionedCheckoutProviderV1()->status($checkout, $derived->conditions, $this->milliseconds($this->now()));
++            $paid = ($status['paid'] ?? false) === true;
++            $content = '<section class="status-card"><h1>' . ($paid ? 'Payment confirmed' : 'Checking your payment') . '</h1><p>' . ($paid ? 'Your payment has been confirmed from PayPal financial records.' : 'Do not submit a second payment while the existing payment is being confirmed.') . '</p><a class="button secondary-link" href="' . Html::escape($this->linkUrl($token) . '/status') . '">Check payment status</a></section>';
++            return Response::html(Html::page('Payment status', $content));
++        } catch (\Throwable $exception) {
++            $this->logger->log('warning', 'checkout.versioned_status_unavailable', ['exception_class' => $exception::class]);
++            return $this->versionedCheckoutPageV1($checkout, $token, 'Payment status is pending. Do not submit another payment.');
++        }
++    }
++
++    private function versionedCheckoutProviderEnabled(): bool
++    {
++        return !$this->config->isProduction()
++            && in_array(mb_strtolower((string) $this->paypalEnv()->get('PAYMENT_CHECKOUTS_PROVIDER_ENABLED', 'false')), ['1', 'true'], true);
++    }
++
++    private function versionedCheckoutProviderV1(): VersionedCheckoutProviderV1
++    {
++        return new VersionedCheckoutProviderV1($this->pdo(), $this->paypalConfig(), $this->paypalTransport ?? new CurlPayPalHttpTransport(),
++            $this->paypalEnv()->get('PAYPAL_MERCHANT_ID'));
++    }
++
      private function loginForm(?string $error = null): Response
      {
          $csrf = Csrf::issue();
-@@ -490,7 +635,7 @@
+@@ -490,7 +853,7 @@
 
          $selected = static fn (string $actual, string $value): string => $actual === $value ? ' selected' : '';
          $statusOptions = '';
@@ -1067,7 +1482,7 @@
              $statusOptions .= '<option value="' . Html::escape($value) . '"' . $selected($status, $value) . '>' . Html::escape($label) . '</option>';
          }
          $linkOptions = '';
-@@ -499,7 +644,8 @@
+@@ -499,7 +862,8 @@
          }
          $rows = '';
          foreach ($agreements as $agreement) {
@@ -1077,17 +1492,20 @@
          }
          if ($rows === '') { $rows = '<tr><td colspan="8">No agreements match these filters.</td></tr>'; }
          $content = $this->adminNav('agreements') . '<section class="admin-heading"><div><span class="eyebrow">Agreement register</span><h1>Payment agreements</h1><p>Search and filter the complete payment-agreement register.</p></div><a class="button" href="/admin/agreements/new">Create payment link</a></section><form method="get" action="/admin/agreements" class="agreement-filters"><label>Search<input name="q" value="' . Html::escape($search) . '" placeholder="Client, email, service, Monday reference or agreement"></label><label>Status<select name="status">' . $statusOptions . '</select></label><label>Link state<select name="link">' . $linkOptions . '</select></label><button type="submit">Apply filters</button></form><section class="panel"><div class="table-wrap"><table><thead><tr><th>Client</th><th>Service</th><th>Total</th><th>Balance</th><th>Balance date</th><th>Status</th><th>Link</th><th></th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
-@@ -558,6 +704,9 @@
+@@ -558,6 +922,12 @@
          if ($this->adminUser($request) === null) { return Response::redirect('/admin/login'); }
          $agreement = $this->repository()->findByPublicUuid($uuid);
          if ($agreement === null) { return Response::html(Html::page('Not found', '<section class="card"><h1>Agreement not found</h1></section>'), 404); }
 +        if ((int) ($agreement['contract_version'] ?? 1) === 2) {
 +            return $this->disabledAgreementDetailV2($agreement, $uuid);
 +        }
++        if ((int) ($agreement['contract_version'] ?? 1) === 3) {
++            return $this->versionedAgreementDetailV1($agreement, $uuid);
++        }
          $schedules = $this->repository()->schedules((int) $agreement['id']);
          $attempts = $this->repository()->attempts((int) $agreement['id']);
          $consents = $this->repository()->consents((int) $agreement['id']);
-@@ -578,6 +727,9 @@
+@@ -578,6 +948,9 @@
          if ($this->adminUser($request) === null) { return Response::redirect('/admin/login'); }
          if (!$this->auth()->validateCsrf($request->cookies['gp_admin_session'] ?? '', $request->post['csrf_token'] ?? '')) { return Response::html(Html::page('Invalid request', '<section class="card"><h1>Invalid request</h1></section>'), 403); }
          $agreement = $this->repository()->findByPublicUuid($uuid);
@@ -1097,7 +1515,7 @@
          if ($agreement !== null) {
              $pdo = $this->pdo();
              $pdo->beginTransaction();
-@@ -606,6 +758,9 @@
+@@ -606,6 +979,9 @@
          if (!$this->auth()->validateCsrf($request->cookies['gp_admin_session'] ?? '', $request->post['csrf_token'] ?? '')) { return Response::html(Html::page('Invalid request', '<section class="card"><h1>Invalid request</h1></section>'), 403); }
          $agreement = $this->repository()->findByPublicUuid($uuid);
          if ($agreement === null) { return Response::html(Html::page('Not found', '<section class="card"><h1>Agreement not found</h1></section>'), 404); }
@@ -1107,10 +1525,22 @@
          try {
              $expires = $this->now()->modify('+7 days');
              $token = $this->repository()->replaceLink((int) $agreement['id'], $expires);
-@@ -614,6 +769,16 @@
+@@ -614,6 +990,28 @@
          } catch (\Throwable) {
              return Response::redirect('/admin/agreements/' . rawurlencode($uuid));
          }
++    }
++
++    /** @param array<string,mixed> $checkout */
++    private function versionedAgreementDetailV1(array $checkout, string $uuid): Response
++    {
++        $derived = (new PaymentAgreementService($this->pdo()))->checkoutConditionsForAgreementV1((int) $checkout['id']);
++        $plan = $derived->conditions->operation->prepared->plan;
++        $content = $this->adminNav('agreements') . '<section class="admin-heading"><div><span class="eyebrow">Agreement detail</span><h1>Issued payment checkout</h1><p>Reference ' . Html::escape($uuid) . '</p></div></section><section class="panel"><h2>' . Html::escape((string) $checkout['service_name']) . '</h2><p>' . Html::escape((string) $checkout['recipient_name']) . '<br>' . Html::escape((string) $checkout['recipient_email']) . '</p><dl class="money-list"><div><dt>Total</dt><dd>' . $this->money($plan->sourceQuote->totalCents) . '</dd></div><div><dt>Initial payment</dt><dd>' . $this->money($plan->initialPaymentCents) . '</dd></div><div><dt>Future balance</dt><dd>' . $this->money($plan->paymentBalanceCents) . '</dd></div><div><dt>Payment mode</dt><dd>' . Html::escape($plan->paymentMode) . '</dd></div><div><dt>Status</dt><dd>' . Html::escape((string) $checkout['status']) . '</dd></div></dl><h2>Payment terms</h2><pre class="agreement-terms">' . Html::escape($plan->paymentTerms) . '</pre><p>Source draft <a href="/admin/agreements/' . Html::escape($derived->conditions->sourceDraft->agreementId) . '">' . Html::escape($derived->conditions->sourceDraft->agreementId) . '</a><br>Conditions SHA-256 ' . Html::escape($derived->digest) . '</p></section>';
++        $content .= $this->detailTable('Schedules', $this->repository()->schedules((int) $checkout['id']), ['kind' => 'Type', 'amount_cents' => 'Amount', 'due_at_utc' => 'Due', 'status' => 'Status']);
++        $content .= $this->detailTable('Consent status', $this->repository()->consents((int) $checkout['id']), ['consent_type' => 'Consent', 'amount_cents' => 'Amount', 'scheduled_charge_at' => 'Scheduled charge', 'accepted_at' => 'Accepted']);
++        $content .= $this->detailTable('Audit timeline', $this->repository()->audits((int) $checkout['id'], $uuid), ['event_type' => 'Event', 'actor_type' => 'Actor', 'created_at' => 'Time']);
++        return Response::html(Html::page('Issued payment checkout', $content));
 +    }
 +
 +    /** @param array<string,mixed> $agreement */
@@ -1124,7 +1554,7 @@
      }
 
      private function logout(Request $request, string $requestId): Response
-@@ -652,6 +817,7 @@
+@@ -652,6 +1050,7 @@
      /** @param array<string,mixed> $agreement */
      private function linkStatus(array $agreement): string
      {
@@ -1132,7 +1562,20 @@
          if ($agreement['link_revoked_at'] !== null) { return 'Revoked'; }
          if ($agreement['link_expires_at'] === null) { return 'Active · never expires'; }
          return (new \DateTimeImmutable((string) $agreement['link_expires_at'], new \DateTimeZone('UTC'))) > $this->now() ? 'Active' : 'Expired';
-@@ -785,6 +951,21 @@
+@@ -730,7 +1129,11 @@
+
+     private function now(): \DateTimeImmutable
+     {
+-        return new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
++        $now = $this->clock === null
++            ? new \DateTimeImmutable('now', new \DateTimeZone('UTC'))
++            : ($this->clock)();
++        if (!$now instanceof \DateTimeImmutable) { throw new \RuntimeException('Invalid application clock.'); }
++        return $now->setTimezone(new \DateTimeZone('UTC'));
+     }
+
+     private function assertPayPalOperational(): void
+@@ -785,6 +1188,21 @@
          return in_array(mb_strtolower((string) $enabled), ['1', 'true'], true);
      }
 
@@ -1171,6 +1614,318 @@
 
          return new self(
              method: mb_strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')),
+--- a/src/Payments/PayPal/PayPalClient.php
++++ b/src/Payments/PayPal/PayPalClient.php
+@@ -10,6 +10,7 @@
+ {
+     private ?string $accessToken = null;
+     private int $accessTokenExpiresAt = 0;
++    private ?\Closure $beforeVersionedRequest = null;
+
+     public function __construct(
+         private readonly PayPalConfig $config,
+@@ -51,6 +52,23 @@
+         return $token;
+     }
+
++    /** Server-owned versioned checkout guard, evaluated after token refresh and
++     * immediately before an outbound mutation. Legacy clients leave it unset.
++     */
++    public function setBeforeVersionedRequest(?callable $guard): void
++    {
++        $this->beforeVersionedRequest = $guard === null ? null : \Closure::fromCallable($guard);
++    }
++
++    public function addBeforeVersionedRequest(callable $guard): void
++    {
++        $previous = $this->beforeVersionedRequest;
++        $this->beforeVersionedRequest = static function () use ($previous, $guard): void {
++            if ($previous !== null) { $previous(); }
++            $guard();
++        };
++    }
++
+     public function createProduct(array $payload, string $requestId): array
+     {
+         return $this->jsonRequest('POST', '/v1/catalogs/products', $payload, $requestId);
+@@ -79,6 +97,32 @@
+     public function getSubscription(string $subscriptionId): array
+     {
+         return $this->jsonRequest('GET', '/v1/billing/subscriptions/' . rawurlencode($subscriptionId) . '?fields=plan,last_failed_payment');
++    }
++
++    /** Versioned one-time checkout capability; legacy Subscriptions stay intact. */
++    public function createOrder(array $payload, string $requestId): array
++    {
++        return $this->jsonRequest('POST', '/v2/checkout/orders', $payload, $requestId, '__orders');
++    }
++
++    public function getOrder(string $orderId): array
++    {
++        return $this->jsonRequest('GET', '/v2/checkout/orders/' . rawurlencode($orderId), null, null, '__orders');
++    }
++
++    public function captureOrder(string $orderId, string $requestId): array
++    {
++        return $this->jsonRequest('POST', '/v2/checkout/orders/' . rawurlencode($orderId) . '/capture', null, $requestId, '__orders');
++    }
++
++    public function getVersionedPlan(string $planId): array
++    {
++        return $this->jsonRequest('GET', '/v1/billing/plans/' . rawurlencode($planId), null, null, '__plan');
++    }
++
++    public function getVersionedSubscription(string $subscriptionId): array
++    {
++        return $this->jsonRequest('GET', '/v1/billing/subscriptions/' . rawurlencode($subscriptionId) . '?fields=plan,last_failed_payment', null, null, '__subscription');
+     }
+
+     public function cancelSubscription(string $subscriptionId, string $reason): void
+@@ -104,6 +148,23 @@
+         }
+
+         return array_values(array_filter($transactions, 'is_array'));
++    }
++
++    /** Strict financial evidence for versioned checkouts; no silent coercion of
++     * JSON objects or malformed entries into transaction lists.
++     * @return list<array<string,mixed>>
++     */
++    public function listVersionedTransactions(string $subscriptionId, \DateTimeImmutable $start, \DateTimeImmutable $end): array
++    {
++        $query = http_build_query(['start_time' => $start->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z'),
++            'end_time' => $end->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z')], '', '&', PHP_QUERY_RFC3986);
++        $response = $this->jsonRequest('GET', '/v1/billing/subscriptions/' . rawurlencode($subscriptionId) . '/transactions?' . $query, null, null, 'transactions');
++        $transactions = $response['transactions'] ?? null;
++        if (!is_array($transactions) || !array_is_list($transactions)) { throw new PayPalApiException(200, 'INVALID_RESPONSE', null, null); }
++        foreach ($transactions as $transaction) {
++            if (!is_array($transaction) || array_is_list($transaction)) { throw new PayPalApiException(200, 'INVALID_RESPONSE', null, null); }
++        }
++        return $transactions;
+     }
+
+     /** @param array<string, string> $headers */
+@@ -147,7 +208,7 @@
+     }
+
+     /** @param array<string, mixed>|null $payload @return array<string, mixed> */
+-    private function jsonRequest(string $method, string $path, ?array $payload = null, ?string $requestId = null): array
++    private function jsonRequest(string $method, string $path, ?array $payload = null, ?string $requestId = null, ?string $requiredListField = null): array
+     {
+         $headers = [
+             'Accept' => 'application/json',
+@@ -159,6 +220,7 @@
+             $headers['Prefer'] = 'return=representation';
+         }
+         $body = $payload === null ? null : json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
++        if ($method === 'POST' && $this->beforeVersionedRequest !== null) { ($this->beforeVersionedRequest)(); }
+         $response = $this->transport->send(
+             $method,
+             $this->config->baseUrl() . $path,
+@@ -167,7 +229,38 @@
+             $this->timeoutSeconds,
+         );
+
+-        return $this->decode($response);
++        $decoded = $this->decode($response);
++        if ($requiredListField !== null) {
++            $shape = json_decode($response->body);
++            if (!$shape instanceof \stdClass) {
++                throw new PayPalApiException($response->status, 'INVALID_RESPONSE', null, null);
++            }
++            $list = static function (mixed $value) use ($response): void {
++                if (!is_array($value)) { throw new PayPalApiException($response->status, 'INVALID_RESPONSE', null, null); }
++                foreach ($value as $item) {
++                    if (!$item instanceof \stdClass) { throw new PayPalApiException($response->status, 'INVALID_RESPONSE', null, null); }
++                }
++            };
++            if ($requiredListField === '__orders') {
++                $list($shape->purchase_units ?? null);
++                foreach ($shape->purchase_units as $unit) {
++                    if (property_exists($unit, 'payments')) {
++                        if (!$unit->payments instanceof \stdClass) { throw new PayPalApiException($response->status, 'INVALID_RESPONSE', null, null); }
++                        if (property_exists($unit->payments, 'captures')) { $list($unit->payments->captures); }
++                    }
++                }
++            } elseif ($requiredListField === '__plan') {
++                $list($shape->billing_cycles ?? null);
++            } elseif ($requiredListField === '__subscription') {
++                if (property_exists($shape, 'plan')) {
++                    if (!$shape->plan instanceof \stdClass) { throw new PayPalApiException($response->status, 'INVALID_RESPONSE', null, null); }
++                    $list($shape->plan->billing_cycles ?? null);
++                }
++            } else {
++                $list($shape->{$requiredListField} ?? null);
++            }
++        }
++        return $decoded;
+     }
+
+     /** @return array<string, mixed> */
+--- a/src/Payments/PayPal/PayPalPayloads.php
++++ b/src/Payments/PayPal/PayPalPayloads.php
+@@ -116,4 +116,61 @@
+             throw new \DomainException('PayPal Phase 3 supports USD only.');
+         }
+     }
++
++    /** The original finite mechanism with an explicitly versioned initial sum.
++     * Legacy plan()/assertFinitePlan() remain the fixed USD49 contract.
++     * @return array<string,mixed>
++     */
++    public static function versionedPlan(string $productId, \Gourmet\Payments\Http\CheckoutConditionsV1 $conditions, string $childUuid, int $nowMs): array
++    {
++        $projection = VersionedCheckoutPayloads::project($conditions, $nowMs, $childUuid);
++        if (!is_array($projection['planFields'])) { throw new \DomainException('PAYPAL_SPLIT_CHECKOUT_REQUIRED'); }
++        $plan = self::plan($productId, 'USD', $conditions->conditions->operation->prepared->plan->paymentBalanceCents);
++        $plan['name'] = 'Gourmet initial payment and scheduled balance';
++        $plan['description'] = 'Agreement ' . $childUuid . ': one initial payment and one finite balance payment.';
++        return array_replace($plan, $projection['planFields']);
++    }
++
++    /** @param array<string,mixed> $actual @param array<string,mixed> $expected */
++    public static function assertVersionedPlan(array $actual, array $expected): void
++    {
++        foreach (['product_id', 'name', 'description', 'status'] as $key) {
++            if (($actual[$key] ?? null) !== $expected[$key]) { throw new \DomainException('PAYPAL_VERSIONED_PLAN_MISMATCH'); }
++        }
++        self::assertVersionedFinancialFields($actual, $expected);
++        if (isset($actual['taxes']) && (!is_array($actual['taxes']) || (string) ($actual['taxes']['percentage'] ?? '') !== '0')) {
++            throw new \DomainException('PAYPAL_VERSIONED_PLAN_MISMATCH');
++        }
++    }
++
++    /** @param array<string,mixed> $actual @param array<string,mixed> $expected */
++    public static function assertVersionedFinancialFields(array $actual, array $expected): void
++    {
++        $cycles = $actual['billing_cycles'] ?? null;
++        if (!is_array($cycles) || !array_is_list($cycles) || count($cycles) !== 1) { throw new \DomainException('PAYPAL_VERSIONED_PLAN_MISMATCH'); }
++        $subset = static function (mixed $value, mixed $reference) use (&$subset): bool {
++            if (!is_array($reference)) { return $value === $reference; }
++            if (!is_array($value)) { return false; }
++            foreach ($reference as $key => $item) {
++                if (!array_key_exists($key, $value) || !$subset($value[$key], $item)) { return false; }
++            }
++            return true;
++        };
++        if (!$subset($cycles, $expected['billing_cycles'])
++            || !$subset($actual['payment_preferences'] ?? null, $expected['payment_preferences'])) {
++            throw new \DomainException('PAYPAL_VERSIONED_PLAN_MISMATCH');
++        }
++    }
++
++    /** @param array<string,mixed> $subscription @param array<string,mixed> $plan */
++    public static function assertVersionedSubscription(array $subscription, string $subscriptionId, string $planId, string $childUuid, string $startTime, array $plan): void
++    {
++        if (($subscription['id'] ?? null) !== $subscriptionId || ($subscription['plan_id'] ?? null) !== $planId
++            || ($subscription['custom_id'] ?? null) !== $childUuid || ($subscription['start_time'] ?? null) !== $startTime
++            || !in_array($subscription['status'] ?? null, ['APPROVAL_PENDING', 'APPROVED', 'ACTIVE', 'SUSPENDED', 'CANCELLED', 'EXPIRED'], true)
++            || ($subscription['plan_overridden'] ?? false) !== false || ($subscription['quantity'] ?? '1') !== '1') {
++            throw new \DomainException('PAYPAL_VERSIONED_SUBSCRIPTION_MISMATCH');
++        }
++        if (isset($subscription['plan'])) { self::assertVersionedFinancialFields($subscription['plan'], $plan); }
++    }
+ }
+--- a/src/Payments/PayPal/PayPalProvisioningService.php
++++ b/src/Payments/PayPal/PayPalProvisioningService.php
+@@ -66,12 +66,70 @@
+      * @param array<string, mixed> $payload
+      * @param callable(string):array<string, mixed> $operation
+      */
++    public function createOrReuseVersionedProduct(): PayPalProvisioningResult
++    {
++        $payload = PayPalPayloads::product();
++        $payload['name'] = 'Gourmet agreed service payments';
++        $payload['description'] = 'Initial payment and one finite scheduled balance under the reviewed conditions.';
++        $result = $this->provision('PRODUCT', $payload, null, null, function (string $requestId) use ($payload): array {
++            $created = $this->gateway->createProduct($payload, $requestId);
++            $created['status'] = 'CREATED';
++            return $created;
++        }, true);
++        $actual = $this->gateway->getProduct($result->externalId);
++        foreach (['name', 'description', 'type'] as $field) {
++            if (($actual[$field] ?? null) !== $payload[$field]) { throw new \DomainException('PAYPAL_VERSIONED_PRODUCT_MISMATCH'); }
++        }
++        return $result;
++    }
++
++    public function createOrReuseVersionedPlan(string $productId, \Gourmet\Payments\Http\CheckoutConditionsV1 $conditions, string $childUuid, int $nowMs): PayPalProvisioningResult
++    {
++        $payload = PayPalPayloads::versionedPlan($productId, $conditions, $childUuid, $nowMs);
++        $result = $this->provision('PLAN', $payload, $productId, null, function (string $requestId) use ($payload): array {
++            $created = $this->gateway->createPlan($payload, $requestId);
++            $id = $created['id'] ?? '';
++            if (!is_string($id) || preg_match('/\AP-[A-Z0-9]{24}\z/', $id) !== 1) { throw new \DomainException('PAYPAL_VERSIONED_PLAN_MISMATCH'); }
++            $authoritative = $this->versionedPlan($id);
++            PayPalPayloads::assertVersionedPlan($authoritative, $payload);
++            return $authoritative;
++        }, true);
++        // Reused registry rows receive the same authoritative validation as a
++        // newly created resource. A configuration hash alone is not evidence
++        // that the provider still has the expected financial plan.
++        PayPalPayloads::assertVersionedPlan($this->versionedPlan($result->externalId), $payload);
++        return $result;
++    }
++
++    public function createOrReuseVersionedSubscription(int $agreementId, string $childUuid, string $productId, string $planId, \Gourmet\Payments\Http\CheckoutConditionsV1 $conditions, int $nowMs, string $returnUrl, string $cancelUrl): PayPalProvisioningResult
++    {
++        $expectedPlan = PayPalPayloads::versionedPlan($productId, $conditions, $childUuid, $nowMs);
++        PayPalPayloads::assertVersionedPlan($this->versionedPlan($planId), $expectedPlan);
++        $start = $conditions->conditions->operation->prepared->plan->paymentSchedule->balanceInstant;
++        $now = (new \DateTimeImmutable('@' . intdiv($nowMs, 1000)))->setTimezone(new \DateTimeZone('UTC'));
++        $payload = PayPalPayloads::subscription($planId, $childUuid, new \DateTimeImmutable($start), $now);
++        $payload['application_context'] = ['return_url' => $returnUrl, 'cancel_url' => $cancelUrl,
++            'shipping_preference' => 'NO_SHIPPING', 'user_action' => 'SUBSCRIBE_NOW'];
++        $result = $this->provision('SUBSCRIPTION', $payload, $planId, $agreementId, function (string $requestId) use ($payload, $planId, $childUuid, $start, $expectedPlan): array {
++            $created = $this->gateway->createSubscription($payload, $requestId);
++            $id = $created['id'] ?? '';
++            if (!is_string($id) || preg_match('/\AI-[A-Z0-9]+\z/', $id) !== 1) { throw new \DomainException('PAYPAL_VERSIONED_SUBSCRIPTION_MISMATCH'); }
++            $authoritative = $this->versionedSubscription($id);
++            PayPalPayloads::assertVersionedSubscription($authoritative, $id, $planId, $childUuid, $start, $expectedPlan);
++            return $authoritative;
++        }, true);
++        $authoritative = $this->versionedSubscription($result->externalId);
++        PayPalPayloads::assertVersionedSubscription($authoritative, $result->externalId, $planId, $childUuid, $start, $expectedPlan);
++        return new PayPalProvisioningResult($result->externalId, (string) $authoritative['status'], $result->reused, $this->approvalUrl($authoritative));
++    }
++
+     private function provision(
+         string $resourceType,
+         array $payload,
+         ?string $parentExternalId,
+         ?int $agreementId,
+         callable $operation,
++        bool $protectAmbiguousFailures = false,
+     ): PayPalProvisioningResult {
+         $canonical = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+         $configurationHash = hash('sha256', $canonical, true);
+@@ -93,7 +151,8 @@
+             $this->idempotency->markAmbiguous($scope, $requestId);
+             throw $exception;
+         } catch (\Throwable $exception) {
+-            $this->idempotency->releaseDefinitiveFailure($scope, $requestId);
++            if ($protectAmbiguousFailures) { $this->idempotency->markAmbiguous($scope, $requestId); }
++            else { $this->idempotency->releaseDefinitiveFailure($scope, $requestId); }
+             throw $exception;
+         }
+
+@@ -139,6 +198,16 @@
+         return new PayPalProvisioningResult($externalId, $status, false, $approvalUrl);
+     }
+
++    private function versionedPlan(string $id): array
++    {
++        return $this->gateway instanceof PayPalClient ? $this->gateway->getVersionedPlan($id) : $this->gateway->getPlan($id);
++    }
++
++    private function versionedSubscription(string $id): array
++    {
++        return $this->gateway instanceof PayPalClient ? $this->gateway->getVersionedSubscription($id) : $this->gateway->getSubscription($id);
++    }
++
+     /** @param array<string, mixed> $response */
+     private function approvalUrl(array $response): ?string
+     {
 --- a/src/Payments/PayPal/PayPalReconciler.php
 +++ b/src/Payments/PayPal/PayPalReconciler.php
 @@ -10,6 +10,7 @@

@@ -17,6 +17,22 @@ $directory = getenv('GOURMET_SYNTHETIC_FIXTURE_DIRECTORY') ?: '';
 if (!is_file($directory . '/synthetic-fixture-only') || !is_file($root . '/bootstrap/autoload.php')) {
     throw new RuntimeException('Disposable synthetic HTTP fixture required.');
 }
+// The materializer has already verified these two original Dropbox assets.
+// Keep a literal allowlist: this fixture never exposes an arbitrary runtime,
+// configuration, source, ledger or filesystem path through the HTTP server.
+$assetPath = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
+$assets = ['/assets/app.css' => ['app.css', 'text/css; charset=utf-8'],
+    '/assets/app.js' => ['app.js', 'text/javascript; charset=utf-8']];
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'GET' && is_string($assetPath) && isset($assets[$assetPath])) {
+    [$name, $contentType] = $assets[$assetPath];
+    $file = $root . '/public/assets/' . $name;
+    if (!is_file($file)) { http_response_code(404); return; }
+    header('Content-Type: ' . $contentType);
+    header('Cache-Control: no-store');
+    header('X-Content-Type-Options: nosniff');
+    readfile($file);
+    return;
+}
 require $root . '/bootstrap/autoload.php';
 require __DIR__ . '/operational-config.php';
 $config = operationalFixtureConfigV2($root, $directory);

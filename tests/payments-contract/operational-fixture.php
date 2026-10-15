@@ -11,6 +11,7 @@ use Gourmet\Payments\Domain\Money;
 use Gourmet\Payments\Domain\PaymentAgreementService;
 use Gourmet\Payments\Http\Application;
 use Gourmet\Payments\Http\OperationalPaymentAgreementV2;
+use Gourmet\Payments\Http\InternalCheckoutEmissionV1;
 use Gourmet\Payments\Http\Request;
 use Gourmet\Payments\Http\Response;
 use Gourmet\Payments\Logging\JsonLogger;
@@ -18,6 +19,7 @@ use Gourmet\Payments\Payments\PayPal\PayPalHttpResponse;
 use Gourmet\Payments\Payments\PayPal\PayPalHttpTransport;
 use Gourmet\Payments\Support\Config;
 use Gourmet\Payments\Security\Secrets;
+use Gourmet\Payments\Security\PaymentLinkReplayCipher;
 
 ini_set('display_errors', 'stderr');
 error_reporting(E_ALL);
@@ -75,8 +77,38 @@ $snapshot = static function () use ($pdo, $mysql): array {
         $storage = ['driver' => 'sqlite', 'engine' => 'sqlite', 'version' => $pdo->query('SELECT sqlite_version()')->fetchColumn(),
             'foreignKeysEnabled' => (int) $pdo->query('PRAGMA foreign_keys')->fetchColumn() === 1];
     }
+    $tableNames = $pdo->query($mysql
+        ? "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
+        : "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN);
+    $allRows = [];
+    $rowHashes = [];
+    foreach ($tableNames as $table) {
+        if (preg_match('/^[A-Za-z0-9_]+$/D', $table) !== 1) { throw new RuntimeException('Unexpected synthetic table name.'); }
+        $rows = [];
+        foreach ($pdo->query('SELECT * FROM `' . $table . '`')->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            ksort($row, SORT_STRING);
+            $rows[] = serialize($row);
+        }
+        sort($rows, SORT_STRING);
+        $allRows[$table] = ['rows' => count($rows), 'sha256' => hash('sha256', serialize($rows))];
+        $rowHashes[$table] = array_map(static fn (string $row): string => hash('sha256', $row), $rows);
+        $counts[$table] = count($rows);
+    }
+    $checkoutIssuances = in_array('payment_checkout_issuances', $tableNames, true)
+        ? $pdo->query('SELECT i.*, p.public_uuid AS source_draft_uuid, c.public_uuid AS checkout_uuid FROM payment_checkout_issuances i JOIN payment_agreements p ON p.id = i.parent_draft_id JOIN payment_agreements c ON c.id = i.checkout_agreement_id ORDER BY i.id')->fetchAll()
+        : [];
+    foreach ($checkoutIssuances as &$issuance) {
+        foreach (['source_operation_digest', 'conditions_digest'] as $field) {
+            if (is_string($issuance[$field] ?? null) && strlen($issuance[$field]) === 32) { $issuance[$field] = bin2hex($issuance[$field]); }
+        }
+    }
+    unset($issuance);
     return [
         'counts' => $counts,
+        'tableNames' => $tableNames,
+        'allRows' => $allRows,
+        'rowHashes' => $rowHashes,
+        'checkoutIssuances' => $checkoutIssuances,
         'agreements' => $pdo->query("SELECT public_uuid, contract_version, payment_mode, initial_cents, operation_id, operation_digest, operation_json, configuration_id, configuration_digest, source_lead_id, source_quote_id, source_quote_version, recipient_name, recipient_email, recipient_phone, service_name, event_at_utc, event_location, currency, total_cents, reservation_cents, balance_cents, balance_due_at_utc, balance_timezone, status, provider, public_token_hash IS NULL AS token_is_null, CASE WHEN public_token_hash IS NULL THEN NULL ELSE 'synthetic-present' END AS public_token_hash, link_expires_at, terms_version, reservation_policy_version, created_at, updated_at FROM payment_agreements ORDER BY id")->fetchAll(),
         'schedules' => $pdo->query('SELECT a.public_uuid AS agreement_uuid, s.kind, s.amount_cents, s.due_at_utc, s.status, s.paid_at FROM payment_schedules s JOIN payment_agreements a ON a.id = s.agreement_id ORDER BY s.id')->fetchAll(),
         'idempotency' => $pdo->query('SELECT scope, idempotency_key, lower(hex(request_hash)) AS request_hash, response_status, completed_at, locked_until, response_ciphertext IS NOT NULL AS encrypted_response FROM idempotency_keys ORDER BY id')->fetchAll(),
@@ -139,10 +171,179 @@ if ($action === 'initialize') {
         : "CREATE TRIGGER synthetic_abort_final_v2_audit BEFORE INSERT ON audit_events WHEN NEW.event_type = 'INTERNAL_PAYMENT_DRAFT_V2_REQUESTED' BEGIN SELECT RAISE(ABORT, 'SYNTHETIC_FINAL_AUDIT_FAILURE'); END");
 } elseif ($action === 'remove_audit_failure') {
     $pdo->exec('DROP TRIGGER synthetic_abort_final_v2_audit');
+} elseif ($action === 'install_checkout_audit_failure') {
+    $pdo->exec($mysql
+        ? "CREATE TRIGGER synthetic_abort_checkout_audit BEFORE INSERT ON audit_events FOR EACH ROW BEGIN IF NEW.event_type = 'PAYMENT_CHECKOUT_V1_ISSUED' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'SYNTHETIC_CHECKOUT_AUDIT_FAILURE'; END IF; END"
+        : "CREATE TRIGGER synthetic_abort_checkout_audit BEFORE INSERT ON audit_events WHEN NEW.event_type = 'PAYMENT_CHECKOUT_V1_ISSUED' BEGIN SELECT RAISE(ABORT, 'SYNTHETIC_CHECKOUT_AUDIT_FAILURE'); END");
+} elseif ($action === 'remove_checkout_audit_failure') {
+    $pdo->exec('DROP TRIGGER synthetic_abort_checkout_audit');
+} elseif ($action === 'historical_draft') {
+    // Seed a historical immutable draft using the real domain service and an
+    // explicit past creation clock. The checkout route still uses its actual
+    // current server clock; no application clock or stored row is rewritten.
+    $at = $input['atMs'] ?? null;
+    if (!is_int($at) || $at < 0 || $at >= (int) floor(microtime(true) * 1000)) {
+        throw new RuntimeException('Explicit past synthetic draft time required.');
+    }
+    $command = OperationalPaymentAgreementV2::fromJson($input['body'] ?? '', $at);
+    $now = DateTimeImmutable::createFromFormat('U.u', sprintf('%d.%06d', intdiv($at, 1000), ($at % 1000) * 1000));
+    if ($now === false) { throw new RuntimeException('Invalid historical fixture time.'); }
+    $created = (new PaymentAgreementService($pdo))->createDraftV2($command->operationArray(), $now);
+    $result['historicalDraftId'] = $created['agreement_uuid'];
+} elseif ($action === 'checkout_expired_route') {
+    $token = $input['token'] ?? '';
+    if (!is_string($token) || preg_match('/^[A-Za-z0-9_-]{43}$/D', $token) !== 1) {
+        throw new RuntimeException('An actual synthetic checkout token is required.');
+    }
+    $lookup = $pdo->prepare('SELECT link_expires_at FROM payment_agreements WHERE contract_version = 3 AND public_token_hash = :hash');
+    $lookup->bindValue('hash', hash('sha256', $token, true), PDO::PARAM_LOB); $lookup->execute();
+    $expiry = $lookup->fetchColumn();
+    $afterExpiration = new DateTimeImmutable('2100-01-01T00:00:00Z');
+    if (!is_string($expiry) || new DateTimeImmutable($expiry, new DateTimeZone('UTC')) >= $afterExpiration) {
+        throw new RuntimeException('Explicit expiring synthetic checkout before the fixture clock is required.');
+    }
+    // Only constructor DI changes this Application's clock. Neither its HTTP
+    // input nor the immutable child/parent/receipt is modified to simulate age.
+    $expiredApplication = new Application($config, new JsonLogger($directory . '/logs.jsonl'), $transport,
+        static fn (): DateTimeImmutable => $afterExpiration);
+    $result['response'] = $readResponse($expiredApplication->handle(new Request(
+        'GET', '/pay/' . $token, [], [], [], '127.0.0.1', 'Synthetic expired checkout fixture', true, '', [])));
+} elseif ($action === 'checkout_storage_proof') {
+    $token = $input['token'] ?? '';
+    $url = $input['url'] ?? '';
+    $uuid = $input['agreementId'] ?? '';
+    if (!is_string($token) || preg_match('/^[A-Za-z0-9_-]{43}$/D', $token) !== 1
+        || !is_string($url) || !str_starts_with($url, 'https://synthetic.invalid/pay/')) {
+        throw new RuntimeException('Explicit synthetic checkout token and URL required.');
+    }
+    $statement = $pdo->prepare('SELECT public_token_hash FROM payment_agreements WHERE public_uuid = :uuid');
+    $statement->execute(['uuid' => $uuid]);
+    $hash = $statement->fetchColumn();
+    $plaintextToken = false;
+    $plaintextUrl = false;
+    foreach ($snapshot()['tableNames'] as $table) {
+        foreach ($pdo->query('SELECT * FROM `' . $table . '`')->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            foreach ($row as $value) {
+                if (is_string($value)) {
+                    $plaintextToken = $plaintextToken || str_contains($value, $token);
+                    $plaintextUrl = $plaintextUrl || str_contains($value, $url);
+                }
+            }
+        }
+    }
+    $result['checkoutStorageProof'] = ['tokenHashMatches' => is_string($hash) && hash_equals(hash('sha256', $token, true), $hash),
+        'plaintextTokenPresent' => $plaintextToken, 'plaintextUrlPresent' => $plaintextUrl];
+} elseif ($action === 'checkout_authority_expiry') {
+    // A test-only domain callback observes the actual uncommitted writes, then
+    // lets the short capability expire. Application has no injectable callback.
+    $wire = json_decode($input['body'] ?? '', false, 16, JSON_THROW_ON_ERROR);
+    $nowMs = (int) floor(microtime(true) * 1000);
+    $wire->authorization->issuedAtMs = $nowMs;
+    $wire->authorization->expiresAtMs = $nowMs + 150;
+    $command = InternalCheckoutEmissionV1::fromJson(\Gourmet\Payments\Http\InternalPaymentPlanV2::encodeCanonical($wire), $nowMs);
+    $proof = ['childPresentInside' => false, 'relationPresentInside' => false,
+        'encryptedReceiptPresentInside' => false, 'auditPresentInside' => false, 'rejectedAtCommit' => false];
+    $callbackCalls = 0;
+    try {
+        (new PaymentAgreementService($pdo))->issueCheckoutV1($command, new DateTimeImmutable('now', new DateTimeZone('UTC')),
+            $config->appUrl, PaymentLinkReplayCipher::fromHexKey(str_repeat('cd', 32)), false,
+            static function (string $childUuid) use ($pdo, $command, &$proof, &$callbackCalls): void {
+                ++$callbackCalls;
+                $child = $pdo->prepare("SELECT id FROM payment_agreements WHERE public_uuid = :uuid AND status = 'PENDING_CHECKOUT'");
+                $child->execute(['uuid' => $childUuid]);
+                $childId = $child->fetchColumn();
+                $proof['childPresentInside'] = $childId !== false;
+                $relation = $pdo->prepare('SELECT 1 FROM payment_checkout_issuances WHERE checkout_agreement_id = :id');
+                $relation->execute(['id' => $childId]); $proof['relationPresentInside'] = $relation->fetchColumn() !== false;
+                $receipt = $pdo->prepare('SELECT response_ciphertext IS NOT NULL FROM idempotency_keys WHERE scope = :scope AND idempotency_key = :key');
+                $receipt->execute(['scope' => 'internal.payment_checkouts.issue.v1', 'key' => $command->idempotencyKey()]);
+                $proof['encryptedReceiptPresentInside'] = (int) $receipt->fetchColumn() === 1;
+                $audit = $pdo->prepare("SELECT 1 FROM audit_events WHERE event_type = 'PAYMENT_CHECKOUT_V1_ISSUED' AND aggregate_public_uuid = :uuid");
+                $audit->execute(['uuid' => $childUuid]); $proof['auditPresentInside'] = $audit->fetchColumn() !== false;
+                usleep(250000);
+            });
+        throw new RuntimeException('Expired checkout capability committed unexpectedly.');
+    } catch (DomainException $exception) {
+        if ($exception->getMessage() !== 'INVALID_CHECKOUT_EMISSION_V1') { throw $exception; }
+        $proof['rejectedAtCommit'] = true;
+    }
+    $result['callbackCalls'] = $callbackCalls;
+    $result['checkoutExpiryProof'] = $proof;
+    $result['transactionOpen'] = $pdo->inTransaction();
+} elseif ($action === 'checkout_sql_guards') {
+    $lookup = $pdo->prepare('SELECT * FROM payment_checkout_issuances WHERE parent_draft_id = (SELECT id FROM payment_agreements WHERE public_uuid = :uuid)');
+    $lookup->execute(['uuid' => $input['sourceDraftId'] ?? '']);
+    $issuance = $lookup->fetch(PDO::FETCH_ASSOC);
+    if (!is_array($issuance)) { throw new RuntimeException('An actual synthetic issued checkout is required.'); }
+    $facts = [];
+    $reject = static function (string $name, callable $operation) use ($pdo, &$facts): void {
+        $pdo->beginTransaction();
+        try {
+            $operation();
+            throw new RuntimeException('Synthetic checkout SQL mutation was accepted: ' . $name);
+        } catch (PDOException $exception) {
+            if (!in_array((string) $exception->getCode(), ['23000', '45000'], true)) { throw $exception; }
+            $facts[$name] = true;
+        } finally { if ($pdo->inTransaction()) { $pdo->rollBack(); } }
+    };
+    $update = static function (string $table, string $field, mixed $value, int $id) use ($pdo): void {
+        $statement = $pdo->prepare('UPDATE ' . $table . ' SET ' . $field . ' = :value WHERE id = :id');
+        $statement->execute(['value' => $value, 'id' => $id]);
+    };
+    $parentId = (int) $issuance['parent_draft_id'];
+    $childId = (int) $issuance['checkout_agreement_id'];
+    $reject('parent_draft_is_immutable', static fn () => $update('payment_agreements', 'status', 'PENDING_CHECKOUT', $parentId));
+    foreach (['total_cents' => 1, 'initial_cents' => 1, 'recipient_name' => 'Synthetic changed recipient',
+        'terms_version' => str_repeat('f', 64), 'balance_timezone' => 'UTC', 'contract_version' => 2,
+        'link_expires_at' => '2099-11-21 18:00:00.000000', 'public_token_hash' => str_repeat('x', 32)] as $field => $value) {
+        // UTC can already be the real value on full payment (which has NULL),
+        // while the selected 50% fixture explicitly uses America/New_York.
+        $reject('child_immutable_' . $field, static fn () => $update('payment_agreements', $field, $value, $childId));
+    }
+    $relationId = (int) $issuance['id'];
+    $reject('relation_conditions_are_immutable', static fn () => $update('payment_checkout_issuances', 'conditions_json', '{}', $relationId));
+    $reject('relation_cannot_be_deleted', static function () use ($pdo, $relationId): void {
+        $statement = $pdo->prepare('DELETE FROM payment_checkout_issuances WHERE id = :id'); $statement->execute(['id' => $relationId]);
+    });
+    $schedule = $pdo->prepare('SELECT id FROM payment_schedules WHERE agreement_id = :id ORDER BY id LIMIT 1');
+    $schedule->execute(['id' => $childId]); $scheduleId = (int) $schedule->fetchColumn();
+    $reject('schedule_amount_is_immutable', static fn () => $update('payment_schedules', 'amount_cents', 1, $scheduleId));
+    $reject('schedule_cannot_be_deleted', static function () use ($pdo, $scheduleId): void {
+        $statement = $pdo->prepare('DELETE FROM payment_schedules WHERE id = :id'); $statement->execute(['id' => $scheduleId]);
+    });
+    $reject('one_parent_has_one_child_even_with_another_valid_child_and_issuance_key', static function () use ($pdo, $issuance, $childId): void {
+        $lookup = $pdo->prepare('SELECT * FROM payment_agreements WHERE id = :id'); $lookup->execute(['id' => $childId]);
+        $clone = $lookup->fetch(PDO::FETCH_ASSOC); unset($clone['id']);
+        $clone['public_uuid'] = \Gourmet\Payments\Support\Uuid::v4();
+        $clone['public_token_hash'] = random_bytes(32);
+        $columns = array_keys($clone);
+        foreach ($columns as $column) { if (preg_match('/^[a-z_]+$/D', $column) !== 1) { throw new RuntimeException('Unexpected fixture column.'); } }
+        $insert = $pdo->prepare('INSERT INTO payment_agreements (' . implode(',', $columns) . ') VALUES (:' . implode(',:', $columns) . ')');
+        foreach ($clone as $column => $value) {
+            $insert->bindValue($column, $value, $column === 'public_token_hash' ? PDO::PARAM_LOB
+                : ($value === null ? PDO::PARAM_NULL : (is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR)));
+        }
+        $insert->execute(); $cloneId = (int) $pdo->lastInsertId();
+        $copy = $issuance; unset($copy['id']);
+        $copy['issuance_id'] = hash('sha256', random_bytes(32)); $copy['checkout_agreement_id'] = $cloneId;
+        $columns = array_keys($copy);
+        $insert = $pdo->prepare('INSERT INTO payment_checkout_issuances (' . implode(',', $columns) . ') VALUES (:' . implode(',:', $columns) . ')');
+        try { $insert->execute($copy); }
+        catch (PDOException $exception) {
+            if (!str_contains($exception->getMessage(), 'parent_draft')) { throw new RuntimeException('Expected actual parent UNIQUE constraint rejection.', 0, $exception); }
+            throw $exception;
+        }
+    });
+    $result['checkoutSqlGuards'] = ['assertions' => count($facts), 'facts' => $facts];
+    $result['transactionOpen'] = $pdo->inTransaction();
 } elseif ($action === 'migration_fault') {
     if ($mysql) { throw new RuntimeException('Atomic rebuild fault proof is SQLite-specific.'); }
     require __DIR__ . '/operational-migration-fault.php';
     $result['migrationFault'] = runOperationalMigrationFaultV2($root, $directory);
+} elseif ($action === 'checkout_migration_fault') {
+    if ($mysql) { throw new RuntimeException('Atomic rebuild fault proof is SQLite-specific.'); }
+    require __DIR__ . '/operational-migration-fault.php';
+    $result['migrationFault'] = runOperationalMigrationFaultV2($root, $directory, '0007_versioned_payment_checkouts.sql', $input['body'] ?? null);
 } elseif ($action === 'query_probes') {
     require __DIR__ . '/operational-query-probes.php';
     $result['queryProbes'] = runOperationalQueryProbesV2($pdo);

@@ -71,6 +71,16 @@ final readonly class OperationalPaymentAgreementV2
         return 'gourmet-v2-' . $operationId;
     }
 
+    /** Validate immutable source facts without treating an old draft approval
+     * as current authority to issue a checkout. */
+    public static function validateOperation(mixed $value, int $nowMs): \stdClass
+    {
+        $operation = self::operation($value);
+        self::check(Money::CURRENCY === 'USD');
+        InternalPaymentPlanV2::validate(InternalPaymentPlanV2::encodeCanonical($operation->prepared), $nowMs);
+        return $operation;
+    }
+
     public function requestHash(): string
     {
         return hex2bin($this->operationDigest);

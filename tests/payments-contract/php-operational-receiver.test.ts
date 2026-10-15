@@ -11,8 +11,8 @@ before(async () => { ledger = await createOperationalPaymentFixtureV2({ seedLega
 after(async () => { await ledger?.close(); });
 
 test('original SQLite migrations preserve synthetic v1 history and its fixed USD 49 invariant', () => {
-  assert.deepEqual(ledger.initial.applied, ['0006_versioned_payment_agreement_drafts.sql']);
-  assert.equal(ledger.initial.snapshot.migrations.length, 5);
+  assert.deepEqual(ledger.initial.applied, ['0006_versioned_payment_agreement_drafts.sql', '0007_versioned_payment_checkouts.sql']);
+  assert.equal(ledger.initial.snapshot.migrations.length, 6);
   const before = ledger.initial.legacyBeforeMigration![0], after = ledger.initial.snapshot.agreements[0];
   assert.equal(after.public_uuid, before.public_uuid); assert.equal(after.contract_version, 1);
   assert.equal(after.total_cents, 10001); assert.equal(after.reservation_cents, 4900); assert.equal(after.balance_cents, 5101);
@@ -171,6 +171,23 @@ test('actual Migrator atomically rolls back a late 0006 rebuild fault; reopening
   for (const [key, value] of Object.entries(result.before.agreements[0])) assert.equal(result.afterSuccess.agreements[0][key], value);
   assert.deepEqual(result.afterSuccess.schedules, result.before.schedules);
   assert.equal(result.afterSuccess.foreignKeys, 1); assert.deepEqual(result.afterSuccess.foreignKeyViolations, []);
+});
+
+test('actual 0007 checkout rebuild preserves v1 consent, reviewed v2 rows and high water marks after a durable rollback and retry', async () => {
+  const operation = (await operationFixture('retainer_50', 'checkout-migration-fault')).operation;
+  const beforeMain = ledger.invoke({ action: 'snapshot' }).snapshot;
+  const result = ledger.invoke({ action: 'checkout_migration_fault', body: envelope(operation) }).migrationFault!;
+  assert.equal(result.failed, true); assert.equal(result.transactionOpen, false);
+  assert.deepEqual(result.afterFailure, result.before);
+  assert.deepEqual(result.applied, ['0007_versioned_payment_checkouts.sql']); assert.deepEqual(result.reapplied, []);
+  assert.deepEqual(result.afterSuccess.agreements, result.before.agreements);
+  assert.deepEqual(result.afterSuccess.consents, result.before.consents);
+  assert.deepEqual(result.afterSuccess.schedules, result.before.schedules);
+  assert.equal(result.afterSuccess.agreements.find((row: any) => row.contract_version === 2).operation_json, canonical(operation));
+  for (const table of ['payment_agreements', 'payment_consents'])
+    assert.deepEqual(result.afterSuccess.sequences.find((row: any) => row.name === table), result.before.sequences.find((row: any) => row.name === table));
+  assert.equal(result.afterSuccess.foreignKeys, 1); assert.deepEqual(result.afterSuccess.foreignKeyViolations, []);
+  assert.deepEqual(ledger.invoke({ action: 'snapshot' }).snapshot, beforeMain);
 });
 
 test('real loopback HTTP parses Content-Type through original Request; restarted Application reconciles the committed SQLite agreement', async () => {

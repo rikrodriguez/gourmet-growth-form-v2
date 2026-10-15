@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { EventQuoteView, PaymentConfigurationFactsV2, PaymentConfigurationV2, PaymentContractPreparationV2, QuoteCommand } from '../backend/event-quote-contracts';
 import { proposeRetainerBalanceDateV2, resolveApprovedLocalMinuteV2 } from '../backend/payment-calendar-v2';
-import { exactPaymentConfigurationV2Command, exactPaymentDraftRegistrationV2Command, exactPaymentAgreementOperationV2Command, type EventQuoteStatusResponse, type PaymentAgreementOperationCommandV2, type PaymentAgreementOperationSummaryV2 } from '../event-quote-client';
+import { exactPaymentConfigurationV2Command, exactPaymentDraftRegistrationV2Command, exactPaymentAgreementOperationV2Command, exactPaymentCheckoutV1Command, isSafePaymentCheckoutUrl, type EventQuoteStatusResponse, type PaymentAgreementOperationCommandV2, type PaymentAgreementOperationSummaryV2, type CheckoutEmissionBrowserCommandV1 } from '../event-quote-client';
 
 const money = (cents: number) => new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'USD' }).format(cents / 100);
 function cents(value: string): number | null {
@@ -80,17 +80,27 @@ export function PaymentConditionsFormV2({ view, status, preparation, enabled, on
   </form>;
 }
 
-export function PaymentConfigurationReviewV2({ view, status, configuration, enabled, onCommand, showApproval = true, registered = false, agreementOperation, onPaymentAgreementOperation, canReconcile = false }: {
+export function PaymentConfigurationReviewV2({ view, status, configuration, enabled, onCommand, showApproval = true, registered = false, agreementOperation, onPaymentAgreementOperation, canReconcile = false, canIssueCheckout = false, canReconcileCheckout = false, onPaymentCheckout }: {
   view: EventQuoteView; status: EventQuoteStatusResponse; configuration: PaymentConfigurationV2; enabled: boolean; onCommand(command: QuoteCommand): void; showApproval?: boolean; registered?: boolean; agreementOperation?: PaymentAgreementOperationSummaryV2; canReconcile?: boolean; onPaymentAgreementOperation?: (command: PaymentAgreementOperationCommandV2) => void;
+  canIssueCheckout?: boolean; canReconcileCheckout?: boolean; onPaymentCheckout?: (command: CheckoutEmissionBrowserCommandV1) => void;
 }) {
   const [confirmed, setConfirmed] = useState(false), [error, setError] = useState<string | null>(null);
+  const [checkoutConfirmed, setCheckoutConfirmed] = useState(false);
   const preparation = view.record.paymentContractPreparationsV2!.find(p => p.id === configuration.preparationId)!;
   const facts = configuration.configuration, schedule = facts.paymentSchedule;
   const operational = status.paymentAgreementsEnabled === true;
   const creationRetry = agreementOperation?.status === 'reconciliation_required';
   const canCreate = operational && (!agreementOperation || creationRetry) && !!onPaymentAgreementOperation;
   const reconciliationRequired = agreementOperation?.status === 'pending' || agreementOperation?.status === 'reconciliation_required';
+  const checkout = agreementOperation?.checkout;
+  const checkoutAvailable = status.paymentCheckoutsEnabled === true && agreementOperation?.status === 'draft_persisted'
+    && !!agreementOperation.checkoutConditionsDigest && !!onPaymentCheckout;
+  const checkoutNeedsReconciliation = checkout?.status === 'pending' || checkout?.status === 'reconciliation_required';
+  const checkoutUrl = checkout?.status === 'checkout_issued' && checkout.serviceAuthenticated === true
+    && checkout.executable === false && checkout.providerEnabled === false && checkout.authorizationVerified === false
+    && isSafePaymentCheckoutUrl(checkout.publicPaymentUrl) ? checkout.publicPaymentUrl : null;
   useEffect(() => { if (!enabled || !showApproval) setConfirmed(false); }, [enabled, showApproval]);
+  useEffect(() => { setCheckoutConfirmed(false); }, [canIssueCheckout, configuration.digest, agreementOperation?.checkoutConditionsDigest, checkout?.status, view.record.revision]);
   function register() {
     if (!enabled || !showApproval || !confirmed) return;
     try { const command = exactPaymentDraftRegistrationV2Command(view, status, crypto.randomUUID(), configuration.id); setError(null); setConfirmed(false); onCommand(command); }
@@ -102,6 +112,14 @@ export function PaymentConfigurationReviewV2({ view, status, configuration, enab
       const command = exactPaymentAgreementOperationV2Command(view, status, crypto.randomUUID(), configuration.id, operation);
       setError(null); setConfirmed(false); onPaymentAgreementOperation(command);
     } catch { setConfirmed(false); setError('No se pudo autorizar esta operación con las referencias guardadas. Recarga y revisa su estado antes de continuar.'); }
+  }
+  function checkoutOperation(operation: CheckoutEmissionBrowserCommandV1['operation']) {
+    if (!checkoutAvailable || !onPaymentCheckout
+      || (operation === 'issue' ? !canIssueCheckout || !checkoutConfirmed || !!checkout : !canReconcileCheckout || !checkoutNeedsReconciliation)) return;
+    try {
+      const command = exactPaymentCheckoutV1Command(view, status, crypto.randomUUID(), configuration.id, operation);
+      setError(null); setCheckoutConfirmed(false); onPaymentCheckout(command);
+    } catch { setCheckoutConfirmed(false); setError('No se pudo autorizar el checkout con estas condiciones. Recarga y revisa su estado antes de continuar.'); }
   }
   return <div data-testid="persisted-payment-v2-review">
     <h5>{registered || agreementOperation?.status === 'draft_persisted' ? 'Condiciones del acuerdo borrador' : showApproval ? 'Revisar condiciones guardadas y confirmar borrador' : 'Condiciones guardadas del borrador'}</h5>
@@ -134,7 +152,23 @@ export function PaymentConfigurationReviewV2({ view, status, configuration, enab
       {agreementOperation.status === 'rejected' && <p>La solicitud fue rechazada. Conserva estas condiciones y revisa el rechazo antes de preparar otro acuerdo.</p>}
       <p>Ejecutable: no. Proveedor: desactivado. Autorización comercial: sin verificar. Cobrado: desconocido.</p>
     </div>}
-    <p className="gew-muted">{operational || agreementOperation ? 'La confirmación guarda un acuerdo deshabilitado en Payments. No genera un enlace ni cobra al cliente.' : 'La confirmación valida un borrador interno de prueba. No crea un enlace ni acredita aceptación del cliente, pago o autorización comercial.'}</p>
+    {checkoutAvailable && !checkout && <div data-testid="payment-checkout-review">
+      <p>Emite un checkout relacionado con este DRAFT y estas condiciones exactas. El proveedor permanecerá desactivado; emitirlo no acredita consentimiento ni pago.</p>
+      <p className="gew-muted">Huella de condiciones del checkout: <span className="gew-hash">{agreementOperation.checkoutConditionsDigest}</span></p>
+      <label className="gew-check"><input data-testid="payment-checkout-confirm-review" type="checkbox" checked={checkoutConfirmed} disabled={!canIssueCheckout} onChange={event => setCheckoutConfirmed(event.target.checked)} />Revisé la modalidad, los importes, las condiciones, el calendario y la expiración para emitir este checkout sin activar el proveedor.</label>
+      <button type="button" className="gew-button gew-button-primary" data-testid="payment-checkout-issue" disabled={!canIssueCheckout || !checkoutConfirmed} onClick={() => checkoutOperation('issue')}>Emitir checkout sin activar proveedor</button>
+    </div>}
+    {checkout && <div data-testid="payment-checkout-status">
+      <p className="gew-tag">{checkout.status === 'checkout_issued' ? 'Checkout emitido · proveedor desactivado'
+        : checkout.status === 'pending' ? 'Emisión de checkout pendiente' : 'Resultado del checkout por reconciliar'}</p>
+      {checkout.status === 'checkout_issued' && <><p>ID del checkout: <span data-testid="payment-checkout-id">{checkout.checkoutId}</span></p>
+        {checkoutUrl && <a className="gew-button" data-testid="payment-checkout-link" href={checkoutUrl} target="_blank" rel="noopener noreferrer">Abrir checkout · proveedor desactivado</a>}
+        <p>El DRAFT original permanece sin cambios. Checkout emitido no significa consentimiento, autorización comercial ni cobro.</p></>}
+      {checkoutNeedsReconciliation && <><p>Consulta la misma emisión guardada. Reconciliar no crea otro checkout y no se reintenta automáticamente.</p>
+        <button type="button" className="gew-button" data-testid="payment-checkout-reconcile" disabled={!checkoutAvailable || !canReconcileCheckout} onClick={() => checkoutOperation('reconcile')}>Reconciliar checkout</button></>}
+      <p>Proveedor: desactivado. Ejecución: desactivada. Cobrado: desconocido.</p>
+    </div>}
+    <p className="gew-muted">{checkout ? 'El borrador conserva su identidad y condiciones; el checkout relacionado no activa el proveedor ni envía mensajes.' : operational || agreementOperation ? 'La confirmación del borrador guarda un acuerdo deshabilitado en Payments. La emisión del checkout es una acción separada y no cobra al cliente.' : 'La confirmación valida un borrador interno de prueba. No crea un enlace ni acredita aceptación del cliente, pago o autorización comercial.'}</p>
     {error && <p className="gew-notice gew-notice-warning" role="alert">{error}</p>}
   </div>;
 }
