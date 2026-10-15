@@ -1,0 +1,166 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ExternalProposalPanel } from '../../src/office/dashboard/ExternalProposalPanel';
+import { ExternalProposalError, MemoryExternalProposalStore, proposalBridgeScope } from '../../src/office/backend/external-proposal';
+import { proposalFixture } from './external-proposal-fixtures';
+import type { ExternalProposalCommand } from '../../src/office/external-proposal-contracts';
+const code = (value: string) => (e: unknown) => e instanceof ExternalProposalError && e.code === value;
+async function associated() {
+  const f = await proposalFixture();
+  const view = await f.service.execute(f.targets[0], { action: 'associate', key: 'associate-1', expectedRevision: 0 });
+  return { ...f, view };
+}
+const approval = (f: Awaited<ReturnType<typeof associated>>): ExternalProposalCommand => ({ action: 'approve', key: 'approve-1', expectedRevision: f.view.revision, reviewKey: f.view.snapshot!.reviewKey });
+
+test('exact existing lead/event association preserves provenance and hashes trusted UTF-8 content; no calculated quote is generated', async () => {
+  const f = await associated(), s = f.view.snapshot!;
+  assert.equal(f.view.status, 'pending_internal_review');
+  assert.equal(s.sha256, createHash('sha256').update(f.documents.get(f.targets[0].proposalId)!.content!).digest('hex'));
+  assert.equal(s.provenance.itemId, '300'); assert.equal(s.sourceVersion, 'v1');
+  assert.equal(s.intendedRecipient, 'client@example.test');
+  const approved = await f.service.execute(f.targets[0], approval(f));
+  assert.equal(approved.status, 'approved_internal_unsent'); assert.equal(approved.externalEffectsEnabled, false);
+  assert.equal((await f.quoteService.read(f.authorities.get(f.targets[0].leadId)!.quote.scope, f.actor, f.targets[0].eventId)).record.quotes.length, 0);
+});
+test('a URL alone is reference_only and cannot authorize documentary approval', async () => {
+  const f = await proposalFixture(); f.documents.get(f.targets[0].proposalId)!.content = null;
+  const view = await f.service.execute(f.targets[0], { action: 'associate', key: 'reference', expectedRevision: 0 });
+  assert.equal(view.status, 'reference_only'); assert.equal(view.snapshot!.sha256, null);
+  assert.ok(!JSON.stringify(view).includes('https://'));
+  await assert.rejects(f.service.execute(f.targets[0], { action: 'approve', key: 'ref-approve', expectedRevision: 1, reviewKey: view.snapshot!.reviewKey }), code('REVIEW_OBSOLETE'));
+});
+test('lead/event/proposal IDs cannot be mixed, including contradictory IDs embedded in a historical link', async () => {
+  const f = await proposalFixture(), a = f.targets[0], b = f.targets[1];
+  await assert.rejects(f.service.execute({ ...a, eventId: b.eventId }, { action: 'associate', key: 'mixed-event', expectedRevision: 0 }), code('PROVIDER_MISMATCH'));
+  await assert.rejects(f.service.execute({ ...a, proposalId: b.proposalId }, { action: 'associate', key: 'mixed-proposal', expectedRevision: 0 }), code('PROVIDER_MISMATCH'));
+  f.documents.get(a.proposalId)!.historicalLink.originalUrl = 'https://proposal.example.test/existing?itemId=301&boardId=200';
+  await assert.rejects(f.service.execute(a, { action: 'associate', key: 'mixed-link', expectedRevision: 0 }), code('SOURCE_MISMATCH'));
+});
+for (const field of ['leadId', 'eventId', 'proposalId'] as const) test(`reject unknown ${field} without discovering another case`, async () => {
+  const f = await proposalFixture();
+  await assert.rejects(f.service.execute({ ...f.targets[0], [field]: 'unknown' }, { action: 'associate', key: 'unknown', expectedRevision: 0 }));
+});
+test('isolates lead, event, workspace, organization, actor and test/commercial mode', async () => {
+  const f = await associated(), a = f.authorities.get(f.targets[0].leadId)!;
+  assert.equal((await f.service.read(f.targets[1])).status, 'missing');
+  for (const field of ['organizationId', 'workspaceId'] as const) {
+    const scope = a.quote.scope; a.quote.scope = { ...scope, [field]: 'other' };
+    await assert.rejects(f.service.read(f.targets[0]), code('ACCESS_DENIED')); a.quote.scope = scope;
+  }
+  const originalActor = a.quote.actor; a.quote.actor = { ...originalActor, actorId: 'other-actor' };
+  assert.equal((await f.service.read(f.targets[0])).status, 'missing'); a.quote.actor = originalActor;
+  a.quote.scope = { ...a.quote.scope, mode: 'commercial' };
+  await assert.rejects(f.service.read(f.targets[0]), code('ACCESS_DENIED'));
+});
+for (const permission of ['read', 'write', 'approve', 'event', 'lead', 'expiry', 'withdrawn']) test(`existing permission ${permission} fails closed`, async () => {
+  const f = await associated(), a = f.authorities.get(f.targets[0].leadId)!;
+  if (permission === 'read') a.lead.canRead = false;
+  if (permission === 'write') a.quote.actor = { ...a.quote.actor, canWrite: false };
+  if (permission === 'approve') a.quote.actor = { ...a.quote.actor, canApprove: false };
+  if (permission === 'event') a.eventIds = [];
+  if (permission === 'lead') a.lead.leadIds = [];
+  if (permission === 'expiry') a.lead.expiresAtMs = 0;
+  if (permission === 'withdrawn') f.withdraw();
+  await assert.rejects(f.service.execute(f.targets[0], approval(f)), code('ACCESS_DENIED'));
+});
+test('read-only existing identity can read content but cannot associate or approve', async () => {
+  const f = await associated(), a = f.authorities.get(f.targets[0].leadId)!;
+  a.quote.actor = { ...a.quote.actor, canWrite: false, canApprove: false };
+  assert.equal((await f.service.read(f.targets[0])).canWrite, false);
+  await assert.rejects(f.service.execute(f.targets[0], { action: 'associate', key: 'readonly', expectedRevision: 1 }), code('ACCESS_DENIED'));
+});
+test('a changed document invalidates approval and rejects mutation under the same immutable provider version', async () => {
+  const f = await associated(); await f.service.execute(f.targets[0], approval(f));
+  const doc = f.documents.get(f.targets[0].proposalId)!; doc.content += '\nChanged';
+  const read = await f.service.read(f.targets[0]); assert.equal(read.status, 'obsolete'); assert.equal(read.approval, null);
+  await assert.rejects(f.service.execute(f.targets[0], { action: 'associate', key: 'mutate-version', expectedRevision: 2 }), code('VERSION_CONFLICT'));
+  doc.sourceVersion = 'v2';
+  const v2 = await f.service.execute(f.targets[0], { action: 'associate', key: 'v2', expectedRevision: 2 });
+  assert.equal(v2.status, 'pending_internal_review'); assert.notEqual(v2.snapshot!.sha256, f.view.snapshot!.sha256);
+  await assert.rejects(f.service.execute(f.targets[0], { action: 'approve', key: 'old-hash', expectedRevision: 3, reviewKey: f.view.snapshot!.reviewKey }), code('REVIEW_OBSOLETE'));
+});
+test('a new provider version with identical bytes still invalidates approval', async () => {
+  const f = await associated(); await f.service.execute(f.targets[0], approval(f));
+  f.documents.get(f.targets[0].proposalId)!.sourceVersion = 'v2';
+  assert.equal((await f.service.read(f.targets[0])).status, 'obsolete');
+});
+for (const recipient of ['other@example.test', 'client@example.test']) test(`saved brief/recipient change invalidates approval (${recipient})`, async () => {
+  const f = await associated(); await f.service.execute(f.targets[0], approval(f));
+  await f.changeBrief(f.targets[0], recipient);
+  assert.equal((await f.service.read(f.targets[0])).status, 'obsolete');
+  await assert.rejects(f.service.execute(f.targets[0], { action: 'approve', key: 'old-recipient', expectedRevision: 2, reviewKey: f.view.snapshot!.reviewKey }), code('REVIEW_OBSOLETE'));
+});
+test('canonical link revision invalidates approval even when the same IDs are linked again', async () => {
+  const f = await associated(); await f.service.execute(f.targets[0], approval(f));
+  const a = f.authorities.get(f.targets[0].leadId)!, scope = proposalBridgeScope(a), s = await f.bridge.snapshot(scope), binding = s.bindings.find(b => b.bindingId === a.bindingId)!;
+  await f.bridge.execute(scope, { action: 'bind', idempotencyKey: 'relink', expectedRevision: s.revision, bindingId: a.bindingId, expectedBindingRevision: binding.revision, expectedBindingDigest: binding.digest, evidenceRef: 'relinked-fixture', refs: binding.refs });
+  assert.equal((await f.service.read(f.targets[0])).status, 'obsolete');
+});
+test('reassociation creates a fresh review and never resurrects an older approval', async () => {
+  const f = await associated(); await f.service.execute(f.targets[0], approval(f));
+  const result = await f.service.execute(f.targets[0], { action: 'associate', key: 'reassociate', expectedRevision: 2 });
+  assert.equal(result.status, 'pending_internal_review'); assert.equal(result.approval, null);
+  assert.notEqual(result.snapshot!.reviewKey, f.view.snapshot!.reviewKey);
+});
+test('concurrent exact retries commit once; service restart recovers association and approval; conflicting key is rejected', async () => {
+  const f = await proposalFixture(), command: ExternalProposalCommand = { action: 'associate', key: 'retry', expectedRevision: 0 };
+  const results = await Promise.all([f.service.execute(f.targets[0], command), f.service.execute(f.targets[0], command)]);
+  assert.equal(results[0].revision, 1); assert.equal(results[1].revision, 1);
+  const restarted = f.restart(), view = await restarted.read(f.targets[0]);
+  assert.equal(view.revision, 1);
+  const approve: ExternalProposalCommand = { action: 'approve', key: 'approve-retry', expectedRevision: 1, reviewKey: view.snapshot!.reviewKey };
+  await restarted.execute(f.targets[0], approve);
+  assert.equal((await f.restart().execute(f.targets[0], approve)).revision, 2);
+  assert.equal((await f.restart().read(f.targets[0])).status, 'approved_internal_unsent');
+  await assert.rejects(restarted.execute(f.targets[0], { ...command, expectedRevision: 2 }), code('IDEMPOTENCY_CONFLICT'));
+});
+test('lost post-commit response recovers by explicit read and exact-key retry', async () => {
+  const memory = new MemoryExternalProposalStore(); let drop = false;
+  const f = await proposalFixture({ read: async key => { if (drop) { drop = false; throw new Error('Lost response'); } return memory.read(key); }, transact: async (key, change) => { await memory.transact(key, change); drop = true; } });
+  const command: ExternalProposalCommand = { action: 'associate', key: 'lost-response', expectedRevision: 0 };
+  await assert.rejects(f.service.execute(f.targets[0], command));
+  assert.equal((await f.restart().read(f.targets[0])).revision, 1);
+  await assert.rejects(f.restart().execute(f.targets[0], command));
+  assert.equal((await f.restart().read(f.targets[0])).revision, 1);
+});
+for (const change of ['withdraw', 'expire', 'recipient', 'document']) test(`in-flight ${change} cannot commit stale evidence`, async () => {
+  const f = await associated(); let calls = 0;
+  f.providerHook(async () => {
+    if (++calls !== 1) return;
+    if (change === 'withdraw') f.withdraw();
+    if (change === 'expire') f.clock(Date.now() + 700_000);
+    if (change === 'recipient') await f.changeBrief();
+    if (change === 'document') f.documents.get(f.targets[0].proposalId)!.sourceVersion = 'v2';
+  });
+  await assert.rejects(f.service.execute(f.targets[0], approval(f)));
+  f.providerHook(); f.withdraw(false); f.clock(Date.now());
+  assert.equal((await f.service.read(f.targets[0])).revision, 1);
+});
+test('panel SSR is closed and does not query or preview any external source', () => {
+  let calls = 0;
+  const html = renderToStaticMarkup(<ExternalProposalPanel client={{ async read() { calls++; throw new Error(); }, async execute() { calls++; throw new Error(); } }} target={{ leadId: 'L', eventId: 'E', proposalId: 'P' }} identityKey="test" scope={{ organizationId: 'O', workspaceId: 'W', mode: 'test' }} />);
+  assert.equal(calls, 0); assert.doesNotMatch(html, /<iframe|<img|<a |<pre|type="checkbox"/);
+  assert.match(html, /Consultar propuesta externa/);
+});
+
+for (const change of ['withdraw', 'grant', 'expiry']) test(`store wait reauthorizes ${change} before committing`, async () => {
+  const memory = new MemoryExternalProposalStore(); let waiting = () => {};
+  const f = await proposalFixture({ read: key => memory.read(key), transact: (key, callback) => memory.transact(key, async row => { waiting(); return callback(row); }) });
+  const view = await f.service.execute(f.targets[0], { action: 'associate', key: 'first', expectedRevision: 0 });
+  waiting = () => {
+    if (change === 'withdraw') f.withdraw();
+    if (change === 'grant') f.authorities.get(f.targets[0].leadId)!.quote.actor = { ...f.actor, canApprove: false };
+    if (change === 'expiry') f.clock(Date.now() + 700_000);
+  };
+  await assert.rejects(f.service.execute(f.targets[0], { action: 'approve', key: 'blocked', expectedRevision: 1, reviewKey: view.snapshot!.reviewKey }));
+});
+
+test('document changed after the first provider read rolls back approval', async () => {
+  const f = await associated(); let reads = 0;
+  f.providerHook(async () => { if (++reads === 2) f.documents.get(f.targets[0].proposalId)!.sourceVersion = 'v2'; });
+  await assert.rejects(f.service.execute(f.targets[0], approval(f)), code('DOCUMENT_CHANGED'));
+  f.providerHook(); assert.equal((await f.service.read(f.targets[0])).revision, 1);
+});

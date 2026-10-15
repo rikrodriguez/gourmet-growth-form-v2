@@ -9,6 +9,8 @@ export interface PersistedQuoteWorkspaceProps {
   eventId: string;
   /** Opaque non-secret identity/version from the existing session owner; null on logout. */
   identityKey: string | null;
+  /** Explicit integration slot. The external document never enters QuoteVersion or its editor. */
+  externalProposal?(context: { briefDigest: string | null; dirty: boolean }): React.ReactNode;
 }
 const money = (cents: number) => new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'USD' }).format(cents / 100);
 const labels: Record<EventQuoteView['currentQuoteStatus'], string> = {
@@ -28,7 +30,7 @@ export function PersistedQuoteWorkspace(props: PersistedQuoteWorkspaceProps) {
   if (props.identityKey === null) return <div className="gourmet-event-workspace"><p role="status" className="gew-notice gew-notice-warning">Se requiere una identidad existente verificada. No envío ni cobro.</p></div>;
   return <BoundWorkspace key={JSON.stringify([props.identityKey, props.eventId])} {...props} />;
 }
-function BoundWorkspace({ client, eventId }: PersistedQuoteWorkspaceProps) {
+function BoundWorkspace({ client, eventId, externalProposal }: PersistedQuoteWorkspaceProps) {
   const [status, setStatus] = useState<EventQuoteStatusResponse | null>(null);
   const [view, setView] = useState<EventQuoteView | null>(null);
   const [brief, setBrief] = useState<BriefInput>(() => latestBriefInput(null));
@@ -132,6 +134,7 @@ function BoundWorkspace({ client, eventId }: PersistedQuoteWorkspaceProps) {
     {(!status?.enabled || expired) && !readOnly && !busy && <div className="gew-notice gew-notice-warning">Operación bloqueada. Se requiere identidad existente, permisos y catálogo vigente autorizado en el servidor. Recarga después de resolverlo.</div>}
     {status?.session.mode === 'test' && <p className="gew-notice">Ámbito de prueba aislado. Los datos y precios de prueba no autorizan una operación comercial.</p>}
     <div className="gew-actions"><button type="button" className="gew-button" onClick={() => void reload()} disabled={!!busy}>Recargar expediente</button></div>
+    {status && savedBrief && !needsReload && !expired && !busy && externalProposal?.({ briefDigest: savedBrief.digest, dirty })}
     {status && <div className="gew-columns"><div><Card title={savedBrief ? `Brief manual · versión ${savedBrief.version}` : 'Consulta manual y brief'}>
       <p className="gew-muted">Conserva el mensaje recibido y lo que falta confirmar. No se consultan automáticamente Gmail, Monday ni calendario.</p>
       <form onSubmit={saveBrief}><fieldset disabled={!writable} className="gew-attestation"><legend>Datos del evento</legend><div className="gew-editor-fields">
