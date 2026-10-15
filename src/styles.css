@@ -1650,6 +1650,33 @@ fieldset legend {
 
 .thank-you-note svg { width: 14px; height: 14px; flex: 0 0 auto; }
 
+/* Keep the shared privacy controls legible inside the dark confirmation. */
+.thank-you-card .privacy-choices-button {
+  margin: 12px auto 0;
+  color: #c5c8ca;
+}
+
+.thank-you-card .privacy-choices-button:focus-visible {
+  outline-color: var(--legacy-gold);
+}
+
+.thank-you-card .consent-panel {
+  display: block;
+  width: 100%;
+  margin: 20px 0 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+}
+
+.thank-you-card .consent-actions {
+  width: 100%;
+  min-width: 0;
+  margin: 13px 0 0;
+}
+
 .thank-you-footer {
   position: relative;
   z-index: 1;
