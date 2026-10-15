@@ -6,6 +6,7 @@ const workflow = readFileSync(new URL('../../.github/workflows/gourmet-office-re
 const verificationBranches = [
   'codex/canonical-reference-bridge-20261012',
   'codex/gourmet-office-demo-recovery-20261010',
+  'feat/external-proposal-durable-test-20261015',
   'feat/external-proposal-fixtures-20261015',
   'feat/gourmet-dashboard-reference-20261013',
   'feat/office-communications-review-20261013',
