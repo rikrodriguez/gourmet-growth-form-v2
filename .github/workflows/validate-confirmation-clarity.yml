@@ -1,0 +1,74 @@
+# Validation only: no deployment, secrets, or repository write permissions.
+name: Validate Form 2 confirmation Clarity
+on:
+  pull_request:
+    branches: [develop]
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/validate-confirmation-clarity.yml
+permissions:
+  contents: read
+concurrency:
+  group: clarity-pr4-validation
+  cancel-in-progress: true
+jobs:
+  browser-contract:
+    if: github.event.pull_request.number == 4 && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      E2E_MEASUREMENT_MODE: mock
+      E2E_API_MODE: mock
+      E2E_EXPECTED_CLARITY_ID: clarityqa
+      VITE_GOURMET_API_BASE_URL: http://127.0.0.1:4173
+      VITE_MEASUREMENT_ENVIRONMENT: staging
+      VITE_CUSTOMER_EXPERIMENTS_ENABLED: 'false'
+      VITE_GTM_CONTAINER_ID: GTM-QATEST
+      VITE_GA4_MEASUREMENT_ID: G-QATEST123
+      VITE_GOOGLE_ADS_CONVERSION_ID: AW-123456789
+      VITE_GOOGLE_ADS_CONVERSION_LABEL: qa-label
+      VITE_CLARITY_PROJECT_ID: clarityqa
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Record exact tested source
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          mkdir -p artifacts
+          git rev-parse HEAD > artifacts/source-sha.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install Chromium in isolated runner
+        run: node node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Build local synthetic artifact
+        run: npm run build
+      - name: Run exactly 52 mocked browser contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          node node_modules/@playwright/test/cli.js test tests/e2e/confirmation-clarity.spec.ts --project=mobile-chromium-390x844 --project=desktop-chromium-1440x900 --list > artifacts/discovery.txt
+          grep -q 'Total: 52 tests in 1 file' artifacts/discovery.txt
+          node node_modules/@playwright/test/cli.js test tests/e2e/confirmation-clarity.spec.ts --project=mobile-chromium-390x844 --project=desktop-chromium-1440x900 --workers=1 --retries=0 --reporter=json > artifacts/results.json
+          node -e 'const r=require("./artifacts/results.json"); console.log(r.stats); if(r.stats.expected!==52 || r.stats.unexpected!==0 || r.stats.skipped!==0 || r.stats.flaky!==0) process.exit(1)'
+      - name: Retain synthetic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clarity-confirmation-${{ github.event.pull_request.head.sha }}
+          path: |
+            artifacts/source-sha.txt
+            artifacts/discovery.txt
+            artifacts/results.json
+            test-results/
+          if-no-files-found: warn
+          retention-days: 7
+

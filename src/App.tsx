@@ -1,6 +1,7 @@
 import { type CSSProperties, FormEvent, useEffect, useMemo, useState } from 'react';
 import { leadClient } from './api/lead-client';
 import { ConsentBanner } from './measurement/ConsentBanner';
+import { connectConfirmationClarity } from './measurement/confirmation-clarity';
 import { measurement } from './measurement/measurement';
 import { telemetry } from './telemetry/telemetry';
 import { resolveExperimentContext } from './experiments/context';
@@ -1147,6 +1148,7 @@ function ThankYouScreen() {
 
   useEffect(() => {
     document.title = 'Request received | Gourmet Corp';
+    return connectConfirmationClarity();
   }, []);
 
   return (
@@ -1168,6 +1170,7 @@ function ThankYouScreen() {
           </dl>
         )}
         <p className="thank-you-note"><LockIcon /> Your submitted details are not displayed in the page URL.</p>
+        <ConsentBanner compact />
       </section>
       <footer className="thank-you-footer">
         <strong>GOURMET CORP</strong>
