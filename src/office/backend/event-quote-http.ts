@@ -2,6 +2,10 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { EventQuoteError, type EventQuoteService, type QuoteActor, type QuoteScope } from './event-quote-contracts';
 import type { DashboardQuoteAccess } from '../dashboard/quote-access';
+import type { PoolClient } from 'pg';
+import type { PaymentAgreementIntegrationV2 } from './payment-agreement-operations-v2';
+import { executePaymentAgreementOperationV2 } from './payment-agreement-dispatch-v2';
+import { canonical } from './event-quote-workflow';
 
 export const EVENT_QUOTE_API = '/api/office/event-quotes';
 export const EVENT_QUOTE_CSRF_HEADER = 'x-event-quote-csrf';
@@ -14,8 +18,9 @@ export type EventQuoteStatusResponse = Awaited<ReturnType<EventQuoteService['sta
 };
 export type QuoteAccessTarget = { kind: 'status' } | { kind: 'read' | 'artifact' | 'create' | 'write' | 'approve'; eventId: string };
 export type RunQuoteAuthorization = <T>(request: FastifyRequest, target: QuoteAccessTarget,
-  operation: (identity: EventQuoteIdentity, service: EventQuoteService) => Promise<T>) => Promise<T>;
+  operation: (identity: EventQuoteIdentity, service: EventQuoteService, transaction?: PoolClient) => Promise<T>) => Promise<T>;
 export type EventQuoteHttpDependencies = { allowedOrigin: string; clock?: () => number;
+  paymentAgreements?: PaymentAgreementIntegrationV2;
   /** Optional server-owned projection. It must authorize its fixed event within the durable transaction. */
   dashboardAccess?(request: FastifyRequest): Promise<DashboardQuoteAccess>;
 } & ({
@@ -74,15 +79,15 @@ export function registerEventQuoteRoutes(app: FastifyInstance, dependencies: Eve
       return reply.code(status).send({ error: code });
     });
     const run = async <T>(request: FastifyRequest, target: QuoteAccessTarget,
-      operation: (identity: EventQuoteIdentity, service: EventQuoteService) => Promise<T>): Promise<T> => {
-      const use = async (identity: EventQuoteIdentity | null, service: EventQuoteService) => {
+      operation: (identity: EventQuoteIdentity, service: EventQuoteService, transaction?: PoolClient) => Promise<T>): Promise<T> => {
+      const use = async (identity: EventQuoteIdentity | null, service: EventQuoteService, transaction?: PoolClient) => {
         if (!identity || !identityValid(identity, clock())) fail(401);
         // A revision is a non-secret concurrency condition, never authority.
         // Check it while durable authorization locks are held, before any write.
         const expectedRevision = request.headers['x-event-quote-access-revision'];
         if (dependencies.dashboardAccess && ['create', 'write', 'approve'].includes(target.kind) && expectedRevision === undefined) fail(403);
         if (expectedRevision !== undefined && (!identity.accessRevision || !equalToken(expectedRevision, identity.accessRevision))) fail(403);
-        return operation(structuredClone(identity), service);
+        return operation(structuredClone(identity), service, transaction);
       };
       return dependencies.runAuthorized
         ? dependencies.runAuthorized(request, target, use)
@@ -92,7 +97,8 @@ export function registerEventQuoteRoutes(app: FastifyInstance, dependencies: Eve
     if (dependencies.dashboardAccess) routes.get(`${EVENT_QUOTE_API}/dashboard/access`, request => dependencies.dashboardAccess!(request));
     routes.get(`${EVENT_QUOTE_API}/status`, request => run(request, { kind: 'status' }, async (identity, service) => {
       const status = await service.status(identity.scope, actorOf(identity));
-      const result: EventQuoteStatusResponse = { ...status, session: {
+      const result: EventQuoteStatusResponse = { ...status,
+        ...(dependencies.paymentAgreements && dependencies.runAuthorized && identity.scope.mode === 'test' && identity.actor.durable && status.paymentDraftsEnabled === true && status.enabled && status.catalog?.authority === 'test_only' ? {paymentAgreementsEnabled:true as const}:{}), session: {
         mode: identity.scope.mode, canWrite: identity.actor.canWrite, canApprove: identity.actor.canApprove,
         csrfToken: identity.csrfToken, expiresAtMs: identity.expiresAtMs,
         ...(dependencies.dashboardAccess && identity.accessRevision ? { accessRevision: identity.accessRevision } : {}),
@@ -101,22 +107,38 @@ export function registerEventQuoteRoutes(app: FastifyInstance, dependencies: Eve
     }));
     routes.get(`${EVENT_QUOTE_API}/:eventId`, request => {
       const id = eventId(request);
-      return run(request, { kind: 'read', eventId: id }, async (identity, service) => ({
+      return run(request, { kind: 'read', eventId: id }, async (identity, service, transaction) => ({
         ...await service.read(identity.scope, actorOf(identity), id),
+        ...(dependencies.paymentAgreements && transaction && identity.scope.mode === 'test' ? {paymentAgreementOperationsV2:await dependencies.paymentAgreements.outbox.list(identity.scope,id,transaction)}:{}),
         ...(dependencies.dashboardAccess && identity.accessRevision ? { accessRevision: identity.accessRevision } : {}),
       }));
+    });
+    routes.post(`${EVENT_QUOTE_API}/:eventId/payment-agreements/v2`, {bodyLimit:4096}, async request=>{
+      const id=eventId(request),integration=dependencies.paymentAgreements;
+      if(!integration||!dependencies.runAuthorized)fail(404);
+      const view=await executePaymentAgreementOperationV2(id,request.body,{integration,clock,authorize:operation=>run(request,{kind:'approve',eventId:id},async(identity,service,transaction)=>{
+        if(!transaction||!identity.actor.canWrite||!identity.actor.canApprove||!equalToken(request.headers[EVENT_QUOTE_CSRF_HEADER],identity.csrfToken))fail(403);
+        return operation({scope:identity.scope,actor:actorOf(identity),service,client:transaction});
+      })});
+      // Access revision is re-read only after remote evidence has been persisted.
+      return run(request,{kind:'read',eventId:id},async(identity,service,transaction)=>{
+        if(!transaction||canonical(identity.scope)!==canonical(view.record.scope))fail(403);
+        return {...await service.read(identity.scope,actorOf(identity),id),paymentAgreementOperationsV2:await integration.outbox.list(identity.scope,id,transaction),
+          ...(dependencies.dashboardAccess&&identity.accessRevision?{accessRevision:identity.accessRevision}:{})};
+      });
     });
     routes.post(`${EVENT_QUOTE_API}/:eventId/commands`, { bodyLimit: 65_536 }, request => {
       const id = eventId(request), body = request.body;
       const action = body && typeof body === 'object' && !Array.isArray(body) ? (body as { action?: unknown }).action : null;
       const requiresApproval = typeof action === 'string' && APPROVAL_ACTIONS.includes(action);
       const kind = requiresApproval ? 'approve' : action === 'create' ? 'create' : 'write';
-      return run(request, { kind, eventId: id }, async (identity, service) => {
+      return run(request, { kind, eventId: id }, async (identity, service, transaction) => {
         if (!identity.actor.canWrite || !equalToken(request.headers[EVENT_QUOTE_CSRF_HEADER], identity.csrfToken)) fail(403);
         if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400);
         if (['scope', 'actor', 'actorId', 'organizationId', 'workspaceId', 'mode', 'tenantId'].some(key => Object.hasOwn(body, key))) fail(400);
         if (requiresApproval && !identity.actor.canApprove) fail(403);
         return { ...await service.execute(identity.scope, actorOf(identity), id, body),
+          ...(dependencies.paymentAgreements && transaction && identity.scope.mode === 'test' ? {paymentAgreementOperationsV2:await dependencies.paymentAgreements.outbox.list(identity.scope,id,transaction)}:{}),
           ...(dependencies.dashboardAccess && identity.accessRevision ? { accessRevision: identity.accessRevision } : {}) };
       });
     });

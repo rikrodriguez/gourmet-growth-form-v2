@@ -1,4 +1,5 @@
 import type { GourmetPaymentsV2Receipt } from './gourmet-payments-v2-wire';
+import type { PaymentAgreementOperationSummaryV2 } from './payment-agreement-operations-v2';
 // Explicitly composed private workflow. No provider, payment, booking or sending authority.
 export type QuoteScope = Readonly<{ organizationId: string; workspaceId: string; mode: 'test' | 'commercial' }>;
 export type QuoteActor = Readonly<{ actorId: string; durable: boolean; expiresAtMs: number; canWrite: boolean; canApprove: boolean }>;
@@ -67,13 +68,13 @@ export interface EventQuoteStore {
   // Callback + record + audit + command receipt commit atomically. A throw rolls back.
   transact(scope: QuoteScope, eventId: string, change: (current: EventQuoteRecord | null) => EventQuoteRecord | Promise<EventQuoteRecord>): Promise<EventQuoteRecord>;
 }
-export type EventQuoteView = { record: EventQuoteRecord; currentQuoteStatus: 'missing' | 'pending_internal_review' | 'approved_internal_unsent' | 'obsolete'; externalEffectsEnabled: false };
+export type EventQuoteView = { record: EventQuoteRecord; currentQuoteStatus: 'missing' | 'pending_internal_review' | 'approved_internal_unsent' | 'obsolete'; externalEffectsEnabled: false; paymentAgreementOperationsV2?: PaymentAgreementOperationSummaryV2[] };
 export type QuoteCommand = ConfigurePaymentV2Command | RegisterPaymentDraftV2Command | PreparePaymentCommand | PreparePaymentV2Command | { key: string; expectedRevision: number; action: 'create'; brief: BriefInput } | { key: string; expectedRevision: number; action: 'brief'; brief: BriefInput } | { key: string; expectedRevision: number; action: 'quote'; expectedBriefDigest: string; expectedCatalogDigest: string; selections: QuoteSelection[] } | { key: string; expectedRevision: number; action: 'approve'; quoteVersion: number; quoteDigest: string; artifactSha256: string; intendedRecipient: string };
 export class EventQuoteError extends Error {
   constructor(readonly code: string, readonly status = 400) { super(code); this.name = 'EventQuoteError'; }
 }
 export interface EventQuoteService {
-  status(scope: QuoteScope, actor: QuoteActor): Promise<{ enabled: boolean; reason: string | null; catalog: CatalogSnapshot | null; catalogDigest: string | null; paymentDraftsEnabled?: true }>;
+  status(scope: QuoteScope, actor: QuoteActor): Promise<{ enabled: boolean; reason: string | null; catalog: CatalogSnapshot | null; catalogDigest: string | null; paymentDraftsEnabled?: true; paymentAgreementsEnabled?: true }>;
   read(scope: QuoteScope, actor: QuoteActor, eventId: string): Promise<EventQuoteView>;
   execute(scope: QuoteScope, actor: QuoteActor, eventId: string, command: unknown): Promise<EventQuoteView>;
 }

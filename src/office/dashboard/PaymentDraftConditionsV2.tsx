@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { EventQuoteView, PaymentConfigurationFactsV2, PaymentConfigurationV2, PaymentContractPreparationV2, QuoteCommand } from '../backend/event-quote-contracts';
 import { proposeRetainerBalanceDateV2, resolveApprovedLocalMinuteV2 } from '../backend/payment-calendar-v2';
-import { exactPaymentConfigurationV2Command, exactPaymentDraftRegistrationV2Command, type EventQuoteStatusResponse } from '../event-quote-client';
+import { exactPaymentConfigurationV2Command, exactPaymentDraftRegistrationV2Command, exactPaymentAgreementOperationV2Command, type EventQuoteStatusResponse, type PaymentAgreementOperationCommandV2, type PaymentAgreementOperationSummaryV2 } from '../event-quote-client';
 
 const money = (cents: number) => new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'USD' }).format(cents / 100);
 function cents(value: string): number | null {
@@ -43,7 +43,7 @@ export function PaymentConditionsFormV2({ view, status, preparation, enabled, on
     catch { setError('Revisa condiciones, importes, fechas, horas, zonas horarias y motivos explícitos antes de guardar. Las fechas deben ser futuras y no ambiguas.'); }
   }
   return <form onSubmit={save} data-testid="payment-v2-conditions-form">
-    <fieldset className="gew-attestation" disabled={!enabled}><legend>Condiciones del borrador de prueba</legend>
+    <fieldset className="gew-attestation" disabled={!enabled}><legend>{status.paymentAgreementsEnabled === true ? 'Condiciones del acuerdo deshabilitado' : 'Condiciones del borrador de prueba'}</legend>
       <p>Completa los hechos que se revisarán. El servidor resolverá el lead de prueba; esta operación no autoriza un acuerdo comercial.</p>
       <p className="gew-muted">Una vez guardadas, estas condiciones no se editan. Para cambiarlas, crea una nueva versión de cotización y preparación.</p>
       <div className="gew-editor-fields">
@@ -80,20 +80,31 @@ export function PaymentConditionsFormV2({ view, status, preparation, enabled, on
   </form>;
 }
 
-export function PaymentConfigurationReviewV2({ view, status, configuration, enabled, onCommand, showApproval = true, registered = false }: {
-  view: EventQuoteView; status: EventQuoteStatusResponse; configuration: PaymentConfigurationV2; enabled: boolean; onCommand(command: QuoteCommand): void; showApproval?: boolean; registered?: boolean;
+export function PaymentConfigurationReviewV2({ view, status, configuration, enabled, onCommand, showApproval = true, registered = false, agreementOperation, onPaymentAgreementOperation, canReconcile = false }: {
+  view: EventQuoteView; status: EventQuoteStatusResponse; configuration: PaymentConfigurationV2; enabled: boolean; onCommand(command: QuoteCommand): void; showApproval?: boolean; registered?: boolean; agreementOperation?: PaymentAgreementOperationSummaryV2; canReconcile?: boolean; onPaymentAgreementOperation?: (command: PaymentAgreementOperationCommandV2) => void;
 }) {
   const [confirmed, setConfirmed] = useState(false), [error, setError] = useState<string | null>(null);
   const preparation = view.record.paymentContractPreparationsV2!.find(p => p.id === configuration.preparationId)!;
   const facts = configuration.configuration, schedule = facts.paymentSchedule;
+  const operational = status.paymentAgreementsEnabled === true;
+  const creationRetry = agreementOperation?.status === 'reconciliation_required';
+  const canCreate = operational && (!agreementOperation || creationRetry) && !!onPaymentAgreementOperation;
+  const reconciliationRequired = agreementOperation?.status === 'pending' || agreementOperation?.status === 'reconciliation_required';
   useEffect(() => { if (!enabled || !showApproval) setConfirmed(false); }, [enabled, showApproval]);
   function register() {
     if (!enabled || !showApproval || !confirmed) return;
     try { const command = exactPaymentDraftRegistrationV2Command(view, status, crypto.randomUUID(), configuration.id); setError(null); setConfirmed(false); onCommand(command); }
     catch { setConfirmed(false); setError('La revisión cambió o dejó de estar vigente. Recarga y revisa los hechos guardados antes de confirmar.'); }
   }
+  function operate(operation: 'create' | 'reconcile') {
+    if (!onPaymentAgreementOperation || !operational || (operation === 'create' ? !enabled || !showApproval || !confirmed || !canCreate : !canReconcile || !reconciliationRequired)) return;
+    try {
+      const command = exactPaymentAgreementOperationV2Command(view, status, crypto.randomUUID(), configuration.id, operation);
+      setError(null); setConfirmed(false); onPaymentAgreementOperation(command);
+    } catch { setConfirmed(false); setError('No se pudo autorizar esta operación con las referencias guardadas. Recarga y revisa su estado antes de continuar.'); }
+  }
   return <div data-testid="persisted-payment-v2-review">
-    <h5>{registered ? 'Condiciones del acuerdo borrador' : showApproval ? 'Revisar condiciones guardadas y confirmar borrador' : 'Condiciones guardadas del borrador'}</h5>
+    <h5>{registered || agreementOperation?.status === 'draft_persisted' ? 'Condiciones del acuerdo borrador' : showApproval ? 'Revisar condiciones guardadas y confirmar borrador' : 'Condiciones guardadas del borrador'}</h5>
     <p>Fuente del lead: fixture sintético resuelto por el servidor. Sin autorización comercial.</p>
     <p className="gew-muted">Una vez guardadas, estas condiciones no se editan. Para cambiarlas, crea una nueva versión de cotización y preparación.</p>
     <dl>
@@ -108,9 +119,22 @@ export function PaymentConfigurationReviewV2({ view, status, configuration, enab
       <dt>Expiración</dt><dd>{facts.linkExpiration.kind === 'never' ? 'Sin expiración, elegido explícitamente' : `${facts.linkExpiration.date} ${facts.linkExpiration.time} · ${facts.linkExpiration.timezone}`}</dd>
     </dl>
     <p className="gew-muted">Huella de los hechos revisados: <span className="gew-hash">{configuration.reviewDigest}</span></p>
-    {showApproval && <><label className="gew-check"><input data-testid="payment-v2-confirm-review" type="checkbox" checked={confirmed} disabled={!enabled} onChange={event => setConfirmed(event.target.checked)} />Revisé la cotización original, la modalidad, los importes, las condiciones, el calendario y la expiración guardados para este borrador de prueba.</label>
-    <button type="button" className="gew-button gew-button-primary" data-testid="payment-v2-register" disabled={!enabled || !confirmed} onClick={register}>Confirmar acuerdo borrador de prueba</button></>}
-    <p className="gew-muted">La confirmación valida un borrador interno de prueba. No crea un enlace ni acredita aceptación del cliente, pago o autorización comercial.</p>
+    {showApproval && creationRetry && <p>Reintenta solo después de revisar de nuevo estas condiciones vigentes. Payments consultará la misma operación guardada antes de crear el borrador que falte.</p>}
+    {showApproval && <><label className="gew-check"><input data-testid="payment-v2-confirm-review" type="checkbox" checked={confirmed} disabled={!enabled || operational && !canCreate} onChange={event => setConfirmed(event.target.checked)} />Revisé la cotización original, la modalidad, los importes, las condiciones, el calendario y la expiración guardados para este {operational ? 'acuerdo deshabilitado' : 'borrador de prueba'}.</label>
+      {operational ? <button type="button" className="gew-button gew-button-primary" data-testid="payment-v2-create-agreement" disabled={!enabled || !confirmed || !canCreate} onClick={() => operate('create')}>{creationRetry ? 'Reintentar creación del borrador' : 'Crear acuerdo deshabilitado en Payments'}</button>
+        : <button type="button" className="gew-button gew-button-primary" data-testid="payment-v2-register" disabled={!enabled || !confirmed} onClick={register}>Confirmar acuerdo borrador de prueba</button>}
+    </>}
+    {agreementOperation && <div data-testid="payment-v2-operational-agreement">
+      <p className="gew-tag">{agreementOperation.status === 'draft_persisted' ? 'Acuerdo guardado en Payments · sin enlace'
+        : agreementOperation.status === 'pending' ? 'Creación de acuerdo pendiente · sin enlace'
+          : agreementOperation.status === 'reconciliation_required' ? 'Resultado de Payments por reconciliar · sin enlace' : 'Solicitud de acuerdo rechazada · sin enlace'}</p>
+      {agreementOperation.status === 'draft_persisted' && <><p>Estado en Payments: <strong>DRAFT_INTERNAL</strong></p><p>ID de Payments: <span data-testid="payment-v2-agreement-id">{agreementOperation.agreementId}</span></p></>}
+      {reconciliationRequired && <><p>Consulta la operación guardada para confirmar su resultado. La reconciliación no crea otro acuerdo.</p>
+        <button type="button" className="gew-button" data-testid="payment-v2-reconcile" disabled={!canReconcile || !operational || !onPaymentAgreementOperation} onClick={() => operate('reconcile')}>Reconciliar acuerdo en Payments</button></>}
+      {agreementOperation.status === 'rejected' && <p>La solicitud fue rechazada. Conserva estas condiciones y revisa el rechazo antes de preparar otro acuerdo.</p>}
+      <p>Ejecutable: no. Proveedor: desactivado. Autorización comercial: sin verificar. Cobrado: desconocido.</p>
+    </div>}
+    <p className="gew-muted">{operational || agreementOperation ? 'La confirmación guarda un acuerdo deshabilitado en Payments. No genera un enlace ni cobra al cliente.' : 'La confirmación valida un borrador interno de prueba. No crea un enlace ni acredita aceptación del cliente, pago o autorización comercial.'}</p>
     {error && <p className="gew-notice gew-notice-warning" role="alert">{error}</p>}
   </div>;
 }

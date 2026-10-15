@@ -1,3 +1,4 @@
+import type { PaymentAgreementOperationCommandV2, PaymentAgreementOperationSummaryV2 } from './backend/payment-agreement-operations-v2';
 import type { BriefInput, CatalogSnapshot, EventQuoteView, QuoteCommand, QuoteVersion, PreparePaymentCommand, PaymentLinkPreparation, PreparePaymentV2Command, PaymentContractModeV2, PaymentConfigurationV2, PaymentConfigurationFactsV2, ConfigurePaymentV2Command, RegisterPaymentDraftV2Command } from './backend/event-quote-contracts';
 import { proposeRetainerBalanceDateV2, resolveApprovedLocalMinuteV2 } from './backend/payment-calendar-v2';
 import type { EventQuoteStatusResponse } from './backend/event-quote-http';
@@ -24,6 +25,7 @@ function catalog(value: unknown): void {
 }
 export function validateQuoteStatus(value: unknown): EventQuoteStatusResponse {
   const s = row(value), session = row(s.session);
+  if (s.paymentAgreementsEnabled !== undefined && (s.paymentAgreementsEnabled !== true || session.mode !== 'test')) invalid();
   if (s.paymentDraftsEnabled !== undefined && (s.paymentDraftsEnabled !== true || session.mode !== 'test')) invalid();
   if (typeof s.enabled !== 'boolean' || s.externalEffectsEnabled !== false || (s.reason !== null && typeof s.reason !== 'string')) invalid();
   if (s.catalog !== null) catalog(s.catalog);
@@ -120,6 +122,7 @@ export function validateQuoteView(value: unknown, expectedEventId: string): Even
     }
   }
   if (record.schemaVersion === 4) validatePaymentDraftLedgersV2(record);
+  if (v.paymentAgreementOperationsV2 !== undefined) validatePaymentAgreementOperationsV2(v.paymentAgreementOperationsV2, record);
   return value as EventQuoteView;
 }
 function path(eventId: string): string {
@@ -130,8 +133,8 @@ export function quoteArtifactUrl(eventId: string, version: number): string {
   if (!Number.isSafeInteger(version) || version < 1) throw new EventQuoteClientError('INVALID_VERSION');
   return `${path(eventId)}/quotes/${version}/artifact`;
 }
-async function request(url: string, signal: AbortSignal, command?: QuoteCommand, csrfToken?: string, accessRevision?: string): Promise<unknown> {
-  if (command !== undefined) assertPaymentDraftCommandV2(command);
+async function request(url: string, signal: AbortSignal, command?: QuoteCommand | PaymentAgreementOperationCommandV2, csrfToken?: string, accessRevision?: string): Promise<unknown> {
+  if (command !== undefined) { if ('operation' in command) assertPaymentAgreementOperationCommandV2(command); else assertPaymentDraftCommandV2(command); }
   const body = command === undefined ? undefined : JSON.stringify(command);
   if (body && new TextEncoder().encode(body).byteLength > 65_536) throw new EventQuoteClientError('PAYLOAD_TOO_LARGE', 413);
   let response: Response;
@@ -151,11 +154,13 @@ export interface EventQuoteClient {
   status(signal: AbortSignal, accessRevision?: string): Promise<EventQuoteStatusResponse>;
   read(eventId: string, signal: AbortSignal, accessRevision?: string): Promise<EventQuoteView>;
   execute(eventId: string, command: QuoteCommand, csrfToken: string, signal: AbortSignal, accessRevision?: string): Promise<EventQuoteView>;
+  executePaymentAgreement?(eventId: string, command: PaymentAgreementOperationCommandV2, csrfToken: string, signal: AbortSignal, accessRevision?: string): Promise<EventQuoteView>;
 }
 export const eventQuoteClient: EventQuoteClient = {
   async status(signal, revision) { return validateQuoteStatus(await request(`${EVENT_QUOTE_API}/status`, signal, undefined, undefined, revision)); },
   async read(eventId, signal, revision) { return validateQuoteView(await request(path(eventId), signal, undefined, undefined, revision), eventId); },
   async execute(eventId, command, csrf, signal, revision) { return validateQuoteView(await request(`${path(eventId)}/commands`, signal, command, csrf, revision), eventId); },
+  async executePaymentAgreement(eventId, command, csrf, signal, revision) { assertPaymentAgreementOperationCommandV2(command); return validateQuoteView(await request(`${path(eventId)}/payment-agreements/v2`, signal, command, csrf, revision), eventId); },
 };
 export function latestBriefInput(view: EventQuoteView | null): BriefInput {
   const b = view?.record.briefs.at(-1);
@@ -409,7 +414,7 @@ export function paymentConfigurationV2IsCurrent(configuration: PaymentConfigurat
 function currentPaymentDraftPreparation(view: EventQuoteView, status: EventQuoteStatusResponse, preparationId: string, now: number) {
   const p = view.record.paymentContractPreparationsV2?.find(p => p.id === preparationId);
   const q = view.record.quotes.at(-1), b = view.record.briefs.at(-1);
-  if (!p || !q || !b || !status.enabled || status.paymentDraftsEnabled !== true || status.session.mode !== 'test' || view.record.scope.mode !== 'test'
+  if (!p || !q || !b || !status.enabled || status.paymentDraftsEnabled !== true && status.paymentAgreementsEnabled !== true || status.session.mode !== 'test' || view.record.scope.mode !== 'test'
     || !status.session.canWrite || !status.session.canApprove || status.session.expiresAtMs <= now || !status.catalog || status.catalog.validUntilMs <= now
     || view.currentQuoteStatus !== 'approved_internal_unsent' || q.catalog.validUntilMs <= now || q.briefDigest !== b.digest
     || q.catalogDigest !== status.catalogDigest || p.quoteDigest !== q.digest || p.briefDigest !== b.digest
@@ -430,7 +435,7 @@ export function exactPaymentConfigurationV2Command(view: EventQuoteView, status:
 export function exactPaymentDraftRegistrationV2Command(view: EventQuoteView, status: EventQuoteStatusResponse, key: string,
   configurationId: string, now = Date.now()): RegisterPaymentDraftV2Command {
   const c = view.record.paymentConfigurationsV2?.find(c => c.id === configurationId);
-  if (!c) throw new EventQuoteClientError('PAYMENT_DRAFT_BLOCKED');
+  if (status.paymentDraftsEnabled !== true || !c) throw new EventQuoteClientError('PAYMENT_DRAFT_BLOCKED');
   currentPaymentDraftPreparation(view, status, c.preparationId, now);
   if (!paymentConfigurationV2IsCurrent(c, view, status.catalogDigest, now)
     || view.record.paymentDraftRegistrationsV2?.some(r => r.configurationId === c.id)) throw new EventQuoteClientError('PAYMENT_DRAFT_BLOCKED');
@@ -438,3 +443,46 @@ export function exactPaymentDraftRegistrationV2Command(view: EventQuoteView, sta
     configurationId: c.id, configurationDigest: c.digest, expectedReviewDigest: c.reviewDigest };
   assertPaymentDraftCommandV2(command); return command;
 }
+
+function validatePaymentAgreementOperationsV2(value: unknown, record: Record<string, unknown>): void {
+  const operations = list(value); if (operations.length > 20) return invalid();
+  const configs = record.schemaVersion === 4 ? list(record.paymentConfigurationsV2).map(row) : [];
+  const ids = new Set<string>(), configurationIds = new Set<string>();
+  for (const raw of operations) {
+    const operation = exactRow(raw, ['operationId', 'operationDigest', 'configurationId', 'configurationDigest', 'status', 'agreementId',
+      'executable', 'providerEnabled', 'publicPaymentUrl', 'authorizationVerified', 'serviceAuthenticated', 'updatedAtMs']);
+    digest(operation.operationId); digest(operation.operationDigest); token(operation.configurationId); digest(operation.configurationDigest); integer(operation.updatedAtMs);
+    const configuration = configs.find(c => c.id === operation.configurationId && c.digest === operation.configurationDigest);
+    if (!configuration || ids.has(operation.operationId as string) || configurationIds.has(operation.configurationId as string)
+      || !['pending', 'reconciliation_required', 'draft_persisted', 'rejected'].includes(operation.status as string)
+      || operation.executable !== false || operation.providerEnabled !== false || operation.publicPaymentUrl !== null || operation.authorizationVerified !== false
+      || (operation.updatedAtMs as number) < (configuration.atMs as number) || (operation.updatedAtMs as number) > 8_640_000_000_000_000) return invalid();
+    ids.add(operation.operationId as string); configurationIds.add(operation.configurationId as string);
+    if (operation.status === 'draft_persisted') {
+      if (operation.serviceAuthenticated !== true || typeof operation.agreementId !== 'string'
+        || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(operation.agreementId)) return invalid();
+    } else if (operation.agreementId !== null || operation.serviceAuthenticated !== false) return invalid();
+  }
+}
+/** No source, lead, service credential, payload or authority is accepted from the browser. */
+export function assertPaymentAgreementOperationCommandV2(command: unknown): asserts command is PaymentAgreementOperationCommandV2 {
+  try {
+    const c = exactRow(command, ['key', 'configurationId', 'configurationDigest', 'expectedReviewDigest', 'operation']);
+    token(c.key); token(c.configurationId); digest(c.configurationDigest); digest(c.expectedReviewDigest);
+    if (c.operation !== 'create' && c.operation !== 'reconcile') return invalid();
+  } catch { throw new EventQuoteClientError('INVALID_COMMAND', 400); }
+}
+export function exactPaymentAgreementOperationV2Command(view: EventQuoteView, status: EventQuoteStatusResponse, key: string,
+  configurationId: string, operation: PaymentAgreementOperationCommandV2['operation'], now = Date.now()): PaymentAgreementOperationCommandV2 {
+  const c = view.record.paymentConfigurationsV2?.find(c => c.id === configurationId);
+  if (!c || status.paymentAgreementsEnabled !== true || !status.enabled || status.session.mode !== 'test' || view.record.scope.mode !== 'test'
+    || !status.session.canWrite || !status.session.canApprove || status.session.expiresAtMs <= now) throw new EventQuoteClientError('PAYMENT_AGREEMENT_BLOCKED');
+  const existing = view.paymentAgreementOperationsV2?.find(item => item.configurationId === c.id && item.configurationDigest === c.digest);
+  if (operation === 'create') {
+    currentPaymentDraftPreparation(view, status, c.preparationId, now);
+    if (existing && existing.status !== 'reconciliation_required' || !paymentConfigurationV2IsCurrent(c, view, status.catalogDigest, now)) throw new EventQuoteClientError('PAYMENT_AGREEMENT_BLOCKED');
+  } else if (operation !== 'reconcile' || !existing || !['pending', 'reconciliation_required'].includes(existing.status)) throw new EventQuoteClientError('PAYMENT_AGREEMENT_BLOCKED');
+  const command: PaymentAgreementOperationCommandV2 = { key, configurationId: c.id, configurationDigest: c.digest, expectedReviewDigest: c.reviewDigest, operation };
+  assertPaymentAgreementOperationCommandV2(command); return command;
+}
+export type { PaymentAgreementOperationCommandV2, PaymentAgreementOperationSummaryV2 };

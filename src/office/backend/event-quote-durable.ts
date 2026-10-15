@@ -6,6 +6,7 @@ import { PostgresQuoteAccessRepository, type ExistingQuoteSession } from './quot
 import { PostgresEventQuoteStore } from './event-quote-postgres';
 import { assertEventId, createEventQuoteService } from './event-quote-workflow';
 import type { MondayVault } from './monday-store';
+import type { PaymentAgreementIntegrationV2 } from './payment-agreement-operations-v2';
 
 /** Opt-in TEST_ONLY composition. Never starts a server or provisions accounts,
  * credentials, memberships, grants, catalogs or database schemas. The caller
@@ -23,6 +24,8 @@ export function createDurableTestQuoteApi(options: {
   /** Explicit synthetic-only lead binding and isolated contract validator.
    * Omission keeps configuration and registration commands disabled. */
   testPaymentDrafts?: TestPaymentDraftDependenciesV2;
+  /** Explicit original-Payments handoff. Omission leaves transport unavailable. */
+  paymentAgreements?: PaymentAgreementIntegrationV2;
   clock?: () => number;
 }) {
   const clock = options.clock ?? Date.now;
@@ -41,11 +44,11 @@ export function createDurableTestQuoteApi(options: {
         vault: options.vault, schema: options.quoteSchema, transaction: client,
       });
       const service = createEventQuoteService({ store, catalogFor: options.catalogFor, clock, testPaymentDrafts: options.testPaymentDrafts });
-      return operation(identity, service);
+      return operation(identity, service, client);
     });
   };
   return createEventQuoteApi({
-    allowedOrigin: options.allowedOrigin, clock, runAuthorized,
+    allowedOrigin: options.allowedOrigin, clock, runAuthorized, paymentAgreements:options.paymentAgreements,
     dashboardAccess: eventId === undefined ? undefined : request => runAuthorized(request, { kind: 'read', eventId }, async (identity, service) => {
       // This status call uses the event-authorized identity, never role-only /status.
       const status = await service.status(identity.scope, { ...identity.actor, expiresAtMs: identity.expiresAtMs });

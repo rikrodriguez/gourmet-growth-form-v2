@@ -22,6 +22,12 @@ final class InternalPaymentPlanV2
     private const MAX_NOW_MS = 8640000000000000;
     private const JS_SPACE = '\x09-\x0d\x20\x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}';
 
+    /** Canonical wire encoding shared with the authenticated operational route. */
+    public static function encodeCanonical(mixed $value): string
+    {
+        return self::canonical($value);
+    }
+
     /** @return array<string,mixed> */
     public static function validate(string $rawBody, int $nowMs): array
     {

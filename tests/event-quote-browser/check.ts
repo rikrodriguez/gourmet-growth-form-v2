@@ -14,6 +14,10 @@ import { DEFAULT_OFFICE_DATABASE_URL } from '../../src/office/backend/postgres-s
 import { chromium, type Browser, type Locator } from '@playwright/test';
 import { testScope, testActor, testCatalog } from '../office/event-quote-fixtures';
 import { receiveIsolatedPaymentContractV2 } from '../payments-contract/php-v2-receiver';
+import { startOperationalPaymentReceiverV2 } from '../payments-contract/php-operational-receiver';
+import { PostgresPaymentAgreementOutboxV2 } from '../../src/office/backend/payment-agreement-outbox-v2';
+import { createPaymentAgreementHttpTransportV2 } from '../../src/office/backend/payment-agreement-transport-v2';
+import type { PaymentAgreementIntegrationV2, PaymentAgreementOperationSummaryV2 } from '../../src/office/backend/payment-agreement-operations-v2';
 // Explicit isolated test composition, never imported by the app or its servers.
 // Run after starting the local office test database. No external requests or real identity.
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -24,6 +28,7 @@ const accessSchema = `quote_access_test_${randomUUID().replaceAll('-', '')}`;
 const pool = new Pool({ connectionString: DEFAULT_OFFICE_DATABASE_URL, max: 4, connectionTimeoutMillis: 1000 });
 const vault = new MondayVault(randomBytes(32));
 const store = new PostgresEventQuoteStore(pool, { schema, vault });
+const paymentAgreementOutbox = new PostgresPaymentAgreementOutboxV2(pool, { schema, vault });
 const access = new PostgresQuoteAccessRepository(pool, { schema: accessSchema });
 // This synthetic proof exists only in the server adapter. The browser never receives it.
 const proof = { sessionToken: `synthetic_session_${randomUUID()}`, csrfToken: `synthetic_csrf_${randomUUID()}` };
@@ -39,6 +44,8 @@ let validationFault: 'none' | 'altered_receipt' | 'timeout' | 'session_expiry' =
 let validationCalls = 0, phpStarts = 0, validationAborts = 0, sessionDeadline = 0;
 let latestValidationSignal: AbortSignal | undefined;
 let paymentDraftsEnabled = false;
+let paymentAgreements: PaymentAgreementIntegrationV2 | undefined;
+let operationalReceiver: Awaited<ReturnType<typeof startOperationalPaymentReceiverV2>> | undefined;
 const testPaymentDrafts: TestPaymentDraftDependenciesV2 = {
   resolveCanonicalLead: async (scope, event) => {
     const canonicalLeadId = canonicalLeadFixtures.get(canonicalLeadKey(scope, event));
@@ -65,6 +72,7 @@ const testPaymentDrafts: TestPaymentDraftDependenciesV2 = {
 const makeApi = () => createDurableTestQuoteApi({ pool, vault, quoteSchema: schema, accessSchema,
   dashboardEventId: eventId, allowedOrigin: 'http://127.0.0.1:4197', resolveExistingSession: () => proof, clock: () => Date.now() + clockOffset,
   ...(paymentDraftsEnabled ? { testPaymentDrafts } : {}),
+  ...(paymentAgreements ? { paymentAgreements } : {}),
   catalogFor: async scope => {
     assert.deepEqual(scope, testScope, 'Catalog must come from the authorized workspace');
     if (pendingCatalog) {
@@ -482,11 +490,15 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
   const postCommand = async (command: unknown) => page.request.post(`${httpBase}/${eventId}/commands`, {
     headers: await authorityHeaders(), data: command,
   });
+  let expectedOperationalHistory: PaymentAgreementOperationSummaryV2[] = [];
   const commandRecord = async (command: unknown): Promise<EventQuoteRecord> => {
     const response = await postCommand(command);
     assert.equal(response.status(), 200, await response.text());
     const result = await response.json() as EventQuoteView;
     assert.equal(result.externalEffectsEnabled, false);
+    for (const expected of expectedOperationalHistory)
+      assert.deepEqual(result.paymentAgreementOperationsV2?.find(item => item.operationId === expected.operationId), expected,
+        'Saving a later quote/configuration must retain the existing operational projection');
     assert.deepEqual(await store.read(testScope, eventId), result.record, 'Only a committed SQL result may be reported over HTTP');
     return result.record;
   };
@@ -704,10 +716,167 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
       publicPaymentUrl: registration.publicPaymentUrl, authorizationVerified: registration.authorizationVerified,
     })),
   }, null, 2) + '\n');
+  // Continue the same card through the operational adapter and original PHP
+  // Application over real loopback HTTP. No pure registration is required.
+  operationalReceiver = await startOperationalPaymentReceiverV2();
+  await paymentAgreementOutbox.initialize();
+  const receiver = operationalReceiver;
+  const receiverTransport = createPaymentAgreementHttpTransportV2({ baseUrl: receiver.baseUrl,
+    resolveAuthorizationHeader: () => `Bearer ${receiver.sharedSecret}`, allowLoopbackTest: true });
+  let createCalls = 0, reconcileCalls = 0, loseNextCommittedResponse = false;
+  paymentAgreements = { outbox: paymentAgreementOutbox,
+    resolveSource: async (scope, event) => {
+      const canonicalLeadId = canonicalLeadFixtures.get(canonicalLeadKey(scope, event));
+      return canonicalLeadId ? { source: 'synthetic_fixture', canonicalLeadId,
+        serviceName: 'Servicio sintético del evento aprobado', eventLocation: 'Ubicación sintética' } : null;
+    },
+    transport: {
+      create: async (operation, authorization, signal) => {
+        createCalls++;
+        const response = await receiverTransport.create(operation, authorization, signal);
+        if (loseNextCommittedResponse && response.status === 201) {
+          loseNextCommittedResponse = false;
+          throw new Error('SYNTHETIC_RESPONSE_LOST_AFTER_SQLITE_COMMIT');
+        }
+        return response;
+      },
+      reconcile: async (...args) => { reconcileCalls++; return receiverTransport.reconcile(...args); },
+    },
+  };
+  await api.close(); api = makeApi(); await api.listen({ host: '127.0.0.1', port: 4198 });
+  const operationalStatus = await page.request.get(`${httpBase}/status`);
+  assert.equal((await operationalStatus.json()).paymentAgreementsEnabled, true);
+  const operationalFacts: Array<Record<string, unknown>> = [];
+  const operationalSummaries = (view: EventQuoteView) => view.paymentAgreementOperationsV2 ?? [];
+  const operationFor = (view: EventQuoteView, configurationId: string): PaymentAgreementOperationSummaryV2 => {
+    const entries = operationalSummaries(view).filter(entry => entry.configurationId === configurationId);
+    assert.equal(entries.length, 1); return entries[0];
+  };
+  const postOperation = async (body: Record<string, unknown>): Promise<EventQuoteView> => {
+    const response = await page.request.post(`${httpBase}/${eventId}/payment-agreements/v2`, {
+      headers: await authorityHeaders(), data: body,
+    });
+    assert.equal(response.status(), 200, await response.text());
+    return await response.json() as EventQuoteView;
+  };
+  for (const mode of ['retainer_50', 'full_upfront', 'fixed_49_reservation'] as const) {
+    const prefix = `operational-proof-${mode}`;
+    let record = (await store.read(testScope, eventId))!;
+    const existing = record.quotes.at(-1)!;
+    record = await commandRecord({ action: 'quote', key: `${prefix}-quote`, expectedRevision: record.revision,
+      expectedBriefDigest: record.briefs.at(-1)!.digest, expectedCatalogDigest: existing.catalogDigest,
+      selections: existing.lines.map(line => ({ itemId: line.catalogItemId, quantity: line.qty })) });
+    const quote = structuredClone(record.quotes.at(-1)!);
+    record = await commandRecord({ action: 'approve', key: `${prefix}-approval`, expectedRevision: record.revision,
+      quoteVersion: quote.version, quoteDigest: quote.digest, artifactSha256: quote.artifact.sha256,
+      intendedRecipient: record.briefs.at(-1)!.recipient });
+    record = await commandRecord({ action: 'prepare_payment_v2', key: `${prefix}-preparation`, expectedRevision: record.revision,
+      quoteVersion: quote.version, quoteDigest: quote.digest, approvalDigest: record.decisions.at(-1)!.digest,
+      artifactSha256: quote.artifact.sha256, paymentMode: mode });
+    const preparation = record.paymentContractPreparationsV2!.at(-1)!;
+    if (mode === 'retainer_50') {
+      await notifyWithdrawal(); await openSaved();
+      const draft = draftForQuote(quote.version);
+      const facts = configuredFacts(mode, preparation.paymentBalanceCents);
+      await draft.getByTestId('payment-v2-terms').fill(facts.paymentTerms);
+      await draft.getByTestId('payment-v2-terms-reason').fill(facts.termsChangeReason!);
+      for (const [field, value] of Object.entries({ 'event-date': '2099-12-15', 'event-time': '18:00',
+        'calendar-timezone': 'America/New_York', 'balance-date': '2099-12-08', 'balance-time': '12:00' }))
+        await draft.getByTestId('payment-v2-' + field).fill(value);
+      await draft.getByTestId('payment-v2-expiration').selectOption('at');
+      for (const [field, value] of Object.entries({ date: '2099-11-20', time: '13:00', timezone: 'America/New_York' }))
+        await draft.getByTestId('payment-v2-expiration-' + field).fill(value);
+      record = (await browserCommand('configure_payment_v2', () => draft.getByTestId('payment-v2-configure').click())).record;
+    } else {
+      record = await commandRecord({ action: 'configure_payment_v2', key: `${prefix}-configuration`, expectedRevision: record.revision,
+        preparationId: preparation.id, preparationDigest: preparation.digest,
+        ...configuredFacts(mode, preparation.paymentBalanceCents) });
+    }
+    const configuration = record.paymentConfigurationsV2!.at(-1)!;
+    const beforeAgreement = structuredClone(record);
+    let view: EventQuoteView, sent: Record<string, unknown>;
+    if (mode === 'retainer_50') {
+      const draft = draftForQuote(quote.version);
+      const button = draft.getByTestId('payment-v2-create-agreement');
+      assert.equal(await button.isDisabled(), true);
+      assert.equal(await draft.getByTestId('payment-v2-confirm-review').isChecked(), false);
+      assert.equal(await draft.getByTestId('payment-v2-register').count(), 0, 'Operational creation requires no simulated registration');
+      await capturePaymentState('payments-operational-reviewed', draft);
+      const delivered = page.waitForResponse(r => r.url() === `${httpBase}/${eventId}/payment-agreements/v2` && r.request().method() === 'POST');
+      await draft.getByTestId('payment-v2-confirm-review').check(); await button.click();
+      const response = await delivered;
+      assert.equal(response.status(), 200, await response.text());
+      view = await response.json(); sent = response.request().postDataJSON();
+      await draft.getByTestId('payment-v2-agreement-id').waitFor();
+      assert.match(await draft.getByTestId('payment-v2-operational-agreement').innerText(), /DRAFT_INTERNAL/);
+      await capturePaymentState('payments-operational-persisted', draft);
+    } else {
+      sent = { key: `${prefix}-create`, configurationId: configuration.id, configurationDigest: configuration.digest,
+        expectedReviewDigest: configuration.reviewDigest, operation: 'create' };
+      loseNextCommittedResponse = mode === 'full_upfront';
+      view = await postOperation(sent);
+    }
+    assert.deepEqual(await store.read(testScope, eventId), beforeAgreement, 'Operational outbox cannot rewrite the source aggregate/history');
+    let summary = operationFor(view, configuration.id);
+    if (mode === 'full_upfront') {
+      assert.equal(summary.status, 'reconciliation_required', 'A lost committed receipt must retain an ambiguous intent');
+      assert.equal((await receiver.inspect()).agreements.length, 2, 'The remote agreement already committed before the response was lost');
+      await api.close(); await receiver.restart(); api = makeApi(); await api.listen({ host: '127.0.0.1', port: 4198 });
+      const priorCreates = createCalls;
+      view = await postOperation({ ...sent, key: `${prefix}-reconcile`, operation: 'reconcile' });
+      assert.equal(createCalls, priorCreates, 'Explicit reconciliation must never create');
+      summary = operationFor(view, configuration.id);
+    }
+    assert.equal(summary.status, 'draft_persisted'); assert.ok(summary.agreementId);
+    assert.equal(summary.executable, false); assert.equal(summary.providerEnabled, false);
+    assert.equal(summary.publicPaymentUrl, null); assert.equal(summary.authorizationVerified, false);
+    assert.equal(summary.serviceAuthenticated, true);
+    const priorCreates = createCalls;
+    const replay = await postOperation(sent);
+    assert.deepEqual(operationFor(replay, configuration.id), summary);
+    expectedOperationalHistory = structuredClone(operationalSummaries(replay));
+    assert.equal(createCalls, priorCreates, 'Saved operational receipt replay must skip new creation');
+    const ledger = await receiver.inspect(), row = ledger.agreements.find(a => a.public_uuid === summary.agreementId)!;
+    assert.ok(row); assert.equal(row.contract_version, 2); assert.equal(row.payment_mode, mode);
+    assert.equal(row.total_cents, quote.totalCents); assert.equal(row.initial_cents, preparation.initialPaymentCents);
+    assert.equal(row.balance_cents, preparation.paymentBalanceCents); assert.equal(row.provider, null);
+    assert.equal(row.token_is_null, 1); assert.equal(row.status, 'DRAFT_INTERNAL');
+    assert.equal(row.source_lead_id, 'browser-synthetic-canonical-lead'); assert.equal(row.source_quote_id, quote.digest);
+    assert.equal(row.operation_id, summary.operationId); assert.equal(row.operation_digest, summary.operationDigest);
+    const stored = JSON.parse(row.operation_json);
+    assert.equal(stored.configurationDigest, configuration.digest);
+    assert.deepEqual(stored.prepared.plan.sourceQuote.depositBasis, { kind: 'quoted_percentage', basisPoints: quote.catalog.depositBps });
+    assert.equal(stored.prepared.plan.sourceQuote.depositCents, quote.depositCents);
+    assert.equal(stored.prepared.plan.paymentTerms, configuration.configuration.paymentTerms);
+    assert.deepEqual(stored.prepared.plan.paymentSchedule?.configured ?? null, configuration.configuration.paymentSchedule);
+    assert.deepEqual(stored.prepared.plan.linkExpiration.configured, configuration.configuration.linkExpiration);
+    operationalFacts.push({ mode, ...summary, totalCents: row.total_cents, initialCents: row.initial_cents,
+      balanceCents: row.balance_cents, reservationCents: row.reservation_cents });
+  }
+  const finalLedger = await receiver.inspect();
+  assert.equal(finalLedger.agreements.length, 3); assert.equal(finalLedger.providerCalls, 0);
+  assert.equal(createCalls, 3, 'Three reviewed modes must create exactly three original agreements');
+  for (const table of ['payment_attempts', 'payment_consents', 'provider_resources', 'sales_os_event_outbox', 'email_outbox', 'monday_sync_outbox'])
+    if (Object.hasOwn(finalLedger.counts, table)) assert.equal(finalLedger.counts[table], 0, table + ' must remain empty');
+  await page.reload(); await page.getByTestId('dashboard-verify-quotes').waitFor(); await openSaved();
+  for (const fact of operationalFacts) {
+    const id = page.getByTestId('payment-v2-agreement-id').filter({ hasText: String(fact.agreementId) });
+    await id.waitFor();
+    assert.equal(await id.locator('a').count(), 0);
+  }
+  assert.deepEqual(errors, []); assert.deepEqual(external, []);
+  await writeFile(new URL('http-operational-v2.json', contractEvidence), JSON.stringify({
+    source: 'Existing Chromium card -> Office HTTP/PostgreSQL encrypted outbox -> original Payments Application/Request HTTP -> SQLite',
+    createCalls, reconcileCalls, responseLostAfterCommitRecovered: true, restartedOfficeAndPhp: true,
+    providerCalls: finalLedger.providerCalls, originalV1GateEnabled: false, publicPaymentUrl: null,
+    agreements: operationalFacts, counts: finalLedger.counts, migrations: finalLedger.migrations,
+    noPureRegistrationPrerequisite: true, sourceAggregateUnchangedByDelivery: true,
+  }, null, 2) + '\n');
+  console.log('PASS: existing reviewed payment card -> durable Office intent -> authenticated original Payments HTTP/Application -> actual SQLite agreements for all three modes; one lost committed response recovered after Office/PHP restart by read-only lookup; exactly 3 creates, no duplicate, provider call, token, URL or source-quote mutation; final browser reload shows the persisted UUIDs.');
   console.log('PASS: actual durable HTTP authorization -> PostgreSQL -> isolated PHP v2 -> committed draft for all three modes; explicit server-only synthetic lead binding; altered receipt, timeout/abort and in-flight session expiry roll back aggregate/audit/receipt; SQL permissions reject before PHP; two identical requests initiated in parallel validate once; API restart and command replay skip PHP; final browser reload retains all three configured reviews without registration controls or payment links; source quote history unchanged; 6 actual PHP validation starts, 3 successful internal drafts, no payment URL or customer authorization.');
   console.log('PASS: durable SQL session and fixed-event Dashboard projection; explicit access with no reads on mount/reload/restore/history; Chromium desktop/mobile create -> quote -> internal approval -> explicit 50-percent double-click-safe v2 payment draft without provider URL -> API restart -> recovery -> stale edit -> quote v2 -> explicit full-upfront draft -> quote v3 -> explicit fixed-49 draft; no automatic 49 selection; full-page and readable detail screenshots for all three saved modes in desktop/mobile; artifact isolation; SQL session revocation and grant withdrawal; delayed real GET discarded on close; persisted read-only enforcement and grant expiry; no JS errors or external requests. PostgreSQL preserves exact revisions and decisions. Screenshots in test-results/dashboard-visual/.');
 } finally {
-  await browser?.close(); await vite?.close(); await api?.close();
+  await browser?.close(); await vite?.close(); await api?.close(); await operationalReceiver?.close();
   try {
     if (initialized) await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     if (accessInitialized) await pool.query(`DROP SCHEMA IF EXISTS ${accessSchema} CASCADE`);

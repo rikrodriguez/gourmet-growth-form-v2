@@ -1,0 +1,613 @@
+--- a/src/Http/Application.php
++++ b/src/Http/Application.php
+@@ -20,6 +20,7 @@
+ use Gourmet\Payments\Payments\PayPal\CurlPayPalHttpTransport;
+ use Gourmet\Payments\Payments\PayPal\PayPalClient;
+ use Gourmet\Payments\Payments\PayPal\PayPalConfig;
++use Gourmet\Payments\Payments\PayPal\PayPalHttpTransport;
+ use Gourmet\Payments\Payments\PayPal\PayPalProvisioningService;
+ use Gourmet\Payments\Payments\PayPal\PayPalReconciler;
+ use Gourmet\Payments\Security\Csrf;
+@@ -36,7 +37,7 @@
+     /** @var list<string> */
+     private const TIMEZONES = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Phoenix'];
+
+-    public function __construct(private Config $config, private JsonLogger $logger)
++    public function __construct(private Config $config, private JsonLogger $logger, private ?PayPalHttpTransport $paypalTransport = null)
+     {
+     }
+
+@@ -74,6 +75,9 @@
+         if ($request->path === '/internal/v1/payment-agreements') {
+             return $this->internalPaymentAgreement($request, $requestId);
+         }
++        if (in_array($request->path, ['/internal/v2/payment-agreements', '/internal/v2/payment-agreements/reconcile'], true)) {
++            return $this->internalPaymentAgreementV2($request, $requestId);
++        }
+         if ($request->path === '/admin/login') {
+             return $request->method === 'POST' ? $this->login($request, $requestId) : $this->loginForm();
+         }
+@@ -134,6 +138,9 @@
+         $agreement = $this->repository()->findUsableByRawToken($token, $this->now());
+         if ($agreement === null) {
+             return $this->unavailableLinkForToken($token);
++        }
++        if ((int) ($agreement['contract_version'] ?? 1) === 2) {
++            return $this->unavailableLink();
+         }
+         if (in_array((string) $agreement['status'], ['RESERVATION_PAID', 'FULLY_PAID', 'PAYMENT_FAILED'], true)) {
+             return Response::redirect('/pay/' . rawurlencode($token) . '/status');
+@@ -162,6 +169,9 @@
+         if ($agreement === null) {
+             return $this->unavailableLinkForToken($token);
+         }
++        if ((int) ($agreement['contract_version'] ?? 1) === 2) {
++            return $this->unavailableLink();
++        }
+         if ($this->checkoutActivationPending()) {
+             return $this->paymentLink($token);
+         }
+@@ -179,7 +189,7 @@
+                 Secrets::privacyHash($request->ipAddress, $this->config->appKey),
+                 $request->userAgent,
+             );
+-            $paypal = new PayPalClient($this->paypalConfig(), new CurlPayPalHttpTransport());
++            $paypal = new PayPalClient($this->paypalConfig(), $this->paypalTransport ?? new CurlPayPalHttpTransport());
+             $provisioner = new PayPalProvisioningService($this->pdo(), $paypal, new ProviderResourceRepository($this->pdo()), new IdempotencyGuard($this->pdo()));
+             $product = $provisioner->createOrReuseProduct();
+             $plan = $provisioner->createOrReusePlan($product->externalId, (int) $agreement['balance_cents']);
+@@ -205,10 +215,13 @@
+         if ($agreement === null) {
+             return $this->unavailableLinkForToken($token);
+         }
++        if ((int) ($agreement['contract_version'] ?? 1) === 2) {
++            return $this->unavailableLink();
++        }
+         if (is_string($agreement['paypal_subscription_id']) && $agreement['paypal_subscription_id'] !== '') {
+             try {
+                 $this->assertPayPalOperational();
+-                (new PayPalReconciler($this->pdo(), new PayPalClient($this->paypalConfig(), new CurlPayPalHttpTransport()), new ProviderResourceRepository($this->pdo())))
++                (new PayPalReconciler($this->pdo(), new PayPalClient($this->paypalConfig(), $this->paypalTransport ?? new CurlPayPalHttpTransport()), new ProviderResourceRepository($this->pdo())))
+                     ->reconcile((string) $agreement['public_uuid'], (string) $agreement['paypal_subscription_id']);
+                 $agreement = $this->repository()->findUsableByRawToken($token, $this->now()) ?? $agreement;
+             } catch (\Throwable $exception) {
+@@ -261,7 +274,7 @@
+     {
+         try {
+             $this->assertPayPalOperational();
+-            $event = (new PayPalClient($this->paypalConfig(), new CurlPayPalHttpTransport()))
++            $event = (new PayPalClient($this->paypalConfig(), $this->paypalTransport ?? new CurlPayPalHttpTransport()))
+                 ->verifyWebhook($request->rawBody, $request->headers);
+             $accepted = (new PayPalWebhookInbox($this->pdo()))->accept($event);
+             $this->logger->log('info', $accepted ? 'paypal.webhook_received' : 'paypal.webhook_duplicate', [
+@@ -380,6 +393,138 @@
+         }
+     }
+
++    private function internalPaymentAgreementV2(Request $request, string $requestId): Response
++    {
++        if (!$this->internalV2Enabled()
++            || !InternalApiAuthenticator::validBearer($request->headers['authorization'] ?? null, $this->internalApiSharedSecret())) {
++            return Response::json(['status' => 'not_found'], 404);
++        }
++        if ($request->method !== 'POST') {
++            return Response::json(['status' => 'method_not_allowed'], 405)->withHeaders(['Allow' => 'POST']);
++        }
++        if (preg_match('/\Aapplication\/json(?:\s*;[^\r\n]*)?\z/i', $request->headers['content-type'] ?? '') !== 1) {
++            return Response::json(['status' => 'invalid_request'], 415);
++        }
++        if ($this->config->isProduction() && !$this->internalV2CommercialDraftEnabled()) {
++            return Response::json(['status' => 'draft_execution_disabled'], 503);
++        }
++
++        $reconciliation = $request->path === '/internal/v2/payment-agreements/reconcile';
++        try {
++            $now = $this->now();
++            $command = $reconciliation ? null : OperationalPaymentAgreementV2::fromJson($request->rawBody, $this->milliseconds($now));
++            $lookup = $reconciliation ? OperationalPaymentAgreementV2::reconciliationFromJson($request->rawBody) : [
++                'operationId' => $command->operation->operationId,
++                'operationDigest' => $command->operationDigest,
++            ];
++            $idempotencyKey = OperationalPaymentAgreementV2::idempotencyKey($lookup['operationId']);
++            if (($request->headers['idempotency-key'] ?? '') !== $idempotencyKey) {
++                return Response::json(['status' => 'invalid_request'], 400);
++            }
++            if ($command !== null && $command->operation->prepared->plan->scope->mode === 'commercial'
++                && !$this->internalV2CommercialDraftEnabled()) {
++                return Response::json(['status' => 'draft_execution_disabled'], 503);
++            }
++        } catch (\DomainException) {
++            return Response::json(['status' => 'invalid_request'], 422);
++        }
++
++        try {
++            $cipher = $this->paymentLinkReplayCipher();
++        } catch (\Throwable $exception) {
++            $this->logger->log('warning', 'internal.payment_draft_v2_replay_unavailable', ['request_id' => $requestId, 'exception_class' => $exception::class]);
++            return Response::json(['status' => 'request_unavailable'], 503);
++        }
++        try {
++            $guard = new IdempotencyGuard($this->pdo());
++            $hash = hex2bin($lookup['operationDigest']);
++            $replay = $guard->replay(OperationalPaymentAgreementV2::IDEMPOTENCY_SCOPE, $idempotencyKey, $hash);
++            if ($replay !== null) {
++                $receipt = OperationalPaymentAgreementV2::recoveredReceipt(
++                    $cipher->decrypt($replay['ciphertext'], $replay['nonce'], $replay['tag']),
++                    $lookup['operationId'],
++                    $lookup['operationDigest'],
++                );
++                if ($receipt['operation']->prepared->plan->scope->mode === 'commercial'
++                    && !$this->internalV2CommercialDraftEnabled()) {
++                    return Response::json(['status' => 'draft_execution_disabled'], 503);
++                }
++                return Response::json($receipt, 200);
++            }
++            // Reconciliation is strictly read-only: absence never starts a
++            // ledger operation, even if the original delivery was ambiguous.
++            if ($reconciliation) {
++                return Response::json(['status' => 'not_found'], 404);
++            }
++        } catch (\PDOException $exception) {
++            $this->logger->log('warning', 'internal.payment_draft_v2_ledger_unavailable', ['request_id' => $requestId, 'exception_class' => $exception::class]);
++            return Response::json(['status' => 'request_unavailable'], 503);
++        } catch (\DomainException | \RuntimeException) {
++            return Response::json(['status' => 'idempotency_conflict'], 409);
++        } catch (\Throwable $exception) {
++            $this->logger->log('warning', 'internal.payment_draft_v2_replay_unavailable', ['request_id' => $requestId, 'exception_class' => $exception::class]);
++            return Response::json(['status' => 'request_unavailable'], 503);
++        }
++
++        $pdo = $this->pdo();
++        $transactionStarted = false;
++        try {
++            // No provider or other external side effect participates in v2.
++            // The local ledger key, agreement, encrypted receipt and audit
++            // therefore share one transaction, including guard acquisition.
++            $pdo->beginTransaction();
++            $transactionStarted = true;
++            try {
++                $guard->begin(OperationalPaymentAgreementV2::IDEMPOTENCY_SCOPE, $idempotencyKey, $hash);
++            } catch (\PDOException $exception) {
++                throw $exception;
++            } catch (\DomainException | \RuntimeException) {
++                $pdo->rollBack();
++                $transactionStarted = false;
++                return Response::json(['status' => 'idempotency_conflict'], 409);
++            }
++            $receipt = null;
++            $agreement = (new PaymentAgreementService($pdo))->createDraftV2(
++                $command->operationArray(),
++                $now,
++                function (string $agreementUuid) use (&$receipt, $command, $request, $requestId, $cipher, $guard, $idempotencyKey): void {
++                    // Auth assertions and calendar facts may expire while
++                    // awaiting a ledger lock. Recheck before the shared commit.
++                    OperationalPaymentAgreementV2::fromJson($request->rawBody, $this->milliseconds($this->now()));
++                    $receipt = $command->receipt($agreementUuid);
++                    $json = InternalPaymentPlanV2::encodeCanonical((object) $receipt);
++                    $encrypted = $cipher->encrypt($json);
++                    $guard->completeEncrypted(
++                        OperationalPaymentAgreementV2::IDEMPOTENCY_SCOPE,
++                        $idempotencyKey,
++                        201,
++                        hash('sha256', $json, true),
++                        $encrypted['ciphertext'], $encrypted['nonce'], $encrypted['tag'],
++                    );
++                    (new AuditLog($this->pdo()))->record('INTERNAL_API', 'INTERNAL_PAYMENT_DRAFT_V2_REQUESTED', 'PAYMENT_AGREEMENT', null, $agreementUuid, $requestId, [
++                        'operation_id' => $command->operation->operationId,
++                        'operation_digest' => $command->operationDigest,
++                        'actor_id' => $command->authorization->actorId,
++                        'source_quote_version' => $command->operation->prepared->plan->sourceQuote->version,
++                    ]);
++                },
++            );
++            if (!is_array($receipt) || $receipt['agreementId'] !== ($agreement['agreement_uuid'] ?? null)) {
++                throw new \RuntimeException('Disabled agreement receipt was not recorded.');
++            }
++            $pdo->commit();
++            $transactionStarted = false;
++            return Response::json($receipt, 201);
++        } catch (\DomainException) {
++            if ($transactionStarted && $pdo->inTransaction()) { $pdo->rollBack(); }
++            return Response::json(['status' => 'invalid_request'], 422);
++        } catch (\Throwable $exception) {
++            if ($transactionStarted && $pdo->inTransaction()) { $pdo->rollBack(); }
++            $this->logger->log('error', 'internal.payment_draft_v2_failed', ['request_id' => $requestId, 'exception_class' => $exception::class]);
++            return Response::json(['status' => 'request_unavailable'], 503);
++        }
++    }
++
+     private function loginForm(?string $error = null): Response
+     {
+         $csrf = Csrf::issue();
+@@ -490,7 +635,7 @@
+
+         $selected = static fn (string $actual, string $value): string => $actual === $value ? ' selected' : '';
+         $statusOptions = '';
+-        foreach (['ALL' => 'All statuses', 'PENDING_RESERVATION' => 'Pending reservation', 'AWAITING_RESERVATION' => 'Awaiting reservation', 'RESERVATION_PROCESSING' => 'Reservation processing', 'RESERVATION_PAID' => 'Reservation paid', 'FULLY_PAID' => 'Fully paid', 'PAYMENT_FAILED' => 'Payment failed', 'CANCELLED' => 'Cancelled'] as $value => $label) {
++        foreach (['ALL' => 'All statuses', 'DRAFT_INTERNAL' => 'Internal draft', 'PENDING_RESERVATION' => 'Pending reservation', 'AWAITING_RESERVATION' => 'Awaiting reservation', 'RESERVATION_PROCESSING' => 'Reservation processing', 'RESERVATION_PAID' => 'Reservation paid', 'FULLY_PAID' => 'Fully paid', 'PAYMENT_FAILED' => 'Payment failed', 'CANCELLED' => 'Cancelled'] as $value => $label) {
+             $statusOptions .= '<option value="' . Html::escape($value) . '"' . $selected($status, $value) . '>' . Html::escape($label) . '</option>';
+         }
+         $linkOptions = '';
+@@ -499,7 +644,8 @@
+         }
+         $rows = '';
+         foreach ($agreements as $agreement) {
+-            $rows .= '<tr><td>' . Html::escape((string) $agreement['recipient_name']) . '</td><td>' . Html::escape((string) $agreement['service_name']) . '</td><td>' . $this->money((int) $agreement['total_cents']) . '</td><td>' . $this->money((int) $agreement['balance_cents']) . '</td><td>' . Html::escape($this->businessDate((string) $agreement['balance_due_at_utc'], (string) $agreement['balance_timezone'])) . '</td><td><span class="status">' . Html::escape((string) $agreement['status']) . '</span></td><td>' . Html::escape($this->linkStatus($agreement)) . '</td><td><a href="/admin/agreements/' . Html::escape((string) $agreement['public_uuid']) . '">View</a></td></tr>';
++            $balanceDate = $agreement['balance_due_at_utc'] === null ? 'No future balance' : $this->businessDate((string) $agreement['balance_due_at_utc'], (string) $agreement['balance_timezone']);
++            $rows .= '<tr><td>' . Html::escape((string) $agreement['recipient_name']) . '</td><td>' . Html::escape((string) $agreement['service_name']) . '</td><td>' . $this->money((int) $agreement['total_cents']) . '</td><td>' . $this->money((int) $agreement['balance_cents']) . '</td><td>' . Html::escape($balanceDate) . '</td><td><span class="status">' . Html::escape((string) $agreement['status']) . '</span></td><td>' . Html::escape($this->linkStatus($agreement)) . '</td><td><a href="/admin/agreements/' . Html::escape((string) $agreement['public_uuid']) . '">View</a></td></tr>';
+         }
+         if ($rows === '') { $rows = '<tr><td colspan="8">No agreements match these filters.</td></tr>'; }
+         $content = $this->adminNav('agreements') . '<section class="admin-heading"><div><span class="eyebrow">Agreement register</span><h1>Payment agreements</h1><p>Search and filter the complete payment-agreement register.</p></div><a class="button" href="/admin/agreements/new">Create payment link</a></section><form method="get" action="/admin/agreements" class="agreement-filters"><label>Search<input name="q" value="' . Html::escape($search) . '" placeholder="Client, email, service, Monday reference or agreement"></label><label>Status<select name="status">' . $statusOptions . '</select></label><label>Link state<select name="link">' . $linkOptions . '</select></label><button type="submit">Apply filters</button></form><section class="panel"><div class="table-wrap"><table><thead><tr><th>Client</th><th>Service</th><th>Total</th><th>Balance</th><th>Balance date</th><th>Status</th><th>Link</th><th></th></tr></thead><tbody>' . $rows . '</tbody></table></div></section>';
+@@ -558,6 +704,9 @@
+         if ($this->adminUser($request) === null) { return Response::redirect('/admin/login'); }
+         $agreement = $this->repository()->findByPublicUuid($uuid);
+         if ($agreement === null) { return Response::html(Html::page('Not found', '<section class="card"><h1>Agreement not found</h1></section>'), 404); }
++        if ((int) ($agreement['contract_version'] ?? 1) === 2) {
++            return $this->disabledAgreementDetailV2($agreement, $uuid);
++        }
+         $schedules = $this->repository()->schedules((int) $agreement['id']);
+         $attempts = $this->repository()->attempts((int) $agreement['id']);
+         $consents = $this->repository()->consents((int) $agreement['id']);
+@@ -578,6 +727,9 @@
+         if ($this->adminUser($request) === null) { return Response::redirect('/admin/login'); }
+         if (!$this->auth()->validateCsrf($request->cookies['gp_admin_session'] ?? '', $request->post['csrf_token'] ?? '')) { return Response::html(Html::page('Invalid request', '<section class="card"><h1>Invalid request</h1></section>'), 403); }
+         $agreement = $this->repository()->findByPublicUuid($uuid);
++        if ($agreement !== null && (int) ($agreement['contract_version'] ?? 1) === 2) {
++            return Response::json(['status' => 'draft_execution_disabled'], 409);
++        }
+         if ($agreement !== null) {
+             $pdo = $this->pdo();
+             $pdo->beginTransaction();
+@@ -606,6 +758,9 @@
+         if (!$this->auth()->validateCsrf($request->cookies['gp_admin_session'] ?? '', $request->post['csrf_token'] ?? '')) { return Response::html(Html::page('Invalid request', '<section class="card"><h1>Invalid request</h1></section>'), 403); }
+         $agreement = $this->repository()->findByPublicUuid($uuid);
+         if ($agreement === null) { return Response::html(Html::page('Not found', '<section class="card"><h1>Agreement not found</h1></section>'), 404); }
++        if ((int) ($agreement['contract_version'] ?? 1) === 2) {
++            return Response::json(['status' => 'draft_execution_disabled'], 409);
++        }
+         try {
+             $expires = $this->now()->modify('+7 days');
+             $token = $this->repository()->replaceLink((int) $agreement['id'], $expires);
+@@ -614,6 +769,16 @@
+         } catch (\Throwable) {
+             return Response::redirect('/admin/agreements/' . rawurlencode($uuid));
+         }
++    }
++
++    /** @param array<string,mixed> $agreement */
++    private function disabledAgreementDetailV2(array $agreement, string $uuid): Response
++    {
++        $content = $this->adminNav('agreements') . '<section class="admin-heading"><div><span class="eyebrow">Agreement detail</span><h1>Internal agreement draft</h1><p>Reference ' . Html::escape(substr($uuid, 0, 8)) . '</p></div></section>';
++        $content .= '<section class="panel"><h2>' . Html::escape((string) $agreement['service_name']) . '</h2><p>' . Html::escape((string) $agreement['recipient_name']) . '<br>' . Html::escape((string) $agreement['recipient_email']) . '</p><dl class="money-list"><div><dt>Total</dt><dd>' . $this->money((int) $agreement['total_cents']) . '</dd></div><div><dt>Initial payment</dt><dd>' . $this->money((int) $agreement['initial_cents']) . '</dd></div><div><dt>Future balance</dt><dd>' . $this->money((int) $agreement['balance_cents']) . '</dd></div><div><dt>Payment mode</dt><dd>' . Html::escape((string) $agreement['payment_mode']) . '</dd></div><div><dt>Agreement status</dt><dd>' . Html::escape((string) $agreement['status']) . '</dd></div></dl><p>This agreement is an internal draft. Customer consent, payment links and provider execution are unavailable.</p></section>';
++        $content .= $this->detailTable('Schedules', $this->repository()->schedules((int) $agreement['id']), ['kind' => 'Type', 'amount_cents' => 'Amount', 'due_at_utc' => 'Due', 'status' => 'Status']);
++        $content .= $this->detailTable('Audit timeline', $this->repository()->audits((int) $agreement['id'], $uuid), ['event_type' => 'Event', 'actor_type' => 'Actor', 'created_at' => 'Time']);
++        return Response::html(Html::page('Internal agreement draft', $content));
+     }
+
+     private function logout(Request $request, string $requestId): Response
+@@ -652,6 +817,7 @@
+     /** @param array<string,mixed> $agreement */
+     private function linkStatus(array $agreement): string
+     {
++        if ((int) ($agreement['contract_version'] ?? 1) === 2) { return 'DISABLED_DRAFT'; }
+         if ($agreement['link_revoked_at'] !== null) { return 'Revoked'; }
+         if ($agreement['link_expires_at'] === null) { return 'Active · never expires'; }
+         return (new \DateTimeImmutable((string) $agreement['link_expires_at'], new \DateTimeZone('UTC'))) > $this->now() ? 'Active' : 'Expired';
+@@ -785,6 +951,21 @@
+         return in_array(mb_strtolower((string) $enabled), ['1', 'true'], true);
+     }
+
++    private function internalV2Enabled(): bool
++    {
++        return in_array(mb_strtolower((string) $this->paypalEnv()->get('INTERNAL_V2_ENABLED', 'false')), ['1', 'true'], true);
++    }
++
++    private function internalV2CommercialDraftEnabled(): bool
++    {
++        return in_array(mb_strtolower((string) $this->paypalEnv()->get('INTERNAL_V2_COMMERCIAL_DRAFT_ENABLED', 'false')), ['1', 'true'], true);
++    }
++
++    private function milliseconds(\DateTimeImmutable $now): int
++    {
++        return (int) $now->format('U') * 1000 + intdiv((int) $now->format('u'), 1000);
++    }
++
+     private function internalApiSharedSecret(): string
+     {
+         return $this->paypalEnv()->get('INTERNAL_API_SHARED_SECRET', '') ?? '';
+--- a/src/Http/Request.php
++++ b/src/Http/Request.php
+@@ -34,6 +34,14 @@
+             }
+             $headers[strtolower(str_replace('_', '-', substr($key, 5)))] = $value;
+         }
++        // CGI/FastCGI exposes the entity headers outside the HTTP_ namespace.
++        // Keep explicit values authoritative when both representations exist.
++        if (is_string($_SERVER['CONTENT_TYPE'] ?? null)) {
++            $headers['content-type'] = $_SERVER['CONTENT_TYPE'];
++        }
++        if (is_string($_SERVER['CONTENT_LENGTH'] ?? null)) {
++            $headers['content-length'] = $_SERVER['CONTENT_LENGTH'];
++        }
+
+         return new self(
+             method: mb_strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')),
+--- a/src/Domain/PaymentAgreementService.php
++++ b/src/Domain/PaymentAgreementService.php
+@@ -7,6 +7,7 @@
+ use Gourmet\Payments\Database\AuditLog;
+ use Gourmet\Payments\Database\MondaySyncOutbox;
+ use Gourmet\Payments\Database\SalesOsEventOutbox;
++use Gourmet\Payments\Http\InternalPaymentPlanV2;
+ use Gourmet\Payments\Support\MondayItemReference;
+ use Gourmet\Payments\Support\Uuid;
+ use PDO;
+@@ -165,6 +166,145 @@
+         ];
+     }
+
++    /**
++     * Persists an explicitly authorized v2 draft without issuing a payment link.
++     * Authentication and the disabled-by-default commercial gate belong to the
++     * receiver. This method revalidates all contract facts and never calls a
++     * provider, records customer consent or publishes a payment-link event.
++     *
++     * The callback receives only the agreement UUID, inside this transaction.
++     * A caller-owned transaction remains owned by the caller on success/failure.
++     *
++     * @param array<string,mixed> $operation
++     * @return array{agreement_uuid:string}
++     */
++    public function createDraftV2(array $operation, \DateTimeImmutable $now, ?callable $afterPersisted = null): array
++    {
++        $reject = static function (): never { throw new \DomainException('INVALID_PAYMENT_DRAFT_V2_OPERATION'); };
++        $nodes = 0;
++        $plain = static function (mixed $value, int $depth = 0) use (&$plain, &$nodes, $reject): mixed {
++            if (++$nodes > 20000 || $depth > 32) { $reject(); }
++            if (is_array($value)) {
++                if (array_is_list($value)) {
++                    return array_map(static fn (mixed $item): mixed => $plain($item, $depth + 1), $value);
++                }
++                $object = new \stdClass();
++                foreach ($value as $key => $item) {
++                    if (!is_string($key)) { $reject(); }
++                    $object->{$key} = $plain($item, $depth + 1);
++                }
++                return $object;
++            }
++            if ($value instanceof \stdClass) {
++                $object = new \stdClass();
++                foreach (get_object_vars($value) as $key => $item) { $object->{$key} = $plain($item, $depth + 1); }
++                return $object;
++            }
++            if ($value !== null && !is_string($value) && !is_bool($value) && !is_int($value)) { $reject(); }
++            return $value;
++        };
++        $object = static function (mixed $value, array $keys) use ($reject): \stdClass {
++            if (!$value instanceof \stdClass) { $reject(); }
++            $actual = array_keys(get_object_vars($value)); sort($actual, SORT_STRING); sort($keys, SORT_STRING);
++            if ($actual !== $keys) { $reject(); }
++            return $value;
++        };
++        $text = static function (mixed $value, int $max) use ($reject): void {
++            if (!is_string($value) || trim($value) === '' || !mb_check_encoding($value, 'UTF-8')
++                || intdiv(strlen(mb_convert_encoding($value, 'UTF-16LE', 'UTF-8')), 2) > $max
++                || preg_match('/[\x00-\x1f\x7f]/u', $value) !== 0) { $reject(); }
++        };
++        $hash = static function (mixed $value) use ($reject): void {
++            if (!is_string($value) || preg_match('/^[a-f0-9]{64}$/D', $value) !== 1) { $reject(); }
++        };
++        $identifier = static function (mixed $value) use ($text, $reject): void {
++            $text($value, 96);
++            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]*$/D', $value) !== 1
++                || in_array($value, ['constructor', 'prototype', '__proto__'], true)) { $reject(); }
++        };
++        $value = $object($plain($operation), ['contractVersion', 'operationId', 'configurationId', 'configurationDigest', 'prepared', 'recipient', 'service']);
++        if ($value->contractVersion !== 2) { $reject(); }
++        $hash($value->operationId); $hash($value->configurationDigest); $identifier($value->configurationId);
++        $seconds = $now->getTimestamp();
++        if ($seconds < 0 || $seconds > 8640000000000) { $reject(); }
++        $nowMs = $seconds * 1000 + intdiv((int) $now->format('u'), 1000);
++        // Loading the original pure Money class preserves the fixed-49 branch
++        // required by the shared validator, without generalizing it to 50/100%.
++        $currency = Money::CURRENCY;
++        $validated = InternalPaymentPlanV2::validate(InternalPaymentPlanV2::encodeCanonical($value->prepared), $nowMs);
++        $plan = $validated['prepared']->plan;
++        $quote = $plan->sourceQuote;
++        if ($quote->currency !== $currency || $plan->initialPaymentCents + $plan->paymentBalanceCents !== $quote->totalCents) { $reject(); }
++        $expectedId = hash('sha256', InternalPaymentPlanV2::encodeCanonical((object) [
++            'scope' => $plan->scope, 'eventId' => $plan->eventId, 'configurationId' => $value->configurationId,
++            'configurationDigest' => $value->configurationDigest, 'preparationDigest' => $plan->preparationDigest,
++        ]));
++        if (!hash_equals($expectedId, $value->operationId)) { $reject(); }
++        $recipient = $object($value->recipient, ['name', 'email', 'phone']);
++        $text($recipient->name, 160); $text($recipient->email, 254);
++        if ($recipient->email !== $quote->intendedRecipient || !filter_var($recipient->email, FILTER_VALIDATE_EMAIL)) { $reject(); }
++        if ($recipient->phone !== null) { $text($recipient->phone, 32); }
++        $service = $object($value->service, ['name', 'eventLocation']);
++        $text($service->name, 180);
++        if ($service->eventLocation !== null) { $text($service->eventLocation, 500); }
++        $operationJson = InternalPaymentPlanV2::encodeCanonical($value);
++        if (strlen($operationJson) > 196608) { $reject(); }
++        $operationDigest = hash('sha256', $operationJson);
++        $utc = new \DateTimeZone('UTC');
++        $at = $now->setTimezone($utc)->format('Y-m-d H:i:s.u');
++        $date = static fn (?string $instant): ?string => $instant === null ? null
++            : (new \DateTimeImmutable($instant))->setTimezone($utc)->format('Y-m-d H:i:s.u');
++        $schedule = $plan->paymentSchedule;
++        $balanceAt = $date($schedule?->balanceInstant);
++        $balanceTimezone = $schedule?->configured->timezone;
++        $agreementUuid = Uuid::v4();
++        $ownsTransaction = !$this->pdo->inTransaction();
++        if ($ownsTransaction) { $this->pdo->beginTransaction(); }
++        try {
++            $agreement = $this->pdo->prepare(
++                'INSERT INTO payment_agreements (' .
++                'public_uuid,monday_item_id,source_lead_id,source_quote_id,source_quote_version,recipient_name,recipient_email,recipient_phone,' .
++                'service_name,event_at_utc,event_location,internal_notes,currency,total_cents,reservation_cents,balance_cents,balance_due_at_utc,balance_timezone,' .
++                'status,provider,public_token_hash,link_expires_at,terms_version,reservation_policy_version,created_at,updated_at,' .
++                'contract_version,payment_mode,initial_cents,operation_id,operation_json,operation_digest,configuration_id,configuration_digest' .
++                ') VALUES (:uuid,NULL,:lead,:quote,:quote_version,:recipient_name,:email,:phone,:service,:event_at,:location,NULL,:currency,:total,:reservation,:balance,:balance_due,:timezone,' .
++                "'DRAFT_INTERNAL',NULL,NULL,:expires,'v2-draft','v2-draft',:created,:updated,2,:mode,:initial,:operation_id,:operation_json,:operation_digest,:configuration_id,:configuration_digest)"
++            );
++            $agreement->execute([
++                'uuid' => $agreementUuid, 'lead' => $plan->canonicalLeadId, 'quote' => $quote->digest, 'quote_version' => (string) $quote->version,
++                'recipient_name' => $recipient->name, 'email' => $recipient->email, 'phone' => $recipient->phone,
++                'service' => $service->name, 'event_at' => $date($schedule?->eventInstant), 'location' => $service->eventLocation,
++                'currency' => $currency, 'total' => $quote->totalCents, 'reservation' => $plan->paymentMode === 'fixed_49_reservation' ? 4900 : null,
++                'balance' => $plan->paymentBalanceCents, 'balance_due' => $balanceAt, 'timezone' => $balanceTimezone,
++                'expires' => $date($plan->linkExpiration->instant), 'created' => $at, 'updated' => $at,
++                'mode' => $plan->paymentMode, 'initial' => $plan->initialPaymentCents, 'operation_id' => $value->operationId,
++                'operation_json' => $operationJson, 'operation_digest' => $operationDigest,
++                'configuration_id' => $value->configurationId, 'configuration_digest' => $value->configurationDigest,
++            ]);
++            $agreementId = (int) $this->pdo->lastInsertId();
++            $insertSchedule = $this->pdo->prepare(
++                "INSERT INTO payment_schedules (public_uuid,agreement_id,kind,amount_cents,due_at_utc,status,created_at,updated_at) VALUES (:uuid,:agreement_id,:kind,:amount,:due,'DRAFT',:created,:updated)"
++            );
++            $schedules = [[$plan->paymentMode === 'fixed_49_reservation' ? 'RESERVATION' : 'INITIAL', $plan->initialPaymentCents, $at]];
++            if ($plan->paymentBalanceCents > 0) { $schedules[] = ['BALANCE', $plan->paymentBalanceCents, $balanceAt]; }
++            foreach ($schedules as [$kind, $amount, $due]) {
++                $insertSchedule->execute(['uuid' => Uuid::v4(), 'agreement_id' => $agreementId, 'kind' => $kind, 'amount' => $amount,
++                    'due' => $due, 'created' => $at, 'updated' => $at]);
++            }
++            (new AuditLog($this->pdo))->record('SYSTEM', 'PAYMENT_AGREEMENT_DRAFT_V2_CREATED', 'PAYMENT_AGREEMENT', null, $agreementUuid, null, [
++                'contract_version' => 2, 'payment_mode' => $plan->paymentMode, 'currency' => $currency,
++                'total_cents' => $quote->totalCents, 'initial_cents' => $plan->initialPaymentCents, 'balance_cents' => $plan->paymentBalanceCents,
++                'operation_id' => $value->operationId, 'operation_digest' => $operationDigest,
++            ]);
++            if ($afterPersisted !== null) { $afterPersisted($agreementUuid); }
++            if ($ownsTransaction) { $this->pdo->commit(); }
++        } catch (\Throwable $exception) {
++            if ($ownsTransaction && $this->pdo->inTransaction()) { $this->pdo->rollBack(); }
++            throw $exception;
++        }
++        return ['agreement_uuid' => $agreementUuid];
++    }
++
+     private function normalizeMondayItemId(?string $reference): ?string
+     {
+         $reference = $reference === null ? '' : trim($reference);
+--- a/src/Database/PaymentAgreementRepository.php
++++ b/src/Database/PaymentAgreementRepository.php
+@@ -119,7 +119,7 @@
+         $attention = $this->pdo->prepare(
+             "SELECT public_uuid, recipient_name, service_name, status, balance_due_at_utc, balance_timezone " .
+             "FROM payment_agreements WHERE status IN ('PAYMENT_FAILED', 'CANCELLED') " .
+-            "OR (link_revoked_at IS NULL AND link_expires_at IS NOT NULL AND link_expires_at <= :now " .
++            "OR (contract_version = 1 AND public_token_hash IS NOT NULL AND link_revoked_at IS NULL AND link_expires_at IS NOT NULL AND link_expires_at <= :now " .
+             "AND status NOT IN ('RESERVATION_PAID', 'FULLY_PAID')) " .
+             'ORDER BY created_at DESC LIMIT 8'
+         );
+@@ -137,7 +137,7 @@
+     public function agreements(string $search, string $status, string $linkState): array
+     {
+         $search = mb_substr(trim($search), 0, 120);
+-        $allowedStatuses = ['ALL', 'PENDING_RESERVATION', 'AWAITING_RESERVATION', 'RESERVATION_PROCESSING', 'RESERVATION_PAID', 'FULLY_PAID', 'PAYMENT_FAILED', 'CANCELLED'];
++        $allowedStatuses = ['ALL', 'DRAFT_INTERNAL', 'PENDING_RESERVATION', 'AWAITING_RESERVATION', 'RESERVATION_PROCESSING', 'RESERVATION_PAID', 'FULLY_PAID', 'PAYMENT_FAILED', 'CANCELLED'];
+         $allowedLinkStates = ['ALL', 'ACTIVE', 'EXPIRED', 'REVOKED'];
+         if (!in_array($status, $allowedStatuses, true) || !in_array($linkState, $allowedLinkStates, true)) {
+             throw new \DomainException('Invalid agreement filter.');
+@@ -156,17 +156,17 @@
+
+         $now = gmdate('Y-m-d H:i:s.u');
+         if ($linkState === 'ACTIVE') {
+-            $clauses[] = '(a.link_revoked_at IS NULL AND (a.link_expires_at IS NULL OR a.link_expires_at > :now))';
++            $clauses[] = '(a.contract_version = 1 AND a.public_token_hash IS NOT NULL AND a.link_revoked_at IS NULL AND (a.link_expires_at IS NULL OR a.link_expires_at > :now))';
+             $parameters['now'] = $now;
+         } elseif ($linkState === 'EXPIRED') {
+-            $clauses[] = '(a.link_revoked_at IS NULL AND a.link_expires_at IS NOT NULL AND a.link_expires_at <= :now)';
++            $clauses[] = '(a.contract_version = 1 AND a.public_token_hash IS NOT NULL AND a.link_revoked_at IS NULL AND a.link_expires_at IS NOT NULL AND a.link_expires_at <= :now)';
+             $parameters['now'] = $now;
+         } elseif ($linkState === 'REVOKED') {
+             $clauses[] = 'a.link_revoked_at IS NOT NULL';
+         }
+
+         $statement = $this->pdo->prepare(
+-            'SELECT a.public_uuid, a.recipient_name, a.service_name, a.total_cents, a.balance_cents, a.balance_due_at_utc, a.balance_timezone, a.status, a.link_expires_at, a.link_revoked_at, a.created_at ' .
++            'SELECT a.public_uuid, a.recipient_name, a.service_name, a.total_cents, a.balance_cents, a.balance_due_at_utc, a.balance_timezone, a.status, a.link_expires_at, a.link_revoked_at, a.created_at, a.contract_version, a.payment_mode, a.initial_cents ' .
+             'FROM payment_agreements a WHERE ' . implode(' AND ', $clauses) . ' ORDER BY a.created_at DESC LIMIT 200'
+         );
+         $statement->execute($parameters);
+@@ -242,6 +242,7 @@
+     {
+         $statement = $this->pdo->prepare(
+             "UPDATE payment_agreements SET link_revoked_at = :now WHERE id = :id AND link_revoked_at IS NULL " .
++            'AND contract_version = 1 ' .
+             "AND status NOT IN ('RESERVATION_PAID', 'FULLY_PAID') AND NOT EXISTS (" .
+             "SELECT 1 FROM provider_resources WHERE agreement_id = :resource_agreement_id AND provider = 'PAYPAL' AND resource_type = 'SUBSCRIPTION')"
+         );
+@@ -251,9 +252,17 @@
+
+     public function replaceLink(int $agreementId, ?\DateTimeImmutable $expiresAt): string
+     {
++        // Deny v2 before generating even an unused raw token. The SQL predicate
++        // below also retains the version guard at the mutation boundary.
++        $version = $this->pdo->prepare('SELECT contract_version FROM payment_agreements WHERE id = :id');
++        $version->execute(['id' => $agreementId]);
++        if ((int) $version->fetchColumn() !== 1) {
++            throw new \DomainException('Payment links are unavailable for this agreement version.');
++        }
+         $token = PaymentLink::generateToken();
+         $statement = $this->pdo->prepare(
+             "UPDATE payment_agreements SET public_token_hash = :token_hash, link_expires_at = :expires_at, link_revoked_at = NULL WHERE id = :id " .
++            'AND contract_version = 1 ' .
+             "AND status NOT IN ('RESERVATION_PAID', 'FULLY_PAID') AND NOT EXISTS (" .
+             "SELECT 1 FROM provider_resources WHERE agreement_id = :resource_agreement_id AND provider = 'PAYPAL' AND resource_type = 'SUBSCRIPTION')"
+         );
+@@ -272,6 +281,7 @@
+     {
+         return 'SELECT a.id, a.public_uuid, a.monday_item_id, a.source_lead_id, a.source_quote_id, a.source_quote_version, a.recipient_name, a.recipient_email, a.recipient_phone, a.service_name, a.event_at_utc, a.event_location, a.internal_notes, a.currency, a.total_cents, a.reservation_cents, a.balance_cents, ' .
+             'a.balance_due_at_utc, a.balance_timezone, a.status, a.provider, a.link_expires_at, a.link_revoked_at, a.link_expired_event_at, a.terms_version, a.reservation_policy_version, a.created_at, ' .
++            'a.contract_version, a.payment_mode, a.initial_cents, a.operation_id, a.operation_json, a.operation_digest, a.configuration_id, a.configuration_digest, ' .
+             'pr.external_id AS paypal_subscription_id, pr.status AS paypal_status, pr.start_at_utc AS paypal_start_at_utc ' .
+             'FROM payment_agreements a ' .
+             "LEFT JOIN provider_resources pr ON pr.agreement_id = a.id AND pr.provider = 'PAYPAL' AND pr.resource_type = 'SUBSCRIPTION'";
+--- a/src/Database/Migrator.php
++++ b/src/Database/Migrator.php
+@@ -39,7 +39,9 @@
+                     throw new \RuntimeException('Unable to read migration: ' . $version);
+                 }
+
+-                if (str_contains($sql, '-- migrate:non-transactional')) {
++                if (str_contains($sql, '-- migrate:atomic-rebuild')) {
++                    $this->runAtomicRebuildMigration($sql, $version);
++                } elseif (str_contains($sql, '-- migrate:non-transactional')) {
+                     $this->runNonTransactionalMigration($sql, $version);
+                 } else {
+                     $this->pdo->beginTransaction();
+@@ -70,6 +72,34 @@
+         $statement->execute(['version' => $version, 'applied_at' => gmdate('Y-m-d H:i:s.u')]);
+     }
+
++    /** Disable foreign keys before BEGIN, then atomically rebuild and record.
++     * Legacy migrations keep their original behavior. The versioned draft
++     * migration cannot leave a partially rebuilt ledger after an exception.
++     */
++    private function runAtomicRebuildMigration(string $sql, string $version): void
++    {
++        if ($this->pdo->inTransaction()) {
++            throw new \RuntimeException('Cannot rebuild the ledger inside another transaction.');
++        }
++        try {
++            $this->pdo->exec('PRAGMA foreign_keys = OFF');
++            $this->pdo->beginTransaction();
++            $this->pdo->exec($sql);
++            if ($this->pdo->query('PRAGMA foreign_key_check')->fetchAll() !== []) {
++                throw new \RuntimeException('SQLite foreign-key validation failed during migration.');
++            }
++            $this->recordMigration($version);
++            $this->pdo->commit();
++        } catch (\Throwable $exception) {
++            if ($this->pdo->inTransaction()) {
++                $this->pdo->rollBack();
++            }
++            throw $exception;
++        } finally {
++            $this->pdo->exec('PRAGMA foreign_keys = ON');
++        }
++    }
++
+     private function runNonTransactionalMigration(string $sql, string $version): void
+     {
+         try {

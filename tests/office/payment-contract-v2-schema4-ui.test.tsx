@@ -269,3 +269,139 @@ test('registered and historical drafts retain exact configured facts without app
     assert.doesNotMatch(html, /payment-v2-register|payment-v2-confirm-review|payment-v2-conditions-form/);
   }
 });
+
+test('operational capability is explicit and strictly typed instead of accepting a false or injected mode', async () => {
+  const api = await import('../../src/office/event-quote-client'), t = await snapshot('full_upfront', false);
+  assert.equal(api.validateQuoteStatus({ ...t.status, paymentAgreementsEnabled: true }).paymentAgreementsEnabled, true);
+  for (const value of [false, 'true', null, 1]) assert.throws(() => api.validateQuoteStatus({ ...t.status, paymentAgreementsEnabled: value }));
+});
+
+test('operational browser transport posts only configuration pins to the agreement endpoint', async context => {
+  const api = await import('../../src/office/event-quote-client'), t = await snapshot('full_upfront', false);
+  const config = t.view.record.paymentConfigurationsV2![0], command = { key: 'operation-create', configurationId: config.id,
+    configurationDigest: config.digest, expectedReviewDigest: config.reviewDigest, operation: 'create' };
+  const operation = (api.eventQuoteClient as unknown as Record<string, unknown>).executePaymentAgreement;
+  assert.equal(typeof operation, 'function'); let received: { url: string; init: RequestInit } | null = null;
+  context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    received = { url, init }; return new Response(JSON.stringify(t.view), { status: 200, headers: { 'content-type': 'application/json' } });
+  });
+  await (operation as (...args: unknown[]) => Promise<EventQuoteView>)(EVENT, command, 'csrf-explicit', new AbortController().signal);
+  assert.equal(received!.url, `/api/office/event-quotes/${EVENT}/payment-agreements/v2`);
+  assert.equal(received!.init.method, 'POST'); assert.deepEqual(JSON.parse(received!.init.body as string), command);
+  assert.equal((received!.init.headers as Record<string, string>)['x-event-quote-csrf'], 'csrf-explicit');
+});
+
+
+async function operationalSnapshot(state: 'pending' | 'reconciliation_required' | 'draft_persisted' | 'rejected' = 'draft_persisted') {
+  const t = await snapshot('full_upfront', false), config = t.view.record.paymentConfigurationsV2![0];
+  const operation = { operationId: 'a'.repeat(64), operationDigest: 'b'.repeat(64), configurationId: config.id, configurationDigest: config.digest,
+    status: state, agreementId: state === 'draft_persisted' ? '4ce21b13-dbc2-4dcb-bae6-842100f344b1' : null,
+    executable: false as const, providerEnabled: false as const, publicPaymentUrl: null, authorizationVerified: false as const,
+    serviceAuthenticated: state === 'draft_persisted', updatedAtMs: TEST_AT };
+  return { ...t, operation, view: { ...t.view, paymentAgreementOperationsV2: [operation] }, status: { ...t.status, paymentAgreementsEnabled: true as const } };
+}
+
+test('browser validates disabled operational summaries and rejects forged identities, flags and configuration pins', async () => {
+  for (const state of ['pending', 'reconciliation_required', 'draft_persisted', 'rejected'] as const) {
+    const t = await operationalSnapshot(state); assert.equal(validateQuoteView(t.view, EVENT), t.view);
+    for (const patch of [{ operationId: 'bad' }, { operationDigest: 'bad' }, { configurationId: 'other-config' }, { configurationDigest: 'f'.repeat(64) },
+      { updatedAtMs: TEST_AT - 1 }, { status: 'paid' }, { executable: true }, { providerEnabled: true }, { authorizationVerified: true },
+      { publicPaymentUrl: 'https://example.invalid/pay' }, { actorId: 'invented' }, { serviceAuthenticated: !t.operation.serviceAuthenticated }]) {
+      const view = structuredClone(t.view); Object.assign(view.paymentAgreementOperationsV2[0], patch); assert.throws(() => validateQuoteView(view, EVENT));
+    }
+    const duplicate = structuredClone(t.view); duplicate.paymentAgreementOperationsV2.push(structuredClone(duplicate.paymentAgreementOperationsV2[0]));
+    assert.throws(() => validateQuoteView(duplicate, EVENT));
+    const malformed = structuredClone(t.view); malformed.paymentAgreementOperationsV2[0].agreementId = state === 'draft_persisted' ? 'made-up' : '4ce21b13-dbc2-4dcb-bae6-842100f344b1';
+    assert.throws(() => validateQuoteView(malformed, EVENT));
+  }
+});
+
+test('operational approval guard rejects identity and payment payload injections before any request', async () => {
+  const t = await operationalSnapshot('pending'), config = t.view.record.paymentConfigurationsV2![0];
+  let called = 0;
+  const source = { status: async () => t.status, read: async () => t.view, execute: async () => t.view,
+    executePaymentAgreement: async () => { called++; return t.view; } };
+  const grant: DashboardQuoteGrant = { state: 'ready', identityKey: 'synthetic', durableIdentity: false, scope: testScope,
+    eventIds: [EVENT], expiresAtMs: testActor.expiresAtMs, permissions: { canRead: true, canWrite: true, canApprove: false },
+    catalog: { ready: true, digest: digest(testCatalog), authority: 'test_only', validUntilMs: testCatalog.validUntilMs } };
+  const command = { key: 'operation-reconcile', configurationId: config.id, configurationDigest: config.digest, expectedReviewDigest: config.reviewDigest, operation: 'reconcile' as const };
+  let bound = bindDashboardQuoteClient(source, grant, new DashboardQuoteAccessGate().start(), () => TEST_AT);
+  await assert.rejects(() => bound.executePaymentAgreement!(EVENT, command, 'csrf', new AbortController().signal)); assert.equal(called, 0);
+  bound = bindDashboardQuoteClient(source, { ...grant, permissions: { ...grant.permissions, canApprove: true } }, new DashboardQuoteAccessGate().start(), () => TEST_AT);
+  for (const patch of [{ actorId: 'invented' }, { scope: testScope }, { canonicalLeadId: 'invented' }, { payload: {} }, { serviceToken: 'invented' }, { operation: 'dispatch' }]) {
+    await assert.rejects(() => bound.executePaymentAgreement!(EVENT, { ...command, ...patch } as never, 'csrf', new AbortController().signal)); assert.equal(called, 0);
+  }
+  await bound.executePaymentAgreement!(EVENT, command, 'csrf', new AbortController().signal); assert.equal(called, 1);
+});
+
+test('operational command helper creates directly from configured facts and reconciles a historical ambiguous operation without creation', async () => {
+  const api = await import('../../src/office/event-quote-client'), t = await snapshot('full_upfront', false), config = t.view.record.paymentConfigurationsV2![0];
+  const status = { ...t.status, paymentAgreementsEnabled: true as const };
+  const command = api.exactPaymentAgreementOperationV2Command(t.view, status, 'operation-create', config.id, 'create', TEST_AT);
+  assert.deepEqual(command, { key: 'operation-create', configurationId: config.id, configurationDigest: config.digest,
+    expectedReviewDigest: config.reviewDigest, operation: 'create' });
+  assert.equal(t.view.record.paymentDraftRegistrationsV2!.length, 0);
+  assert.throws(() => api.exactPaymentAgreementOperationV2Command(t.view, t.status, 'missing-capability', config.id, 'create', TEST_AT));
+  const pending = await operationalSnapshot('reconciliation_required');
+  const historical = { ...pending.view, currentQuoteStatus: 'obsolete' as const };
+  const staleStatus = { ...pending.status, catalogDigest: 'f'.repeat(64) };
+  assert.throws(() => api.exactPaymentAgreementOperationV2Command(historical, staleStatus, 'create-again', config.id, 'create', TEST_AT));
+  assert.equal(api.exactPaymentAgreementOperationV2Command(historical, staleStatus, 'lookup-only', config.id, 'reconcile', TEST_AT).operation, 'reconcile');
+  const persisted = await operationalSnapshot();
+  assert.throws(() => api.exactPaymentAgreementOperationV2Command(persisted.view, persisted.status, 'again', config.id, 'reconcile', TEST_AT));
+});
+
+test('the same review confirms an actual disabled agreement directly when the server capability is present', async context => {
+  context.mock.method(Date, 'now', () => TEST_AT);
+  const t = await snapshot('full_upfront', false), status = { ...t.status, paymentAgreementsEnabled: true as const };
+  const html = renderToStaticMarkup(<PersistedPaymentPreparation view={t.view} status={status} writable dirty={false}
+    verified={exactQuoteReviewKey(t.view)} onPaymentAgreementOperation={() => {}} />);
+  assert.equal((html.match(/Preparación de enlace de pago/g) ?? []).length, 1);
+  assert.match(html, /data-testid="payment-v2-create-agreement" disabled=""/); assert.match(html, /Crear acuerdo deshabilitado en Payments/);
+  assert.match(html, /data-testid="payment-v2-confirm-review"/);
+  assert.doesNotMatch(html, /data-testid="payment-v2-register"|payment-v2-conditions-form|<a\b|href=|https:\/\//);
+});
+
+test('actual Payments agreement IDs and all facts remain visible after reload with every payment effect disabled', async context => {
+  context.mock.method(Date, 'now', () => TEST_AT);
+  const t = await operationalSnapshot();
+  const html = renderToStaticMarkup(<PersistedPaymentPreparation view={t.view} status={t.status} />);
+  assert.match(html, /DRAFT_INTERNAL/); assert.match(html, /4ce21b13-dbc2-4dcb-bae6-842100f344b1/);
+  assert.match(html, /Ejecutable: no/); assert.match(html, /Proveedor: desactivado/); assert.match(html, /Autorización comercial: sin verificar/);
+  assert.match(html, /2027-11-01 12:00/); assert.match(html, /Condiciones originales/); assert.match(html, /Condiciones configuradas/);
+  assert.doesNotMatch(html, /payment-v2-register|payment-v2-create-agreement|payment-v2-reconcile|<a\b|href=|https:\/\//);
+});
+
+for (const state of ['pending', 'reconciliation_required'] as const) test(`${state} exposes only safe explicit reconciliation, including historical source`, async context => {
+  context.mock.method(Date, 'now', () => TEST_AT);
+  const t = await operationalSnapshot(state);
+  const html = renderToStaticMarkup(<PersistedPaymentPreparation view={{ ...t.view, currentQuoteStatus: 'obsolete' }} status={t.status}
+    writable dirty={false} onPaymentAgreementOperation={() => {}} />);
+  assert.match(html, /data-testid="payment-v2-reconcile"/); assert.match(html, /La reconciliación no crea otro acuerdo/);
+  assert.doesNotMatch(html, /payment-v2-create-agreement|payment-v2-register|data-testid="payment-v2-reconcile" disabled=""|payment-v2-agreement-id/);
+});
+
+test('an unconfirmed creation can be retried explicitly with current facts, while reconciliation stays lookup only', async context => {
+  context.mock.method(Date, 'now', () => TEST_AT);
+  const api = await import('../../src/office/event-quote-client'), t = await operationalSnapshot('reconciliation_required');
+  const config = t.view.record.paymentConfigurationsV2![0];
+  assert.deepEqual(api.exactPaymentAgreementOperationV2Command(t.view, t.status, 'explicit-create-retry', config.id, 'create', TEST_AT), {
+    key: 'explicit-create-retry', configurationId: config.id, configurationDigest: config.digest, expectedReviewDigest: config.reviewDigest, operation: 'create',
+  });
+  const html = renderToStaticMarkup(<PersistedPaymentPreparation view={t.view} status={t.status} writable dirty={false}
+    verified={exactQuoteReviewKey(t.view)} onPaymentAgreementOperation={() => {}} />);
+  assert.match(html, /Reintentar creación del borrador/);
+  assert.match(html, /data-testid="payment-v2-create-agreement" disabled=""/);
+  assert.match(html, /data-testid="payment-v2-confirm-review"[^>]*type="checkbox"/);
+  assert.doesNotMatch(html, /data-testid="payment-v2-confirm-review"[^>]*checked=/);
+  assert.match(html, /Reconciliar acuerdo en Payments/); assert.match(html, /La reconciliación no crea otro acuerdo/);
+  const stale = { ...t.view, currentQuoteStatus: 'obsolete' as const };
+  assert.throws(() => api.exactPaymentAgreementOperationV2Command(stale, t.status, 'forbidden-retry', config.id, 'create', TEST_AT));
+  const staleHtml = renderToStaticMarkup(<PersistedPaymentPreparation view={stale} status={t.status} writable dirty={false} onPaymentAgreementOperation={() => {}} />);
+  assert.doesNotMatch(staleHtml, /Reintentar creación del borrador|payment-v2-create-agreement|payment-v2-confirm-review/);
+  assert.match(staleHtml, /payment-v2-reconcile/);
+  for (const status of ['pending', 'rejected', 'draft_persisted'] as const) {
+    const other = await operationalSnapshot(status);
+    assert.throws(() => api.exactPaymentAgreementOperationV2Command(other.view, other.status, 'not-a-retry', config.id, 'create', TEST_AT));
+  }
+});
