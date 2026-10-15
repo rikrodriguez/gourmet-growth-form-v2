@@ -143,7 +143,7 @@ export function PaymentConfigurationReviewV2({ view, status, configuration, enab
         : <button type="button" className="gew-button gew-button-primary" data-testid="payment-v2-register" disabled={!enabled || !confirmed} onClick={register}>Confirmar acuerdo borrador de prueba</button>}
     </>}
     {agreementOperation && <div data-testid="payment-v2-operational-agreement">
-      <p className="gew-tag">{agreementOperation.status === 'draft_persisted' ? 'Acuerdo guardado en Payments · sin enlace'
+      <p className="gew-tag" data-testid="payment-v2-parent-status">{agreementOperation.status === 'draft_persisted' ? 'Borrador padre · DRAFT_INTERNAL · sin enlace propio'
         : agreementOperation.status === 'pending' ? 'Creación de acuerdo pendiente · sin enlace'
           : agreementOperation.status === 'reconciliation_required' ? 'Resultado de Payments por reconciliar · sin enlace' : 'Solicitud de acuerdo rechazada · sin enlace'}</p>
       {agreementOperation.status === 'draft_persisted' && <><p>Estado en Payments: <strong>DRAFT_INTERNAL</strong></p><p>ID de Payments: <span data-testid="payment-v2-agreement-id">{agreementOperation.agreementId}</span></p></>}
@@ -159,7 +159,7 @@ export function PaymentConfigurationReviewV2({ view, status, configuration, enab
       <button type="button" className="gew-button gew-button-primary" data-testid="payment-checkout-issue" disabled={!canIssueCheckout || !checkoutConfirmed} onClick={() => checkoutOperation('issue')}>Emitir checkout sin activar proveedor</button>
     </div>}
     {checkout && <div data-testid="payment-checkout-status">
-      <p className="gew-tag">{checkout.status === 'checkout_issued' ? 'Checkout emitido · proveedor desactivado'
+      <p className="gew-tag">{checkout.status === 'checkout_issued' ? 'Checkout relacionado emitido · proveedor desactivado'
         : checkout.status === 'pending' ? 'Emisión de checkout pendiente' : 'Resultado del checkout por reconciliar'}</p>
       {checkout.status === 'checkout_issued' && <><p>ID del checkout: <span data-testid="payment-checkout-id">{checkout.checkoutId}</span></p>
         {checkoutUrl && <a className="gew-button" data-testid="payment-checkout-link" href={checkoutUrl} target="_blank" rel="noopener noreferrer">Abrir checkout · proveedor desactivado</a>}

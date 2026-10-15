@@ -184,6 +184,10 @@ for (const engine of ['sqlite', 'mariadb', 'mysql'] as const) test(`checkout iss
         const bytes = Buffer.from(await asset.arrayBuffer()); assert.equal(bytes.length, file.size);
         assert.equal(createHash('sha256').update(bytes).digest('hex'), file.sha256);
       }
+      const checkoutStyles = await fetch(`${active.baseUrl}/assets/payment-checkout-v3.css`);
+      assert.equal(checkoutStyles.status, 200);
+      assert.match(checkoutStyles.headers.get('content-type') ?? '', /^text\/css\b/);
+      assert.equal(checkoutStyles.headers.get('x-content-type-options'), 'nosniff');
       assert.equal((await fetch(`${active.baseUrl}/assets/synthetic-unlisted.js`)).status, 404);
       unchanged(before, snapshot(active));
     });
@@ -202,6 +206,20 @@ for (const engine of ['sqlite', 'mariadb', 'mysql'] as const) test(`checkout iss
         const money = (cents: number) => `$${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
         assert.ok(html.includes(money(value.conditions.operation.prepared.plan.initialPaymentCents)), html);
         assert.ok(html.includes('Condiciones sintéticas aprobadas.'), 'Customer page must display the actual newly approved terms');
+        assert.match(html, /<link rel="stylesheet" href="\/assets\/payment-checkout-v3\.css">/);
+        assert.ok(html.indexOf('class="agreement-terms"') < html.indexOf('class="consent"'), 'Terms precede acceptance in the document');
+        assert.match(html, /<input type="checkbox" name="consent" value="yes" required disabled>/, 'Disabled processing cannot collect acceptance');
+        assert.match(html, /<button type="submit" class="checkout-unavailable" disabled>Payment unavailable<\/button>/);
+        assert.doesNotMatch(html, /class="paypal-button"|>Pay \$/);
+        assert.ok(html.includes(`name="conditions_digest" value="${issued.conditionsDigest}"`), 'The accepted conditions remain bound to the hidden digest');
+        const plan = value.conditions.operation.prepared.plan;
+        const timezones = new Set<string>();
+        for (const timezone of [plan.linkExpiration.configured.timezone, plan.paymentSchedule?.configured.timezone]) {
+          if (typeof timezone === 'string') timezones.add(timezone);
+        }
+        for (const timezone of timezones) {
+          assert.ok(html.includes(`<span class="checkout-timezone">${timezone}</span>`), 'Timezone identifiers remain complete display units');
+        }
         if (mode !== 'fixed_49_reservation') {
           assert.doesNotMatch(html, /reservation fee is (?:<[^>]+>)*non-refundable/i);
           assert.doesNotMatch(html, /Pay \$49 with PayPal/);

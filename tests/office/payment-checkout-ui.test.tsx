@@ -44,7 +44,7 @@ async function fixture(mode: PaymentContractModeV2 = 'retainer_50') {
   const status: EventQuoteStatusResponse = { ...await service.status(testScope, testActor), paymentAgreementsEnabled: true,
     paymentCheckoutsEnabled: true, externalEffectsEnabled: false,
     session: { mode: 'test', canWrite: true, canApprove: true, csrfToken: 'synthetic-csrf-existing', expiresAtMs: testActor.expiresAtMs } };
-  return { view, status, parent, configuration: c };
+  return { view, status, parent, configuration: c, execute };
 }
 function checkout(status: 'pending' | 'reconciliation_required' | 'checkout_issued'): NonNullable<PaymentAgreementOperationSummaryV2['checkout']> {
   return { issuanceId: 'd'.repeat(64), conditionsDigest: 'c'.repeat(64), status,
@@ -164,9 +164,82 @@ test('existing card offers an unchecked explicit emission and shows issued child
     assert.doesNotMatch(html, /payment-checkout-issue|payment-checkout-link/);
   }
   t.parent.checkout = checkout('checkout_issued'); html = render();
-  assert.match(html, /Checkout emitido · proveedor desactivado/); assert.match(html, new RegExp(CHILD)); assert.match(html, /DRAFT_INTERNAL/);
+  assert.match(html, /Checkout relacionado emitido · proveedor desactivado/); assert.match(html, new RegExp(CHILD)); assert.match(html, /DRAFT_INTERNAL/);
+  assert.match(html, /data-testid="payment-v2-parent-status">Borrador padre · DRAFT_INTERNAL · sin enlace propio/);
+  assert.doesNotMatch(html, /Acuerdo guardado en Payments · sin enlace/);
   assert.match(html, /data-testid="payment-checkout-link"/); assert.match(html, /noopener noreferrer/);
   assert.match(html, /no significa consentimiento, autorización comercial ni cobro/); assert.match(html, /Cobrado: desconocido/);
   assert.doesNotMatch(html, /payment-checkout-issue|payment-checkout-reconcile/); assert.equal(calls, 0);
   t.parent.checkout.publicPaymentUrl = 'javascript:alert(1)'; assert.doesNotMatch(render(), /payment-checkout-link/);
+});
+
+function splitPaymentHistory(html: string) {
+  const start = html.indexOf('<details');
+  assert.ok(start >= 0, 'An older payment version must have a disclosure');
+  const history = html.slice(start);
+  assert.match(history, /^<details[^>]*data-testid="persisted-payment-history"/);
+  assert.doesNotMatch(history.match(/^<details[^>]*>/)![0], /\bopen(?:=|\s|>)/, 'History starts closed');
+  return { current: html.slice(0, start), history };
+}
+
+async function nextQuote(t: Awaited<ReturnType<typeof fixture>>): Promise<EventQuoteView> {
+  const view = await t.execute({ action: 'quote', key: 'quote-v2', expectedRevision: t.view.record.revision,
+    expectedBriefDigest: t.view.record.briefs.at(-1)!.digest, expectedCatalogDigest: digest(testCatalog),
+    selections: [{ itemId: 'TEST-ITEM', quantity: 101 }] });
+  return { ...view, paymentAgreementOperationsV2: [t.parent] };
+}
+
+test('a newer quote without preparation stays current while the previous issued checkout is closed history', async context => {
+  context.mock.method(Date, 'now', () => TEST_AT);
+  const t = await fixture(); t.parent.checkout = checkout('checkout_issued');
+  const view = await nextQuote(t), before = structuredClone(view); let calls = 0;
+  const html = renderToStaticMarkup(<PersistedPaymentPreparation view={view} status={t.status} writable dirty={false}
+    verified={exactQuoteReviewKey(view)} onCommand={() => { calls++; }} onPaymentCheckout={() => { calls++; }} />);
+  const { current, history } = splitPaymentHistory(html);
+  assert.match(current, /data-testid="persisted-payment-current"/);
+  assert.match(current, /Versión actual · cotización v2/);
+  assert.match(current, /Esta cotización aún no tiene un borrador de contrato v2 guardado/);
+  assert.doesNotMatch(current, /persisted-payment-v2-request|payment-checkout-link/);
+  assert.match(history, /Historial de solicitudes \(1\)/);
+  assert.match(history, /Borrador de contrato v2 · cotización v1/);
+  assert.match(history, /Condiciones sintéticas explícitas; sin consentimiento de cliente/);
+  assert.match(history, new RegExp(PARENT)); assert.match(history, new RegExp(CHILD));
+  assert.match(history, /data-testid="payment-checkout-link"/);
+  assert.deepEqual(view, before); assert.equal(calls, 0);
+});
+
+test('current payment preparation appears once above closed history and keeps prior recovery available there', async context => {
+  context.mock.method(Date, 'now', () => TEST_AT);
+  const t = await fixture(); t.parent.checkout = checkout('reconciliation_required');
+  let view = await nextQuote(t); const q = view.record.quotes.at(-1)!;
+  view = await t.execute({ action: 'approve', key: 'approve-v2', expectedRevision: view.record.revision,
+    quoteVersion: q.version, quoteDigest: q.digest, artifactSha256: q.artifact.sha256, intendedRecipient: testBrief.recipient });
+  view = await t.execute({ action: 'prepare_payment_v2', key: 'prepare-v2', expectedRevision: view.record.revision,
+    quoteVersion: q.version, quoteDigest: q.digest, approvalDigest: view.record.decisions.at(-1)!.digest,
+    artifactSha256: q.artifact.sha256, paymentMode: 'full_upfront' });
+  view = { ...view, paymentAgreementOperationsV2: [t.parent] }; const before = structuredClone(view); let calls = 0;
+  const html = renderToStaticMarkup(<PersistedPaymentPreparation view={view} status={t.status} writable dirty={false}
+    verified={exactQuoteReviewKey(view)} onCommand={() => { calls++; }} onPaymentCheckout={() => { calls++; }} />);
+  const { current, history } = splitPaymentHistory(html);
+  assert.equal((current.match(/data-testid="persisted-payment-v2-request"/g) ?? []).length, 1);
+  assert.match(current, /Borrador de contrato v2 · cotización v2/);
+  assert.doesNotMatch(current, /cotización v1|payment-checkout-reconcile/);
+  assert.equal((history.match(/data-testid="persisted-payment-v2-request"/g) ?? []).length, 1);
+  assert.match(history, /cotización v1/); assert.match(history, /data-testid="payment-checkout-reconcile"/);
+  assert.doesNotMatch(history, /data-testid="payment-checkout-issue"/);
+  assert.deepEqual(view, before); assert.equal(calls, 0);
+});
+
+test('editing the brief keeps the latest quote visible with its obsolete preparation status', async context => {
+  context.mock.method(Date, 'now', () => TEST_AT);
+  const t = await fixture();
+  const view = await t.execute({ action: 'brief', key: 'edit-brief', expectedRevision: t.view.record.revision,
+    brief: { ...testBrief, requirements: 'Cambio sintético del brief sin una nueva cotización.' } });
+  assert.equal(view.currentQuoteStatus, 'obsolete');
+  const html = renderToStaticMarkup(<PersistedPaymentPreparation view={view} status={t.status} writable dirty={false}
+    verified={exactQuoteReviewKey(view)} />);
+  assert.match(html, /data-testid="persisted-payment-current"/);
+  assert.match(html, /Versión actual · cotización v1/);
+  assert.match(html, /Borrador obsoleto · conservar solo como historial/);
+  assert.doesNotMatch(html, /data-testid="persisted-payment-history"|payment-checkout-issue/);
 });

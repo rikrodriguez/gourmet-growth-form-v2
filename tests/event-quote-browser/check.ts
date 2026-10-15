@@ -116,9 +116,19 @@ page.on('pageerror', error => errors.push(error.message));
 await page.route('**/*', async route => { const url = new URL(route.request().url()); if (!['127.0.0.1', 'localhost'].includes(url.hostname)) { external.push(url.href); await route.abort(); } else await route.continue(); });
 await mkdir(new URL('../../test-results/dashboard-visual/', import.meta.url), { recursive: true });
 const visualPath = (filename: string) => fileURLToPath(new URL('../../test-results/dashboard-visual/' + filename, import.meta.url));
-const draftForQuote = (version: number) => page.getByTestId('persisted-payment-v2-request').filter({
-  has: page.getByRole('heading', { name: 'Borrador de contrato v2 · cotización v' + version, exact: true }),
-});
+const draftForQuote = async (version: number) => {
+  const draft = page.getByTestId('persisted-payment-v2-request').filter({
+    has: page.getByRole('heading', { name: 'Borrador de contrato v2 · cotización v' + version, exact: true, includeHidden: true }),
+  });
+  await draft.waitFor({ state: 'attached' });
+  const historical = await draft.evaluate(element => {
+    const history = element.closest('details');
+    return history !== null && !history.open;
+  });
+  if (historical) await page.getByTestId('persisted-payment-history').locator(':scope > summary').click();
+  await draft.waitFor();
+  return draft;
+};
 const quoteReviewCard = () => page.locator('section.gew-card').filter({
   has: page.getByRole('heading', { name: /^Revisión exacta · cotización v\d+$/ }),
 });
@@ -194,7 +204,7 @@ const capturePaymentState = async (prefix: string, detail: Locator, savedCheckou
   await settleViewport();
 };
 const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
-  const draft = draftForQuote(version);
+  const draft = await draftForQuote(version);
   await draft.getByText('Pendiente de configuración y aprobación · sin enlace', { exact: true }).waitFor();
   const label = mode === '50' ? '50 % inicial y 50 % de saldo'
     : mode === '100' ? '100 % por adelantado' : 'Reserva fija de USD 49 (excepción)';
@@ -350,7 +360,7 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
   await paymentMode.selectOption('fixed_49_reservation');
   await page.waitForFunction(() => !(document.querySelector('[data-testid="persisted-payment-prepare"]') as HTMLButtonElement)?.disabled);
   await page.getByTestId('persisted-payment-prepare').click();
-  const fixedDraft = draftForQuote(3);
+  const fixedDraft = await draftForQuote(3);
   await fixedDraft.getByText('Pendiente de configuración y aprobación · sin enlace', { exact: true }).waitFor();
   persisted = await store.read(testScope, eventId);
   assert.equal(persisted!.revision, 11); assert.equal(persisted!.schemaVersion, 3);
@@ -562,7 +572,7 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
     if (mode === 'retainer_50') {
       await notifyWithdrawal(); await openSaved();
       await page.getByRole('heading', { name: `Revisión exacta · cotización v${quote.version}`, exact: true }).waitFor();
-      const draft = draftForQuote(quote.version), facts = configuredFacts(mode, preparation.paymentBalanceCents);
+      const draft = await draftForQuote(quote.version), facts = configuredFacts(mode, preparation.paymentBalanceCents);
       await draft.getByTestId('payment-v2-terms').fill(facts.paymentTerms);
       await draft.getByTestId('payment-v2-terms-reason').fill(facts.termsChangeReason!);
       await draft.getByTestId('payment-v2-event-date').fill('2099-12-15');
@@ -616,7 +626,7 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
     if (mode === 'retainer_50') {
       // The user sees the exact persisted review before checking its separate
       // approval and clicking the real registration control in the same card.
-      const draft = draftForQuote(quote.version);
+      const draft = await draftForQuote(quote.version);
       await draft.getByTestId('payment-v2-confirm-review').check();
       const registered = await browserCommand('register_payment_draft_v2', () => draft.getByTestId('payment-v2-register').click());
       record = registered.record; committedCommand = registered.command;
@@ -672,7 +682,7 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
   const visible = (text: string) => text.replace(/\s+/gu, ' ').trim();
   for (const configuration of afterHttpProof.paymentConfigurationsV2!) {
     const preparation = afterHttpProof.paymentContractPreparationsV2!.find(p => p.id === configuration.preparationId)!;
-    const draft = draftForQuote(preparation.quoteVersion), facts = configuration.configuration;
+    const draft = await draftForQuote(preparation.quoteVersion), facts = configuration.configuration;
     const review = draft.getByTestId('persisted-payment-v2-review');
     await review.waitFor();
     const text = visible(await review.innerText());
@@ -771,6 +781,7 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
   const operationalStatus = await page.request.get(`${httpBase}/status`);
   assert.equal((await operationalStatus.json()).paymentAgreementsEnabled, true);
   const operationalFacts: Array<Record<string, unknown>> = [];
+  const checkoutVisualChecks: Array<Record<string, unknown>> = [];
   const operationalSummaries = (view: EventQuoteView) => view.paymentAgreementOperationsV2 ?? [];
   const operationFor = (view: EventQuoteView, configurationId: string): PaymentAgreementOperationSummaryV2 => {
     const entries = operationalSummaries(view).filter(entry => entry.configurationId === configurationId);
@@ -800,7 +811,7 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
     const preparation = record.paymentContractPreparationsV2!.at(-1)!;
     if (mode === 'retainer_50') {
       await notifyWithdrawal(); await openSaved();
-      const draft = draftForQuote(quote.version);
+      const draft = await draftForQuote(quote.version);
       const facts = configuredFacts(mode, preparation.paymentBalanceCents);
       await draft.getByTestId('payment-v2-terms').fill(facts.paymentTerms);
       await draft.getByTestId('payment-v2-terms-reason').fill(facts.termsChangeReason!);
@@ -820,7 +831,7 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
     const beforeAgreement = structuredClone(record);
     let view: EventQuoteView, sent: Record<string, unknown>;
     if (mode === 'retainer_50') {
-      const draft = draftForQuote(quote.version);
+      const draft = await draftForQuote(quote.version);
       const button = draft.getByTestId('payment-v2-create-agreement');
       assert.equal(await button.isDisabled(), true);
       assert.equal(await draft.getByTestId('payment-v2-confirm-review').isChecked(), false);
@@ -880,14 +891,14 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
     // checkout. This fixture issues only inert synthetic-host URLs; provider
     // activation stays off and no external navigation is followed.
     await notifyWithdrawal(); await openSaved();
-    let draft = draftForQuote(quote.version);
+    let draft = await draftForQuote(quote.version);
     const issueControl = draft.getByTestId('payment-checkout-issue');
     await issueControl.waitFor(); assert.equal(await issueControl.isDisabled(), true);
     assert.equal(await draft.getByTestId('payment-checkout-confirm-review').isChecked(), false);
     const issueCallsBefore = checkoutIssueCalls;
     await draft.getByTestId('payment-checkout-confirm-review').check();
     // Withdrawal/reopen discards confirmation; neither action can issue.
-    await notifyWithdrawal(); await openSaved(); draft = draftForQuote(quote.version);
+    await notifyWithdrawal(); await openSaved(); draft = await draftForQuote(quote.version);
     assert.equal(await draft.getByTestId('payment-checkout-confirm-review').isChecked(), false);
     assert.equal(checkoutIssueCalls, issueCallsBefore);
     await capturePaymentState(`checkout-${mode}-review`, draft);
@@ -901,7 +912,7 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
     if (mode === 'full_upfront') {
       assert.equal(operationFor(checkoutView, configuration.id).checkout?.status, 'reconciliation_required');
       await api.close(); await receiver.restart(); api = makeApi(); await api.listen({ host: '127.0.0.1', port: 4198 });
-      await notifyWithdrawal(); await openSaved(); draft = draftForQuote(quote.version);
+      await notifyWithdrawal(); await openSaved(); draft = await draftForQuote(quote.version);
       const recovered = page.waitForResponse(r => r.url() === `${httpBase}/${eventId}/payment-checkouts/v1` && r.request().method() === 'POST');
       await draft.getByTestId('payment-checkout-reconcile').click();
       const recovery = await recovered; assert.equal(recovery.status(), 200, await recovery.text()); checkoutView = await recovery.json();
@@ -926,14 +937,47 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
         if (new URL(route.request().url()).hostname !== '127.0.0.1') { external.push(route.request().url()); await route.abort(); }
         else await route.continue();
       });
+      const stylesheet = customer.waitForResponse(response => new URL(response.url()).pathname === '/assets/payment-checkout-v3.css');
       await customer.goto(receiver.baseUrl + new URL(checkoutSummary.checkout.publicPaymentUrl!).pathname);
+      const stylesheetResponse = await stylesheet;
+      assert.equal(stylesheetResponse.status(), 200, 'The scoped checkout stylesheet must be served under the original self-only CSP');
       assert.equal(await customer.locator('button[type="submit"]').isDisabled(), true);
+      assert.equal(await customer.locator('input[name="consent"]').isDisabled(), true, 'A disabled provider cannot invite buyer consent');
+      assert.equal(await customer.locator('button[type="submit"]').innerText(), 'Payment unavailable');
+      assert.equal(await customer.locator('button[type="submit"]').evaluate(element => element.classList.contains('paypal-button')), false);
       assert.match(await customer.locator('body').innerText(), /Payment processing is not activated/);
       assert.equal(await customer.locator('textarea').inputValue(), configuration.configuration.paymentTerms.replace(/\r\n?/g, '\n'));
       if (mode === 'full_upfront') assert.doesNotMatch(await customer.locator('body').innerText(), /subscription/i);
       else assert.match(await customer.locator('body').innerText(), new RegExp(String(configuration.configuration.paymentSchedule!.timezone).replace('/', '\\/')));
-      for (const [name, viewport] of [['desktop', { width: 1280, height: 900 }], ['mobile', { width: 390, height: 844 }]] as const) {
-        await customer.setViewportSize(viewport); await customer.screenshot({ path: visualPath(`checkout-customer-${mode}-${name}.png`), fullPage: true });
+      for (const [name, viewport] of [['desktop', { width: 1280, height: 900 }], ['mobile', { width: 390, height: 844 }], ['mobile-320', { width: 320, height: 780 }]] as const) {
+        await customer.setViewportSize(viewport);
+        await customer.evaluate(async () => { await document.fonts.ready; await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); });
+        const geometry = await customer.evaluate(() => {
+          const terms = document.querySelector('.disclosure')!, consent = document.querySelector('.consent')!, button = document.querySelector('button[type="submit"]')!;
+          const termsBox = terms.getBoundingClientRect(), consentBox = consent.getBoundingClientRect(), buttonBox = button.getBoundingClientRect();
+          const style = getComputedStyle(button);
+          const channels = style.backgroundColor.match(/\d+/g)?.slice(0, 3).map(Number) ?? [];
+          return { termsBeforeConsentInDom: !!(terms.compareDocumentPosition(consent) & Node.DOCUMENT_POSITION_FOLLOWING),
+            termsBottom: termsBox.bottom, consentTop: consentBox.top, consentBottom: consentBox.bottom, actionTop: buttonBox.top,
+            actionBackground: style.backgroundColor, neutralAction: channels.length === 3 && Math.max(...channels) - Math.min(...channels) <= 30 && style.backgroundImage === 'none',
+            timezones: Array.from(document.querySelectorAll('.checkout-timezone')).map(element => {
+              const range = document.createRange(); range.selectNodeContents(element);
+              const boxes = Array.from(range.getClientRects()).filter(box => box.width > 0 && box.height > 0);
+              const container = element.closest('dd, label, p')!.getBoundingClientRect();
+              return { text: element.textContent, singleLine: boxes.length === 1,
+                unclipped: boxes.every(box => box.left >= Math.max(0, container.left) - .75 && box.right <= Math.min(window.innerWidth, container.right) + .75) };
+            }) };
+        });
+        assert.equal(geometry.termsBeforeConsentInDom, true, 'Terms must precede buyer consent in reading order');
+        if (name !== 'desktop') assert.ok(geometry.termsBottom <= geometry.consentTop && geometry.consentBottom <= geometry.actionTop, 'Mobile reading order must be terms, consent, then unavailable action: ' + JSON.stringify(geometry));
+        assert.equal(geometry.neutralAction, true, 'Disabled processing must have a neutral painted action, not an active gold PayPal CTA: ' + JSON.stringify(geometry));
+        assert.ok(geometry.timezones.length > 0);
+        for (const zone of geometry.timezones) {
+          assert.equal(zone.singleLine, true, 'Timezone identifier must stay on one real line: ' + JSON.stringify(zone));
+          assert.equal(zone.unclipped, true, 'Timezone identifier must stay visible within its container: ' + JSON.stringify(zone));
+        }
+        checkoutVisualChecks.push({ mode, viewport: name, width: viewport.width, ...geometry });
+        await customer.screenshot({ path: visualPath(`checkout-customer-${mode}-${name}.png`), fullPage: true });
         assert.equal(await customer.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `Original checkout ${mode} must fit ${name}`);
       }
     } finally { await customer.close(); }
@@ -949,6 +993,39 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
   for (const table of ['payment_attempts', 'payment_consents', 'provider_resources', 'sales_os_event_outbox', 'email_outbox', 'monday_sync_outbox'])
     if (Object.hasOwn(finalLedger.counts, table)) assert.equal(finalLedger.counts[table], 0, table + ' must remain empty');
   await page.reload(); await page.getByTestId('dashboard-verify-quotes').waitFor(); await openSaved();
+  const paymentHistory = page.getByTestId('persisted-payment-history');
+  const currentPayment = page.getByTestId('persisted-payment-current');
+  await currentPayment.waitFor(); await paymentHistory.waitFor();
+  assert.equal(await paymentHistory.evaluate(element => (element as HTMLDetailsElement).open), false, 'Previous versions must be folded on reopening');
+  assert.equal(await currentPayment.getByTestId('persisted-payment-v2-request').count(), 1, 'Only the latest quote payment belongs to the current section');
+  const historyVisualChecks: Array<Record<string, unknown>> = [];
+  for (const [name, viewport] of [['desktop', { width: 1280, height: 900 }], ['mobile', { width: 360, height: 780 }]] as const) {
+    await page.setViewportSize(viewport); await settleViewport();
+    const requestsBeforeHistory = quoteRequests.length;
+    const collapsedHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+    // Chromium retains layout boxes behind a closed details element; its
+    // visibility API accounts for the hidden details content as painted.
+    const visibleDraftCount = await page.getByTestId('persisted-payment-v2-request').evaluateAll(elements => elements.filter(element => element.checkVisibility()).length);
+    assert.equal(visibleDraftCount, 1, 'Historical contracts must not all occupy the current page');
+    await currentPayment.getByTestId('payment-v2-parent-status').waitFor();
+    assert.match(await currentPayment.getByTestId('payment-v2-parent-status').innerText(), /Borrador padre · DRAFT_INTERNAL · sin enlace propio/);
+    assert.match(await currentPayment.getByTestId('payment-checkout-status').innerText(), /Checkout relacionado emitido · proveedor desactivado/);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: visualPath(`payment-current-history-collapsed-${name}.png`), fullPage: true, animations: 'disabled' });
+    await currentPayment.screenshot({ path: visualPath(`payment-current-history-collapsed-${name}-detail.png`), animations: 'disabled' });
+    await paymentHistory.getByTestId('persisted-payment-history-summary').click();
+    const expandedHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+    assert.ok(expandedHeight > collapsedHeight, 'Opening history must reveal its complete preserved content');
+    assert.equal(quoteRequests.length, requestsBeforeHistory, 'Opening history must not fetch or mutate records');
+    for (const fact of operationalFacts) {
+      const id = page.getByTestId('payment-v2-agreement-id').filter({ hasText: String(fact.agreementId) });
+      await id.waitFor(); assert.equal(await id.locator('a').count(), 0);
+    }
+    await paymentHistory.getByTestId('persisted-payment-history-summary').click();
+    assert.equal(await paymentHistory.evaluate(element => (element as HTMLDetailsElement).open), false);
+    historyVisualChecks.push({ viewport: name, collapsedHeight, expandedHeight, visibleDraftCount, historyToggleRequests: quoteRequests.length - requestsBeforeHistory });
+  }
+  await paymentHistory.getByTestId('persisted-payment-history-summary').click();
   for (const fact of operationalFacts) {
     const id = page.getByTestId('payment-v2-agreement-id').filter({ hasText: String(fact.agreementId) });
     await id.waitFor();
@@ -961,10 +1038,11 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
     checkoutUiDoubleClickDeduplicated: true, confirmationResetOnWithdrawal: true,
     responseLostAfterCommitRecovered: true, restartedOfficeAndPhp: true,
     providerCalls: finalLedger.providerCalls, originalV1GateEnabled: false, publicPaymentUrl: null,
-    agreements: operationalFacts, counts: finalLedger.counts, migrations: finalLedger.migrations,
+    agreements: operationalFacts, counts: finalLedger.counts, migrations: finalLedger.migrations, checkoutVisualChecks, historyVisualChecks,
     noPureRegistrationPrerequisite: true, sourceAggregateUnchangedByDelivery: true,
   }, null, 2) + '\n');
   console.log('PASS: existing payment card -> Office HTTP/PostgreSQL -> original Payments HTTP/SQLite; 3 immutable DRAFTs + 3 related checkouts for 50/50, one-off 100% and explicit USD49; unchecked confirmation resets on withdrawal; double click and lost response/restart recover the same checkout; original checkout assets rendered on desktop/mobile with provider disabled, no external request or source mutation.');
+  console.log('PASS: checkout UX: terms precede consent on mobile, unavailable processing has neutral disabled controls, timezone identifiers fit without fragmentation in nine desktop/mobile layouts; current payment is separate from folded history with zero toggle requests: ' + JSON.stringify(historyVisualChecks));
   console.log('PASS: actual durable HTTP authorization -> PostgreSQL -> isolated PHP v2 -> committed draft for all three modes; explicit server-only synthetic lead binding; altered receipt, timeout/abort and in-flight session expiry roll back aggregate/audit/receipt; SQL permissions reject before PHP; two identical requests initiated in parallel validate once; API restart and command replay skip PHP; final browser reload retains all three configured reviews without registration controls or payment links; source quote history unchanged; 6 actual PHP validation starts, 3 successful internal drafts, no payment URL or customer authorization.');
   console.log('PASS: durable SQL session and fixed-event Dashboard projection; explicit access with no reads on mount/reload/restore/history; Chromium desktop/mobile create -> quote -> internal approval -> explicit 50-percent double-click-safe v2 payment draft without provider URL -> API restart -> recovery -> stale edit -> quote v2 -> explicit full-upfront draft -> quote v3 -> explicit fixed-49 draft; no automatic 49 selection; full-page and readable detail screenshots for all three saved modes in desktop/mobile; artifact isolation; SQL session revocation and grant withdrawal; delayed real GET discarded on close; persisted read-only enforcement and grant expiry; no JS errors or external requests. PostgreSQL preserves exact revisions and decisions. Screenshots in test-results/dashboard-visual/.');
 } finally {
