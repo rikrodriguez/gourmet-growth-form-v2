@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { LeadLinkHistoryPanel, type LeadLinkOpeningContext } from '../LeadLinkHistoryPanel';
 import type { LeadLinkResponse } from '../lead-link-response';
 import { bindLeadLinkClient, leadLinkClient, LeadLinkReadGate, unconfiguredLeadLinkAccess, validateLeadLinkAccess,
   type DashboardLeadLinkAccessSource, type DashboardLeadLinkGrant, type LeadLinkClient } from './lead-link-access';
 type Binding = { source: DashboardLeadLinkAccessSource; client: LeadLinkClient; grant: DashboardLeadLinkGrant; bound: LeadLinkClient; current(): boolean };
-export function LeadLinkHistorySection({ source = unconfiguredLeadLinkAccess, client = leadLinkClient }: { source?: DashboardLeadLinkAccessSource; client?: LeadLinkClient }) {
+export function LeadLinkHistorySection({ source = unconfiguredLeadLinkAccess, client = leadLinkClient, renderForLead }: { source?: DashboardLeadLinkAccessSource; client?: LeadLinkClient; renderForLead?(context: { leadId: string; identityKey: string }): ReactNode }) {
   const [binding, setBinding] = useState<Binding | null>(null);
   const [phase, setPhase] = useState<'closed' | 'verifying' | 'unconfigured' | 'unavailable' | 'ready' | 'reading'>('closed');
   const [selected, setSelected] = useState(''); const [result, setResult] = useState<LeadLinkResponse | null>(null);
@@ -73,7 +73,7 @@ export function LeadLinkHistorySection({ source = unconfiguredLeadLinkAccess, cl
         <label>Lead autorizado<select aria-label="Lead autorizado" value={selected} onChange={event => { readGate.current.cancel(); setResult(null); setNotice(null); setPhase('ready'); setSelected(event.target.value); }}><option value="">Selecciona un lead</option>{current.grant.leadIds.map(id => <option key={id} value={id}>{id}</option>)}</select></label>
         <div className="gew-actions"><button type="button" className="gew-button gew-button-primary" disabled={!current.grant.leadIds.includes(selected) || phase === 'reading'} onClick={() => void read()}>{phase === 'reading' ? 'Consultando historial…' : 'Consultar historial del lead'}</button></div>
         {current.grant.leadIds.length === 0 && <p>No hay leads autorizados en este alcance.</p>}
-        {result && result.leadId === selected && <LeadLinkHistoryPanel leadId={selected} history={result.history} agreement={result.agreement} openingContext={openingContext} />}</>}
+        {result && result.leadId === selected && <><LeadLinkHistoryPanel leadId={selected} history={result.history} agreement={result.agreement} openingContext={openingContext} />{renderForLead?.({ leadId: selected, identityKey: result.identityKey })}</>}</>}
     </div>
   </section>;
 }

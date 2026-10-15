@@ -6,6 +6,7 @@ const workflow = readFileSync(new URL('../../.github/workflows/gourmet-office-re
 const verificationBranches = [
   'codex/canonical-reference-bridge-20261012',
   'codex/gourmet-office-demo-recovery-20261010',
+  'feat/external-proposal-fixtures-20261015',
   'feat/gourmet-dashboard-reference-20261013',
   'feat/office-communications-review-20261013',
 ];
@@ -19,7 +20,7 @@ function topLevelBlock(key: string): string {
 }
 
 describe('approved canonical bridge CI boundaries', () => {
-  it('accepts push revisions only from the four explicit verification branches in the intended repository', () => {
+  it('accepts push revisions only from the explicit verification branches in the intended repository', () => {
     const triggers = topLevelBlock('on');
     assert.deepEqual([...triggers.matchAll(/^  ([\w_]+):/gm)].map(match => match[1]), ['push']);
     const pushBranches = [...triggers.matchAll(/^      - (\S+)$/gm)].map(match => match[1]).sort();
@@ -66,6 +67,7 @@ describe('approved canonical bridge CI boundaries', () => {
       'npm run test:operations', 'npm run office:db -- start', 'npm run test:office',
       'npm run test:e2e', 'npm run test:office:e2e', 'npm run test:staging:e2e',
       'npm run test:communications:e2e', 'npm run test:dashboard:e2e', 'npm run test:event-quotes:e2e',
+      'npm run test:external-proposal:e2e',
       'docker build --target runtime --tag gourmet-office-ci:checked .', 'npm run office:db -- stop',
     ]) assert(workflow.split('\n').some(line => line.trim() === command || line.trim() === `run: ${command}`), `Missing check: ${command}`);
     const executableLines = workflow.split('\n').filter(line => /^        run:|^          \S/.test(line));

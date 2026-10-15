@@ -131,7 +131,9 @@ test('Dashboard bound client cannot prepare with only write permission', async (
   await assert.rejects(() => client.execute(EVENT, t.input(), 'synthetic', new AbortController().signal)); assert.equal(called, false);
 });
 
-test('pending UI contains no payment URL or pay link and keeps legacy compatibility and unknown funds explicit', async () => {
+test('pending UI contains no payment URL or pay link and keeps legacy compatibility and unknown funds explicit', async context => {
+  // The synthetic catalogue/session have a fixed clock; rendering must use it too.
+  context.mock.method(Date, 'now', () => TEST_AT);
   const t = await setup(), view = await t.execute(t.input());
   const html = renderToStaticMarkup(<PersistedPaymentPreparation view={view} status={t.status} />);
   assert.match(html, /Pendiente de revisión del proveedor · sin enlace/); assert.match(html, /Cobrado: desconocido/);
