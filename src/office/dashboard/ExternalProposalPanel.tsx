@@ -9,7 +9,7 @@ export function ExternalProposalPanel(props: Props) {
 }
 async function verified(view: ExternalProposalView, props: Props): Promise<boolean> {
   if (view.identityKey !== props.identityKey || view.scope.organizationId !== props.scope.organizationId
-    || view.scope.workspaceId !== props.scope.workspaceId || view.scope.mode !== 'test'
+    || view.scope.workspaceId !== props.scope.workspaceId || view.scope.mode !== props.scope.mode || view.scope.mode !== 'test'
     || view.externalEffectsEnabled !== false || view.expiresAtMs <= Date.now()
     || view.leadId !== props.target.leadId || view.eventId !== props.target.eventId || view.proposalId !== props.target.proposalId) throw new Error('Invalid context');
   const s = view.snapshot;
