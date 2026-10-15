@@ -147,7 +147,7 @@ test('composed HTTP and real workflow persist manual intake, catalogue quote, ex
   const t = testService(); let selectedScope = testScope;
   const app = createEventQuoteApi({ service: t.service, allowedOrigin: ORIGIN, clock: () => TEST_AT,
     resolveIdentity: () => ({ scope: selectedScope, actor: testActor, csrfToken: headers[CSRF], expiresAtMs: TEST_AT + 60_000 }) });
-  const command = (payload: unknown) => app.inject({ method: 'POST', url: API + '/HTTP-EVENT/commands', headers, payload });
+  const command = (payload: Record<string, unknown>) => app.inject({ method: 'POST', url: API + '/HTTP-EVENT/commands', headers, payload });
   try {
     const status = (await app.inject({ url: API + '/status', headers })).json();
     assert.equal(status.enabled, true);
