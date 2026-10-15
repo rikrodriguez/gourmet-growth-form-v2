@@ -1,0 +1,28 @@
+{
+  "name": "gourmet-corporation/gourmet-payments",
+  "description": "Provider-neutral payment agreement foundation for Gourmet Corporation.",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": "^8.3",
+    "ext-json": "*",
+    "ext-mbstring": "*",
+    "ext-openssl": "*",
+    "ext-pdo": "*",
+    "ext-pdo_mysql": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "Gourmet\\Payments\\": "src/"
+    }
+  },
+  "scripts": {
+    "test": "php tests/run.php",
+    "test:e2e": "sh tests/run-local-e2e.sh",
+    "lint": "find src public bin tests -name '*.php' -print0 | xargs -0 -n1 php -l"
+  },
+  "config": {
+    "sort-packages": true,
+    "optimize-autoloader": true
+  }
+}

@@ -1,4 +1,10 @@
-# Payment-link preparation from an approved quote
+# Legacy payment-link preparation from an approved quote
+
+The current Dashboard prepares the explicitly selected, versioned v2 draft
+described in [Internal Payments v2 preparation](payment-agreement-v2.md). This
+document preserves the original schema 2 behavior and compatibility boundary.
+Legacy records are not converted, and `prepare_payment` remains supported under
+its original rules. New v2 drafts use a separate schema 3 ledger and command.
 
 This slice adds a useful internal handoff in Dashboard → Propuestas → Guardadas:
 create a manual event, quote it from the authorized server catalogue, approve the

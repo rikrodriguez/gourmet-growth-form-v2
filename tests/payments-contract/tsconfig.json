@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@gourmet-sales/contracts": ["./references/candidate/packages/contracts/src/index.ts"]
+    }
+  },
+  "include": ["./roundtrip.test.ts", "./v2-roundtrip.test.ts", "./checkout-conditions-v1.test.ts", "./checkout-emission-operational.test.ts", "./checkout-provider-runtime.test.ts", "./php-v2-receiver.ts", "./php-operational-receiver.ts", "./php-operational-receiver.test.ts", "./operational-cases.ts", "./php-operational-engines.test.ts", "./ephemeral-mysql.ts"]
+}

@@ -1,0 +1,21 @@
+{
+  "source": "Canonical Dropbox original checkout assets, retrieved read-only 2026-10-15",
+  "files": [
+    {
+      "name": "app.js",
+      "size": 1184,
+      "rev": "0165cbd94c3dacd00000002a3f23be3",
+      "dropboxId": "id:6oCaCdwBOXoAAAAAAAoxyA",
+      "path": "/Espacio familiar/CODEX/Gourmet Corporation/gourmet-payments/public/assets/app.js",
+      "sha256": "0af61eff329e4e48f5deb83bf570181a583c540aac9fd5eaef945267b595c672"
+    },
+    {
+      "name": "app.css",
+      "size": 8760,
+      "rev": "0165cbd9e2cc6f400000002a3f23be3",
+      "dropboxId": "id:6oCaCdwBOXoAAAAAAAoxxw",
+      "path": "/Espacio familiar/CODEX/Gourmet Corporation/gourmet-payments/public/assets/app.css",
+      "sha256": "ad8c42df29ed034deb4bfe48810b93ecc964299e1b99b18749155b7c42900396"
+    }
+  ]
+}

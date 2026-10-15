@@ -1,0 +1,2 @@
+# Keep the exact verified final blank lines in recovered PHP source snapshots.
+* whitespace=-blank-at-eof

@@ -1,0 +1,122 @@
+[
+  {
+    "name": "New York winter",
+    "request": {
+      "lead_id": "lead-synthetic",
+      "monday_item_id": "123456789",
+      "quote_id": "quote-synthetic",
+      "quote_version": "v1",
+      "recipient": {
+        "name": "Synthetic Customer",
+        "email": "synthetic@example.test",
+        "phone": null
+      },
+      "event": {
+        "service_name": "Synthetic Catering",
+        "event_at": null,
+        "location": null
+      },
+      "total_cents": 125000,
+      "balance_due_date": "2027-12-01T13:00",
+      "timezone": "America/New_York",
+      "link_expiration": "7d"
+    },
+    "expected_due_utc": "2027-12-01T18:00:00Z"
+  },
+  {
+    "name": "New York summer",
+    "request": {
+      "lead_id": "lead-synthetic",
+      "monday_item_id": "123456789",
+      "quote_id": "quote-synthetic",
+      "quote_version": "v1",
+      "recipient": {
+        "name": "Synthetic Customer",
+        "email": "synthetic@example.test",
+        "phone": null
+      },
+      "event": {
+        "service_name": "Synthetic Catering",
+        "event_at": null,
+        "location": null
+      },
+      "total_cents": 125000,
+      "balance_due_date": "2027-07-01T14:00",
+      "timezone": "America/New_York",
+      "link_expiration": "7d"
+    },
+    "expected_due_utc": "2027-07-01T18:00:00Z"
+  },
+  {
+    "name": "Kathmandu fractional offset",
+    "request": {
+      "lead_id": "lead-synthetic",
+      "monday_item_id": "123456789",
+      "quote_id": "quote-synthetic",
+      "quote_version": "v1",
+      "recipient": {
+        "name": "Synthetic Customer",
+        "email": "synthetic@example.test",
+        "phone": null
+      },
+      "event": {
+        "service_name": "Synthetic Catering",
+        "event_at": null,
+        "location": null
+      },
+      "total_cents": 125000,
+      "balance_due_date": "2027-07-01T23:45",
+      "timezone": "Asia/Kathmandu",
+      "link_expiration": "7d"
+    },
+    "expected_due_utc": "2027-07-01T18:00:00Z"
+  },
+  {
+    "name": "UTC",
+    "request": {
+      "lead_id": "lead-synthetic",
+      "monday_item_id": "123456789",
+      "quote_id": "quote-synthetic",
+      "quote_version": "v1",
+      "recipient": {
+        "name": "Synthetic Customer",
+        "email": "synthetic@example.test",
+        "phone": null
+      },
+      "event": {
+        "service_name": "Synthetic Catering",
+        "event_at": null,
+        "location": null
+      },
+      "total_cents": 125000,
+      "balance_due_date": "2027-07-01T18:00",
+      "timezone": "UTC",
+      "link_expiration": "7d"
+    },
+    "expected_due_utc": "2027-07-01T18:00:00Z"
+  },
+  {
+    "name": "Etc fixed offset",
+    "request": {
+      "lead_id": "lead-synthetic",
+      "monday_item_id": "123456789",
+      "quote_id": "quote-synthetic",
+      "quote_version": "v1",
+      "recipient": {
+        "name": "Synthetic Customer",
+        "email": "synthetic@example.test",
+        "phone": null
+      },
+      "event": {
+        "service_name": "Synthetic Catering",
+        "event_at": null,
+        "location": null
+      },
+      "total_cents": 125000,
+      "balance_due_date": "2027-07-01T12:00",
+      "timezone": "Etc/GMT+6",
+      "link_expiration": "7d"
+    },
+    "expected_due_utc": "2027-07-01T18:00:00Z"
+  }
+]

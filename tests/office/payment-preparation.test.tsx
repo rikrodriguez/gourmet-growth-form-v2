@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { EventQuoteError, type EventQuoteView, type PreparePaymentCommand, type QuoteActor, type QuoteScope } from '../../src/office/backend/event-quote-contracts';
 import { assertEventQuoteRecord, createEventQuoteService, digest } from '../../src/office/backend/event-quote-workflow';
 import { createEventQuoteApi, EVENT_QUOTE_API, EVENT_QUOTE_CSRF_HEADER } from '../../src/office/backend/event-quote-http';
-import { exactPaymentPreparation, paymentPreparationBlocked, paymentPreparationIsCurrent, validateQuoteView, type EventQuoteStatusResponse } from '../../src/office/event-quote-client';
+import { exactPaymentPreparation, exactQuoteReviewKey, paymentPreparationBlocked, paymentPreparationIsCurrent, validateQuoteView, type EventQuoteStatusResponse } from '../../src/office/event-quote-client';
 import { PersistedPaymentPreparation } from '../../src/office/dashboard/PersistedQuoteWorkspace';
 import { bindDashboardQuoteClient, DashboardQuoteAccessGate, type DashboardQuoteGrant } from '../../src/office/dashboard/quote-access';
 import { TEST_AT, testActor, testBrief, testCatalog, testScope, testService } from './event-quote-fixtures';
@@ -131,10 +131,48 @@ test('Dashboard bound client cannot prepare with only write permission', async (
   await assert.rejects(() => client.execute(EVENT, t.input(), 'synthetic', new AbortController().signal)); assert.equal(called, false);
 });
 
-test('pending UI contains no payment URL or pay link and keeps legacy compatibility and unknown funds explicit', async () => {
+test('pending UI contains no payment URL or pay link and keeps legacy compatibility and unknown funds explicit', async context => {
+  context.mock.method(Date, 'now', () => TEST_AT);
   const t = await setup(), view = await t.execute(t.input());
   const html = renderToStaticMarkup(<PersistedPaymentPreparation view={view} status={t.status} />);
   assert.match(html, /Pendiente de revisión del proveedor · sin enlace/); assert.match(html, /Cobrado: desconocido/);
   assert.match(html, /No se sustituye el anticipo cotizado/); assert.match(html, /Faltan calendario de pago/); assert.match(html, /disabled/);
   assert.doesNotMatch(html, /<a\b|href=|https:\/\/|PENDING_RESERVATION|Pago confirmado/);
+});
+
+test('a percentage deposit numerically equal to USD 49 keeps the original terms and never authorizes the Payments agreement', async context => {
+  context.mock.method(Date, 'now', () => TEST_AT);
+  const t = testService(), execute = (command: unknown) => t.service.execute(testScope, testActor, EVENT, command);
+  const catalog = { ...testCatalog, taxBps: 0, depositBps: 5000,
+    terms: 'Anticipo porcentual del 50 %. Fecha propuesta sin confirmar; condiciones sintéticas sin acuerdo de pago.',
+    items: [{ ...testCatalog.items[0], unitPriceCents: 4900 }] };
+  t.catalog(catalog);
+  let view = await execute({ action: 'create', key: 'create', expectedRevision: 0, brief: testBrief });
+  view = await execute({ action: 'quote', key: 'quote', expectedRevision: 1, expectedBriefDigest: view.record.briefs[0].digest,
+    expectedCatalogDigest: digest(catalog), selections: [{ itemId: 'TEST-ITEM', quantity: 2 }] });
+  const quote = structuredClone(view.record.quotes[0]);
+  assert.equal(quote.totalCents, 9800); assert.equal(quote.depositCents, 4900); assert.equal(quote.catalog.depositBps, 5000);
+  view = await execute({ action: 'approve', key: 'approve', expectedRevision: 2, quoteVersion: quote.version,
+    quoteDigest: quote.digest, artifactSha256: quote.artifact.sha256, intendedRecipient: testBrief.recipient });
+  const approved = structuredClone(view.record);
+  const status: EventQuoteStatusResponse = { ...await t.service.status(testScope, testActor), externalEffectsEnabled: false,
+    session: { mode: testScope.mode, canWrite: true, canApprove: true, csrfToken: 'synthetic-csrf-existing', expiresAtMs: testActor.expiresAtMs } };
+  view = await execute(exactPaymentPreparation(view, status, 'prepare', TEST_AT));
+  const preparation = view.record.paymentPreparations![0];
+  assert.equal(preparation.totalCents, 9800); assert.equal(preparation.depositCents, 4900); assert.equal(preparation.remainingCents, 4900);
+  assert.equal(preparation.terms, catalog.terms); assert.deepEqual(view.record.quotes, approved.quotes); assert.deepEqual(view.record.decisions, approved.decisions);
+  assert.equal(preparation.status, 'pending_provider_review'); assert.equal(preparation.financialMeaning, 'unaccepted_quote');
+  assert.equal(preparation.providerEnabled, false); assert.equal(preparation.publicPaymentUrl, null); assert.equal(view.externalEffectsEnabled, false);
+  assert.ok(preparation.blockers.includes('LEGACY_TERMS_UNVERIFIED')); assert.ok(preparation.blockers.includes('PAYMENT_SCHEDULE_REQUIRED'));
+  for (const field of ['payload', 'providerPayload', 'agreement', 'consent', 'customerAccepted']) assert.equal(Object.hasOwn(preparation, field), false);
+  assert.equal(paymentPreparationBlocked(view, status, TEST_AT), true);
+  assertEventQuoteRecord(view.record, testScope, EVENT); assert.equal(validateQuoteView(view, EVENT), view);
+  const html = renderToStaticMarkup(<PersistedPaymentPreparation view={view} status={status} writable dirty={false} verified={exactQuoteReviewKey(view)} />);
+  assert.match(html, /Pendiente de revisión del proveedor · sin enlace/);
+  assert.match(html, /El anticipo sigue siendo porcentual aunque coincida con USD 49/);
+  assert.match(html, /La aprobación interna no autoriza el acuerdo original de Gourmet Payments/);
+  assert.match(html, /La fecha propuesta del evento no aprueba ese calendario, zona horaria ni expiración/);
+  assert.match(html, /data-testid="persisted-payment-prepare" disabled=""/);
+  assert.doesNotMatch(html, /<a\b|href=|<form\b|<iframe\b|https:\/\/|provider_ready|Pago confirmado/);
+  assert.deepEqual((await t.service.read(testScope, testActor, EVENT)).record, view.record);
 });

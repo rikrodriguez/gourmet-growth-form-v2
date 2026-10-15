@@ -1,0 +1,70 @@
+{
+  "candidate/packages/contracts/src/gemini-spend.ts": {
+    "bytes": 4911,
+    "sha256": "e8fe0df3be2faa1176ec3878ac7e2164a6cca1b54399ef115b834413875d6cb5"
+  },
+  "candidate/packages/contracts/src/index.ts": {
+    "bytes": 10174,
+    "sha256": "a1e3da177242ac2c169c7445e36d721e420248c65c161ddbd61817cc97fe3d76"
+  },
+  "candidate/packages/contracts/src/payments.ts": {
+    "bytes": 2468,
+    "sha256": "b78de4dbc830ec69397d1b7bdcf178e71c4a5fbe183378f97ac93e9daaf6c8e2"
+  },
+  "candidate/packages/integrations/src/gourmet-payments-contract-v1.test.ts": {
+    "bytes": 9116,
+    "sha256": "fc37534b3085481aa75ccfa7f41f76f85ca2629ea653fcbe45ecc72febce04c8"
+  },
+  "candidate/packages/integrations/src/gourmet-payments-contract-v1.ts": {
+    "bytes": 11419,
+    "sha256": "af62c191c9f012a5ff94fd8a323b54da5e8487e6dcc64b2af0a2e1c359b51dfb"
+  },
+  "candidate/packages/integrations/src/gourmet-payments.ts": {
+    "bytes": 4589,
+    "sha256": "971496e85907340edfed846173cfd669525969c090f3a9de47a3dfebd2a89b03"
+  },
+  "candidate/packages/payments/src/index.ts": {
+    "bytes": 17412,
+    "sha256": "3f7835d218f35bf4b4da731c6bec50208f9424478465837bda0eeaa6db4d7fa3"
+  },
+  "evidence/independent-contract-review.test.ts": {
+    "bytes": 2751,
+    "sha256": "c359fc4bc0e750f9bb4e55d504b171d4e43bf672c5955bb0d8bd845b1a6e5f4c"
+  },
+  "evidence/php-source-interop.test.ts": {
+    "bytes": 2330,
+    "sha256": "132d080606cf4a64a5a63c4d36e1065cf118b2da7b270d11019a37990bc49ac0"
+  },
+  "producer-reference/Application.php": {
+    "bytes": 57658,
+    "sha256": "e31cf08152feedfb33120d9c141f8883586820ca32e88992397d7725b2e1c240"
+  },
+  "producer-reference/InternalPaymentAgreementRequest.php": {
+    "bytes": 5319,
+    "sha256": "c775be893d1796e1d4fb03cb1e2120ca78b39e042b115254aa6d121328d44e6f"
+  },
+  "producer-reference/Redactor.php": {
+    "bytes": 809,
+    "sha256": "43bfbba652628f2f94383c98b5f866cb5076979223f5d6050304e995f521ffe6"
+  },
+  "producer-reference/SHA256SUMS.json": {
+    "bytes": 656,
+    "sha256": "f7751f5c579971df518fb50acbdeb3b21a1ba31e838a2a42d975ba00e58a7e8a"
+  },
+  "producer-reference/SalesOsEventOutbox.php": {
+    "bytes": 5877,
+    "sha256": "85daf23189d8a2488f1bf6cbd5258b678d2a4a8328a4e496f16b8a060a5b0283"
+  },
+  "producer-reference/Uuid.php": {
+    "bytes": 469,
+    "sha256": "d4415c32f85d13fcc1c96b4d94b9840bf33e5d7815d3969bcebcd33e1cef21ab"
+  },
+  "producer-reference/generate-fixtures.php": {
+    "bytes": 3494,
+    "sha256": "b0f886ff574d7ea40d58efd0daefb7cbe5b3ca957c144a088b569f5deaf73afb"
+  },
+  "producer-reference/prepared-requests.json": {
+    "bytes": 3222,
+    "sha256": "41ea346400d595f316c0402e5e23840611a9ec688e6466dc3b54185c4ef82801"
+  }
+}

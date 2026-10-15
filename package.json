@@ -21,6 +21,7 @@
     "office:db": "node scripts/office-db.mjs",
     "test:office": "node --import tsx --test tests/office/*.test.ts*",
     "test:operations": "node --test tests/operations/*.test.mjs",
+    "test:payments-contract": "node scripts/check-gourmet-payments-contract.mjs",
     "test:office:e2e": "playwright test --config office-playwright.config.ts",
     "test:staging:e2e": "playwright test --config staging-playwright.config.ts",
     "office:communications:fixture": "node --import tsx tests/communications-browser/server.ts",
