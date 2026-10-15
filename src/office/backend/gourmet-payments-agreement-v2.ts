@@ -1,4 +1,4 @@
-import type { EventQuoteRecord, PaymentContractPreparationV2, QuoteScope } from './event-quote-contracts';
+import type { EventQuoteRecord, PaymentContractPreparationV2, QuoteScope, QuoteVersion } from './event-quote-contracts';
 import { assertEventQuoteRecord, digest } from './event-quote-workflow';
 import { proposeRetainerBalanceDateV2, resolveApprovedLocalMinuteV2 } from './payment-calendar-v2';
 
@@ -71,6 +71,20 @@ export function reviewGourmetPaymentsAgreementV2(input: PaymentAgreementReviewIn
   if (!p || !q || !brief || p.quoteDigest !== q.digest || q.briefDigest !== brief.digest
     || input.record.audit.at(-1)!.atMs > input.nowMs || q.catalog.validUntilMs <= input.nowMs || q.catalogDigest !== input.currentCatalogDigest)
     return block('STALE_PAYMENT_CONFIGURATION', ['preparationId', 'quote', 'catalog']);
+  return reviewValidatedPaymentPlanV2({ scope: input.scope, eventId: input.eventId, preparation: p, quote: q,
+    configuration: input.configuration, nowMs: input.nowMs });
+}
+
+/** Pure reconstruction from already validated source rows. Used by bounded
+ * aggregate replay at its historical audit time; it never authenticates an
+ * actor, loads a record, calls PHP or turns a stored digest into authority. */
+export function reviewValidatedPaymentPlanV2(input: {
+  scope: QuoteScope; eventId: string; preparation: PaymentContractPreparationV2; quote: QuoteVersion;
+  configuration: unknown; nowMs: number;
+}): Review | Blocked {
+  const p = input.preparation, q = input.quote;
+  if (!Number.isSafeInteger(input.nowMs) || input.nowMs < 0 || input.nowMs > 8_640_000_000_000_000)
+    return block('INVALID_NOW', ['nowMs']);
   if (p.initialPaymentCents <= 0 || p.paymentMode !== 'full_upfront' && p.paymentBalanceCents <= 0)
     return block('PAYMENT_AMOUNT_REVIEW_REQUIRED', ['initialPaymentCents', 'paymentBalanceCents']);
   const config = object(input.configuration, ['contractVersion', 'preparationId', 'paymentMode', 'canonicalLeadId',
@@ -136,9 +150,9 @@ export function reviewGourmetPaymentsAgreementV2(input: PaymentAgreementReviewIn
 /**
  * Explicit server-side internal review, with the same actor trust boundary as
  * EventQuoteService. A caller must resolve the authenticated actor itself; actor
- * fields and a hash supplied by a browser are not authority. No HTTP endpoint,
- * configuration store or runtime call site is registered for this helper.
- * The result is local review evidence, not customer consent or a v2 receiver.
+ * fields and a hash supplied by a browser are not authority. Explicit synthetic
+ * test composition may persist this evidence through the quote transaction.
+ * The result is local review evidence, not customer consent or payment authority.
  */
 export function prepareGourmetPaymentsAgreementV2(input: PaymentAgreementReviewInputV2, approval?: unknown): Prepared | Blocked {
   const reviewed = reviewGourmetPaymentsAgreementV2(input);
@@ -156,7 +170,13 @@ export function prepareGourmetPaymentsAgreementV2(input: PaymentAgreementReviewI
     return block('STALE_PAYMENT_TERMS_REVIEW', ['expectedReviewDigest']);
   // Freeze the reviewed facts by value; subsequent caller mutation cannot alter
   // the plan being approved. This creates no agreement ID, token, URL or intent.
+  return snapshotInternalPaymentPreparationV2(reviewed, actor.actorId, input.nowMs);
+}
+
+/** Data reconstruction only. Historical replay checks the authenticated command
+ * audit separately; supplying an actor ID here grants no current authority. */
+export function snapshotInternalPaymentPreparationV2(reviewed: Review, actorId: string, atMs: number): Prepared {
   return { status: 'prepared_internal', contractVersion: 2, plan: structuredClone(reviewed.plan), reviewDigest: reviewed.reviewDigest,
-    internalApproval: { actorId: actor.actorId, atMs: input.nowMs, purpose: 'internal_payment_plan_only', reviewDigest: reviewed.reviewDigest },
+    internalApproval: { actorId, atMs, purpose: 'internal_payment_plan_only', reviewDigest: reviewed.reviewDigest },
     executable: false, providerEnabled: false, publicPaymentUrl: null, blockers: ['PROVIDER_DISABLED', 'RECEIVER_V2_UNAVAILABLE'] };
 }

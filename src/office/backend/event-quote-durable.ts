@@ -1,6 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import type { Pool } from 'pg';
-import { EventQuoteError, type CatalogSnapshot, type QuoteScope } from './event-quote-contracts';
+import { EventQuoteError, type CatalogSnapshot, type QuoteScope, type TestPaymentDraftDependenciesV2 } from './event-quote-contracts';
 import { createEventQuoteApi, type RunQuoteAuthorization } from './event-quote-http';
 import { PostgresQuoteAccessRepository, type ExistingQuoteSession } from './quote-access-postgres';
 import { PostgresEventQuoteStore } from './event-quote-postgres';
@@ -20,6 +20,9 @@ export function createDurableTestQuoteApi(options: {
   quoteSchema?: string;
   /** One already assigned event. Omission leaves the Dashboard projection unregistered. */
   dashboardEventId?: string;
+  /** Explicit synthetic-only lead binding and isolated contract validator.
+   * Omission keeps configuration and registration commands disabled. */
+  testPaymentDrafts?: TestPaymentDraftDependenciesV2;
   clock?: () => number;
 }) {
   const clock = options.clock ?? Date.now;
@@ -37,7 +40,7 @@ export function createDurableTestQuoteApi(options: {
       const store = new PostgresEventQuoteStore(options.pool, {
         vault: options.vault, schema: options.quoteSchema, transaction: client,
       });
-      const service = createEventQuoteService({ store, catalogFor: options.catalogFor, clock });
+      const service = createEventQuoteService({ store, catalogFor: options.catalogFor, clock, testPaymentDrafts: options.testPaymentDrafts });
       return operation(identity, service);
     });
   };

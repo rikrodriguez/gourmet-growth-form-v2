@@ -1,5 +1,5 @@
 import type { QuoteScope } from '../backend/event-quote-contracts';
-import { EventQuoteClientError, validateQuoteStatus, validateQuoteView, type EventQuoteClient } from '../event-quote-client';
+import { EventQuoteClientError, assertPaymentDraftCommandV2, validateQuoteStatus, validateQuoteView, type EventQuoteClient } from '../event-quote-client';
 
 /** A projection from the existing server/session owner, never an identity chooser or tenant grant. */
 export type DashboardQuoteGrant = {
@@ -147,7 +147,8 @@ export function bindDashboardQuoteClient(client: EventQuoteClient, input: Dashbo
       return checkView(await client.read(eventId, signalFor(signal), grant.serverRevision), eventId, signal);
     }),
     execute: (eventId, command, csrfToken, signal) => protect(signal, async () => {
-      assertCurrent(eventId, true, command.action === 'approve' || command.action === 'prepare_payment' || command.action === 'prepare_payment_v2'); if (signal.aborted) return cancelled();
+      assertCurrent(eventId, true, command.action === 'approve' || command.action === 'prepare_payment' || command.action === 'prepare_payment_v2' || command.action === 'configure_payment_v2' || command.action === 'register_payment_draft_v2'); if (signal.aborted) return cancelled();
+      assertPaymentDraftCommandV2(command);
       return checkView(await client.execute(eventId, command, csrfToken, signalFor(signal), grant.serverRevision), eventId, signal);
     }),
   };

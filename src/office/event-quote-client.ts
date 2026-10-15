@@ -1,4 +1,5 @@
-import type { BriefInput, CatalogSnapshot, EventQuoteView, QuoteCommand, QuoteVersion, PreparePaymentCommand, PaymentLinkPreparation, PreparePaymentV2Command, PaymentContractModeV2 } from './backend/event-quote-contracts';
+import type { BriefInput, CatalogSnapshot, EventQuoteView, QuoteCommand, QuoteVersion, PreparePaymentCommand, PaymentLinkPreparation, PreparePaymentV2Command, PaymentContractModeV2, PaymentConfigurationV2, PaymentConfigurationFactsV2, ConfigurePaymentV2Command, RegisterPaymentDraftV2Command } from './backend/event-quote-contracts';
+import { proposeRetainerBalanceDateV2, resolveApprovedLocalMinuteV2 } from './backend/payment-calendar-v2';
 import type { EventQuoteStatusResponse } from './backend/event-quote-http';
 export type { EventQuoteStatusResponse } from './backend/event-quote-http';
 
@@ -23,6 +24,7 @@ function catalog(value: unknown): void {
 }
 export function validateQuoteStatus(value: unknown): EventQuoteStatusResponse {
   const s = row(value), session = row(s.session);
+  if (s.paymentDraftsEnabled !== undefined && (s.paymentDraftsEnabled !== true || session.mode !== 'test')) invalid();
   if (typeof s.enabled !== 'boolean' || s.externalEffectsEnabled !== false || (s.reason !== null && typeof s.reason !== 'string')) invalid();
   if (s.catalog !== null) catalog(s.catalog);
   if (s.catalogDigest !== null) digest(s.catalogDigest);
@@ -36,7 +38,7 @@ export function validateQuoteStatus(value: unknown): EventQuoteStatusResponse {
 export function validateQuoteView(value: unknown, expectedEventId: string): EventQuoteView {
   const v = row(value), record = row(v.record), scope = row(record.scope);
   if (v.externalEffectsEnabled !== false || !['missing', 'pending_internal_review', 'approved_internal_unsent', 'obsolete'].includes(v.currentQuoteStatus as string)) invalid();
-  if (![1, 2, 3].includes(record.schemaVersion as number) || record.eventId !== expectedEventId || !['test', 'commercial'].includes(scope.mode as string)) invalid();
+  if (![1, 2, 3, 4].includes(record.schemaVersion as number) || record.eventId !== expectedEventId || !['test', 'commercial'].includes(scope.mode as string)) invalid();
   text(scope.organizationId, 128); text(scope.workspaceId, 128); integer(record.revision, 1);
   list(record.briefs).forEach(value => {
     const b = row(value); ['contactName', 'recipient', 'originalMessage', 'proposedDate', 'proposedLocation', 'requirements', 'actorId'].forEach(key => text(b[key]));
@@ -55,8 +57,9 @@ export function validateQuoteView(value: unknown, expectedEventId: string): Even
   list(record.decisions).forEach(value => { const d = row(value); if (d.status !== 'approved_internal_unsent') invalid(); integer(d.quoteVersion, 1); integer(d.atMs); ['id', 'actorId', 'intendedRecipient'].forEach(key => text(d[key])); ['quoteDigest', 'briefDigest', 'catalogDigest', 'artifactSha256', 'digest'].forEach(key => digest(d[key])); });
   list(record.audit); list(record.receipts);
   if (record.schemaVersion === 1 && record.paymentPreparations !== undefined) invalid();
-  if (record.schemaVersion !== 3 && record.paymentContractPreparationsV2 !== undefined) invalid();
-  if (record.schemaVersion === 2 || record.schemaVersion === 3) {
+  if (![3, 4].includes(record.schemaVersion as number) && record.paymentContractPreparationsV2 !== undefined) invalid();
+  if (record.schemaVersion !== 4 && (record.paymentConfigurationsV2 !== undefined || record.paymentDraftRegistrationsV2 !== undefined)) invalid();
+  if ([2, 3, 4].includes(record.schemaVersion as number)) {
     const preparations = list(record.paymentPreparations); if ((record.schemaVersion === 2 && !preparations.length) || preparations.length > 20) invalid();
     const seen = new Set<number>();
     for (const value of preparations) {
@@ -76,7 +79,7 @@ export function validateQuoteView(value: unknown, expectedEventId: string): Even
         || d.quoteDigest !== q.digest || d.intendedRecipient !== p.intendedRecipient || d.atMs > (p.atMs as number)) invalid();
     }
   }
-  if (record.schemaVersion === 3) {
+  if ([3, 4].includes(record.schemaVersion as number)) {
     const preparations = list(record.paymentContractPreparationsV2); if (!preparations.length || preparations.length > 20) invalid();
     const seen = new Set<number>();
     const keys = ['id', 'eventId', 'quoteVersion', 'quoteDigest', 'approvalDigest', 'briefDigest', 'catalogDigest', 'artifactSha256', 'intendedRecipient',
@@ -116,6 +119,7 @@ export function validateQuoteView(value: unknown, expectedEventId: string): Even
         || JSON.stringify(p.blockers) !== JSON.stringify(blockers)) invalid();
     }
   }
+  if (record.schemaVersion === 4) validatePaymentDraftLedgersV2(record);
   return value as EventQuoteView;
 }
 function path(eventId: string): string {
@@ -127,6 +131,7 @@ export function quoteArtifactUrl(eventId: string, version: number): string {
   return `${path(eventId)}/quotes/${version}/artifact`;
 }
 async function request(url: string, signal: AbortSignal, command?: QuoteCommand, csrfToken?: string, accessRevision?: string): Promise<unknown> {
+  if (command !== undefined) assertPaymentDraftCommandV2(command);
   const body = command === undefined ? undefined : JSON.stringify(command);
   if (body && new TextEncoder().encode(body).byteLength > 65_536) throw new EventQuoteClientError('PAYLOAD_TOO_LARGE', 413);
   let response: Response;
@@ -221,4 +226,215 @@ export function exactPaymentContractV2Preparation(view: EventQuoteView, status: 
   if (mode === 'fixed_49_reservation' && q.totalCents <= 4900) throw new EventQuoteClientError('PAYMENT_PREPARATION_BLOCKED');
   return { action: 'prepare_payment_v2', key, expectedRevision: view.record.revision, quoteVersion: q.version,
     quoteDigest: q.digest, approvalDigest: decision.digest, artifactSha256: q.artifact.sha256, paymentMode: mode };
+}
+
+// Browser checks are conservative presentation/transport checks. The server and
+// durable store verify the actual hashes and authenticated identity before use.
+function exactRow(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  const r = row(value);
+  if (![Object.prototype, null].includes(Object.getPrototypeOf(r)) || Reflect.ownKeys(r).length !== keys.length
+    || keys.some(key => { const d = Object.getOwnPropertyDescriptor(r, key); return !d || !('value' in d) || !d.enumerable; })) return invalid();
+  return r;
+}
+function requiredText(value: unknown, max: number, identifier = false): string {
+  if (typeof value !== 'string' || value.length > max || !value.trim() || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)
+    || identifier && (value.trim() !== value || /[\r\n\t]/.test(value))) return invalid();
+  return value;
+}
+function token(value: unknown): string {
+  const valueText = requiredText(value, 96, true);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(valueText) || ['constructor', 'prototype', '__proto__'].includes(valueText)) return invalid();
+  return valueText;
+}
+function nullableText(value: unknown, max: number): void { if (value !== null) requiredText(value, max); }
+function canonicalJson(value: unknown, depth = 0): string {
+  if (depth > 32) return invalid();
+  if (Array.isArray(value)) return `[${value.map(item => canonicalJson(item, depth + 1)).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const r = exactRow(value, Object.keys(value));
+    return `{${Object.keys(r).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(r[key], depth + 1)}`).join(',')}}`;
+  }
+  if (value === null || typeof value === 'boolean' || typeof value === 'string' || typeof value === 'number' && Number.isSafeInteger(value)) return JSON.stringify(value);
+  return invalid();
+}
+function sameJson(left: unknown, right: unknown): boolean { return canonicalJson(left) === canonicalJson(right); }
+function futureConfiguredMinute(date: unknown, time: unknown, timezone: unknown, atMs: number): string {
+  if (typeof date !== 'string' || typeof time !== 'string' || typeof timezone !== 'string') return invalid();
+  const result = resolveApprovedLocalMinuteV2(date, time, timezone);
+  if (!result || !/:00Z$/.test(result) || Date.parse(result) <= atMs) return invalid();
+  return result;
+}
+function configurationFactsV2(config: Record<string, unknown>, preparation: Record<string, unknown>, atMs: number) {
+  requiredText(config.paymentTerms, 4000); nullableText(config.termsChangeReason, 2000);
+  if ((!preparation.quotedDepositMatchesMode || config.paymentTerms !== preparation.terms) && config.termsChangeReason === null) return invalid();
+  const expiration = row(config.linkExpiration);
+  let linkExpiration: { configured: Record<string, unknown>; instant: string | null };
+  if (expiration.kind === 'never') { exactRow(expiration, ['kind']); linkExpiration = { configured: expiration, instant: null }; }
+  else {
+    exactRow(expiration, ['kind', 'date', 'time', 'timezone']); if (expiration.kind !== 'at') return invalid();
+    linkExpiration = { configured: expiration, instant: futureConfiguredMinute(expiration.date, expiration.time, expiration.timezone, atMs) };
+  }
+  if (preparation.paymentMode === 'full_upfront') {
+    if (config.paymentSchedule !== null || preparation.paymentBalanceCents !== 0) return invalid();
+    return { paymentSchedule: null, linkExpiration };
+  }
+  const schedule = row(config.paymentSchedule);
+  if (preparation.paymentMode === 'fixed_49_reservation') {
+    exactRow(schedule, ['kind', 'balanceDate', 'balanceTime', 'timezone', 'agreedBalanceCents']);
+    if (schedule.kind !== preparation.paymentMode || schedule.agreedBalanceCents !== preparation.paymentBalanceCents) return invalid();
+    const balanceInstant = futureConfiguredMinute(schedule.balanceDate, schedule.balanceTime, schedule.timezone, atMs);
+    return { paymentSchedule: { configured: schedule, balanceInstant, eventInstant: null, proposedBalanceDate: null, timingReviewReason: null }, linkExpiration };
+  }
+  exactRow(schedule, ['kind', 'eventDate', 'eventTime', 'timezone', 'balanceDate', 'balanceTime', 'timingExceptionReason']);
+  if (schedule.kind !== 'retainer_50') return invalid();
+  nullableText(schedule.timingExceptionReason, 2000);
+  const eventInstant = futureConfiguredMinute(schedule.eventDate, schedule.eventTime, schedule.timezone, atMs);
+  const balanceInstant = futureConfiguredMinute(schedule.balanceDate, schedule.balanceTime, schedule.timezone, atMs);
+  const proposal = proposeRetainerBalanceDateV2({ eventDate: schedule.eventDate as string, eventTime: schedule.eventTime as string,
+    timezone: schedule.timezone as string, nowMs: atMs });
+  if (!proposal.proposedBalanceDate || Date.parse(balanceInstant) >= Date.parse(eventInstant)) return invalid();
+  const needsReview = schedule.balanceDate !== proposal.proposedBalanceDate
+    || proposal.codes.some(code => ['EVENT_DATE_NOT_FUTURE', 'EVENT_WITHIN_SEVEN_DAYS', 'PROPOSED_BALANCE_DATE_PAST'].includes(code));
+  if (needsReview && schedule.timingExceptionReason === null) return invalid();
+  return { paymentSchedule: { configured: schedule, balanceInstant, eventInstant, proposedBalanceDate: proposal.proposedBalanceDate,
+    timingReviewReason: schedule.timingExceptionReason }, linkExpiration };
+}
+function validatePaymentDraftLedgersV2(record: Record<string, unknown>): void {
+  exactRow(record, ['schemaVersion', 'scope', 'eventId', 'revision', 'briefs', 'quotes', 'decisions', 'audit', 'receipts',
+    'paymentPreparations', 'paymentContractPreparationsV2', 'paymentConfigurationsV2', 'paymentDraftRegistrationsV2']);
+  const scope = exactRow(record.scope, ['organizationId', 'workspaceId', 'mode']);
+  if (scope.mode !== 'test') return invalid();
+  const configs = list(record.paymentConfigurationsV2), registrations = list(record.paymentDraftRegistrationsV2);
+  if (!configs.length || configs.length > 20 || registrations.length > 20) return invalid();
+  const preparations = list(record.paymentContractPreparationsV2).map(row), audits = list(record.audit).map(row), receipts = list(record.receipts).map(row);
+  if (record.revision !== audits.length || receipts.length !== audits.length) return invalid();
+  const ids = new Set<string>(), configuredPreparations = new Set<string>(), registeredConfigurations = new Set<string>();
+  function evidence(entry: Record<string, unknown>, action: string) {
+    token(entry.id); token(entry.actorId); integer(entry.atMs); digest(entry.digest);
+    if ((entry.atMs as number) > 8_640_000_000_000_000 || ids.has(entry.id as string)) return invalid(); ids.add(entry.id as string);
+    const found = audits.map((audit, index) => ({ audit, index })).filter(({ audit }) => audit.commandKey === entry.id);
+    if (found.length !== 1) return invalid();
+    const { audit, index } = found[0];
+    exactRow(audit, ['sequence', 'action', 'actorId', 'atMs', 'commandKey', 'inputDigest', 'previousDigest', 'digest']);
+    digest(audit.inputDigest); digest(audit.digest);
+    if (audit.action !== action || audit.actorId !== entry.actorId || audit.atMs !== entry.atMs || audit.sequence !== index + 1
+      || audit.previousDigest !== (index ? audits[index - 1].digest : null)) return invalid();
+    const stored = receipts.filter(receipt => receipt.key === entry.id); if (stored.length !== 1) return invalid();
+    const receipt = exactRow(stored[0], ['key', 'inputDigest', 'actorId', 'resultingRevision']);
+    if (receipt.inputDigest !== audit.inputDigest || receipt.actorId !== entry.actorId || receipt.resultingRevision !== index + 1) return invalid();
+    return index;
+  }
+  const configById = new Map<string, { row: Record<string, unknown>; config: Record<string, unknown>; preparation: Record<string, unknown>; auditIndex: number }>();
+  for (const raw of configs) {
+    const c = exactRow(raw, ['id', 'digest', 'preparationId', 'preparationDigest', 'configuration', 'leadSource', 'reviewDigest', 'actorId', 'atMs', 'status']);
+    const auditIndex = evidence(c, 'configure_payment_v2'); digest(c.preparationDigest); digest(c.reviewDigest);
+    const p = preparations.find(p => p.id === c.preparationId);
+    if (!p || p.digest !== c.preparationDigest || c.status !== 'draft_configuration' || c.leadSource !== 'synthetic_fixture'
+      || (c.atMs as number) < (p.atMs as number) || configuredPreparations.has(c.preparationId as string)) return invalid();
+    configuredPreparations.add(c.preparationId as string);
+    const config = exactRow(c.configuration, ['contractVersion', 'preparationId', 'paymentMode', 'canonicalLeadId', 'paymentTerms', 'termsChangeReason', 'paymentSchedule', 'linkExpiration']);
+    if (config.contractVersion !== 2 || config.preparationId !== c.preparationId || config.paymentMode !== p.paymentMode) return invalid();
+    requiredText(config.canonicalLeadId, 180, true);
+    configurationFactsV2(config, p, c.atMs as number);
+    configById.set(c.id as string, { row: c, config, preparation: p, auditIndex });
+  }
+  for (const raw of registrations) {
+    const r = exactRow(raw, ['id', 'digest', 'configurationId', 'configurationDigest', 'preparationId', 'preparationDigest', 'reviewDigest',
+      'receipt', 'bodySha256', 'receiptDigest', 'actorId', 'atMs', 'status', 'executable', 'providerEnabled', 'publicPaymentUrl', 'authorizationVerified']);
+    const auditIndex = evidence(r, 'register_payment_draft_v2');
+    ['configurationDigest', 'preparationDigest', 'reviewDigest', 'bodySha256', 'receiptDigest'].forEach(key => digest(r[key]));
+    const found = configById.get(r.configurationId as string); if (!found) return invalid();
+    const { row: c, config, preparation: p } = found;
+    if (registeredConfigurations.has(r.configurationId as string) || r.configurationDigest !== c.digest || r.preparationId !== p.id
+      || r.preparationDigest !== p.digest || r.reviewDigest !== c.reviewDigest || (r.atMs as number) < (c.atMs as number)
+      || auditIndex <= found.auditIndex || r.status !== 'draft_internal' || r.executable !== false || r.providerEnabled !== false
+      || r.publicPaymentUrl !== null || r.authorizationVerified !== false) return invalid();
+    registeredConfigurations.add(r.configurationId as string);
+    const expectedPlan = { contractVersion: 2, scope, eventId: record.eventId, preparationId: p.id, preparationDigest: p.digest,
+      sourceQuote: { version: p.quoteVersion, digest: p.quoteDigest, approvalDigest: p.approvalDigest, briefDigest: p.briefDigest,
+        catalogDigest: p.catalogDigest, artifactSha256: p.artifactSha256, intendedRecipient: p.intendedRecipient, currency: p.currency,
+        totalCents: p.totalCents, depositCents: p.depositCents, depositBasis: p.depositBasis, terms: p.terms },
+      paymentMode: p.paymentMode, initialPaymentCents: p.initialPaymentCents, paymentBalanceCents: p.paymentBalanceCents,
+      canonicalLeadId: config.canonicalLeadId, paymentTerms: config.paymentTerms, termsChangeReason: config.termsChangeReason,
+      ...configurationFactsV2(config, p, r.atMs as number) };
+    const expectedPrepared = { status: 'prepared_internal', contractVersion: 2, plan: expectedPlan, reviewDigest: c.reviewDigest,
+      internalApproval: { actorId: r.actorId, atMs: r.atMs, purpose: 'internal_payment_plan_only', reviewDigest: c.reviewDigest },
+      executable: false, providerEnabled: false, publicPaymentUrl: null, blockers: ['PROVIDER_DISABLED', 'RECEIVER_V2_UNAVAILABLE'] };
+    if (!sameJson(r.receipt, { status: 'contract_validated_internal', prepared: expectedPrepared,
+      executable: false, providerEnabled: false, publicPaymentUrl: null, authorizationVerified: false })) return invalid();
+  }
+  if (audits.filter(a => a.action === 'configure_payment_v2').length !== configs.length
+    || audits.filter(a => a.action === 'register_payment_draft_v2').length !== registrations.length) return invalid();
+}
+
+/** Reject caller identity/configuration extensions before either browser transport. */
+export function assertPaymentDraftCommandV2(command: QuoteCommand): void {
+  if (command.action !== 'configure_payment_v2' && command.action !== 'register_payment_draft_v2') return;
+  try {
+    const value = exactRow(command, command.action === 'configure_payment_v2'
+      ? ['action', 'key', 'expectedRevision', 'preparationId', 'preparationDigest', 'paymentTerms', 'termsChangeReason', 'paymentSchedule', 'linkExpiration']
+      : ['action', 'key', 'expectedRevision', 'configurationId', 'configurationDigest', 'expectedReviewDigest']);
+    token(value.key); integer(value.expectedRevision, 1);
+    if (command.action === 'register_payment_draft_v2') {
+      token(value.configurationId); digest(value.configurationDigest); digest(value.expectedReviewDigest);
+    } else {
+      token(value.preparationId); digest(value.preparationDigest); requiredText(value.paymentTerms, 4000); nullableText(value.termsChangeReason, 2000);
+      if (value.paymentSchedule !== null) {
+        const schedule = row(value.paymentSchedule);
+        if (schedule.kind === 'retainer_50') {
+          exactRow(schedule, ['kind', 'eventDate', 'eventTime', 'timezone', 'balanceDate', 'balanceTime', 'timingExceptionReason']); nullableText(schedule.timingExceptionReason, 2000);
+        } else if (schedule.kind === 'fixed_49_reservation') {
+          exactRow(schedule, ['kind', 'balanceDate', 'balanceTime', 'timezone', 'agreedBalanceCents']); integer(schedule.agreedBalanceCents, 1);
+        } else return invalid();
+      }
+      const expiration = row(value.linkExpiration); exactRow(expiration, expiration.kind === 'never' ? ['kind'] : ['kind', 'date', 'time', 'timezone']);
+      if (!['never', 'at'].includes(expiration.kind as string)) return invalid();
+      canonicalJson(value);
+    }
+  } catch { throw new EventQuoteClientError('INVALID_COMMAND', 400); }
+}
+
+/** Display-only currency, source and calendar freshness; grants no authority. */
+export function paymentConfigurationV2IsCurrent(configuration: PaymentConfigurationV2, view: EventQuoteView, currentCatalogDigest: string | null, now = Date.now()): boolean {
+  const preparation = view.record.paymentContractPreparationsV2?.find(p => p.id === configuration.preparationId && p.digest === configuration.preparationDigest);
+  const quote = view.record.quotes.at(-1), brief = view.record.briefs.at(-1);
+  if (!preparation || !quote || !brief || view.currentQuoteStatus !== 'approved_internal_unsent' || quote.catalog.validUntilMs <= now
+    || quote.digest !== preparation.quoteDigest || quote.briefDigest !== brief.digest || preparation.briefDigest !== brief.digest
+    || currentCatalogDigest !== quote.catalogDigest || preparation.catalogDigest !== quote.catalogDigest
+    || !view.record.decisions.some(d => d.digest === preparation.approvalDigest && d.quoteDigest === quote.digest)) return false;
+  try { configurationFactsV2(row(configuration.configuration), row(preparation), now); return true; }
+  catch { return false; }
+}
+
+function currentPaymentDraftPreparation(view: EventQuoteView, status: EventQuoteStatusResponse, preparationId: string, now: number) {
+  const p = view.record.paymentContractPreparationsV2?.find(p => p.id === preparationId);
+  const q = view.record.quotes.at(-1), b = view.record.briefs.at(-1);
+  if (!p || !q || !b || !status.enabled || status.paymentDraftsEnabled !== true || status.session.mode !== 'test' || view.record.scope.mode !== 'test'
+    || !status.session.canWrite || !status.session.canApprove || status.session.expiresAtMs <= now || !status.catalog || status.catalog.validUntilMs <= now
+    || view.currentQuoteStatus !== 'approved_internal_unsent' || q.catalog.validUntilMs <= now || q.briefDigest !== b.digest
+    || q.catalogDigest !== status.catalogDigest || p.quoteDigest !== q.digest || p.briefDigest !== b.digest
+    || p.catalogDigest !== q.catalogDigest || p.artifactSha256 !== q.artifact.sha256
+    || !view.record.decisions.some(d => d.digest === p.approvalDigest && d.quoteDigest === q.digest)) throw new EventQuoteClientError('PAYMENT_DRAFT_BLOCKED');
+  return p;
+}
+export function exactPaymentConfigurationV2Command(view: EventQuoteView, status: EventQuoteStatusResponse, key: string, preparationId: string,
+  facts: PaymentConfigurationFactsV2, now = Date.now()): ConfigurePaymentV2Command {
+  const p = currentPaymentDraftPreparation(view, status, preparationId, now);
+  if (view.record.paymentConfigurationsV2?.some(c => c.preparationId === p.id)) throw new EventQuoteClientError('PAYMENT_DRAFT_BLOCKED');
+  exactRow(facts, ['paymentTerms', 'termsChangeReason', 'paymentSchedule', 'linkExpiration']);
+  configurationFactsV2(row(facts), row(p), now);
+  const command: ConfigurePaymentV2Command = { action: 'configure_payment_v2', key, expectedRevision: view.record.revision,
+    preparationId: p.id, preparationDigest: p.digest, ...structuredClone(facts) };
+  assertPaymentDraftCommandV2(command); return command;
+}
+export function exactPaymentDraftRegistrationV2Command(view: EventQuoteView, status: EventQuoteStatusResponse, key: string,
+  configurationId: string, now = Date.now()): RegisterPaymentDraftV2Command {
+  const c = view.record.paymentConfigurationsV2?.find(c => c.id === configurationId);
+  if (!c) throw new EventQuoteClientError('PAYMENT_DRAFT_BLOCKED');
+  currentPaymentDraftPreparation(view, status, c.preparationId, now);
+  if (!paymentConfigurationV2IsCurrent(c, view, status.catalogDigest, now)
+    || view.record.paymentDraftRegistrationsV2?.some(r => r.configurationId === c.id)) throw new EventQuoteClientError('PAYMENT_DRAFT_BLOCKED');
+  const command: RegisterPaymentDraftV2Command = { action: 'register_payment_draft_v2', key, expectedRevision: view.record.revision,
+    configurationId: c.id, configurationDigest: c.digest, expectedReviewDigest: c.reviewDigest };
+  assertPaymentDraftCommandV2(command); return command;
 }

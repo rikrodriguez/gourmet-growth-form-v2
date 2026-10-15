@@ -83,8 +83,13 @@ Before an operational endpoint can use this contract, the existing server must
 resolve and recheck authenticated actor, scope, lead, source quote, catalogue,
 configuration and exact approval; persist the reviewed plan with idempotency,
 revocation and stale-review checks; and register a separately versioned receiver
-with appropriate authenticated replay protection. That composition, storage and
-configuration editor are absent. Keep the original creation service and payment
+with appropriate authenticated replay protection. The subsequent
+[synthetic draft workflow](../../docs/payment-draft-v2.md) exercises the existing
+durable authorization and encrypted aggregate with an explicit fixture lead
+resolver and an isolated PHP callback. It records the receipt as a disabled
+internal draft; it is not a commercial composition or endpoint registration.
+The existing card's condition form and review apply only to that test capability.
+Keep the original creation service and payment
 transport unreachable. Never pass the new envelope to the original v1 endpoint.
 
 Commercial mode definitions are already specified. Individual quotes still need

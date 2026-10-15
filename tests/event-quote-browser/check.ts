@@ -2,15 +2,18 @@ import assert from 'node:assert/strict';
 import { createServer, transformWithEsbuild } from 'vite';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import { PostgresEventQuoteStore } from '../../src/office/backend/event-quote-postgres';
 import { createDurableTestQuoteApi } from '../../src/office/backend/event-quote-durable';
+import { canonical } from '../../src/office/backend/event-quote-workflow';
+import type { EventQuoteRecord, EventQuoteView, PaymentConfigurationFactsV2, PaymentContractModeV2, TestPaymentDraftDependenciesV2 } from '../../src/office/backend/event-quote-contracts';
 import { PostgresQuoteAccessRepository } from '../../src/office/backend/quote-access-postgres';
 import { MondayVault } from '../../src/office/backend/monday-store';
 import { DEFAULT_OFFICE_DATABASE_URL } from '../../src/office/backend/postgres-store';
 import { chromium, type Browser, type Locator } from '@playwright/test';
 import { testScope, testActor, testCatalog } from '../office/event-quote-fixtures';
+import { receiveIsolatedPaymentContractV2 } from '../payments-contract/php-v2-receiver';
 // Explicit isolated test composition, never imported by the app or its servers.
 // Run after starting the local office test database. No external requests or real identity.
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -28,8 +31,40 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const catalog = { ...testCatalog, validUntilMs: now + 86_400_000 };
 let clockOffset = 0;
 let pendingCatalog: { entered(): void; released: Promise<void>; finished(): void } | undefined;
+// Synthetic binding owned by this server fixture. No recipient/email or body
+// field can select a lead, tenant, actor or provider account.
+const canonicalLeadKey = (scope: typeof testScope, event: string) => canonical({ scope, event });
+const canonicalLeadFixtures = new Map([[canonicalLeadKey(testScope, eventId), 'browser-synthetic-canonical-lead']]);
+let validationFault: 'none' | 'altered_receipt' | 'timeout' | 'session_expiry' = 'none';
+let validationCalls = 0, phpStarts = 0, validationAborts = 0, sessionDeadline = 0;
+let latestValidationSignal: AbortSignal | undefined;
+let paymentDraftsEnabled = false;
+const testPaymentDrafts: TestPaymentDraftDependenciesV2 = {
+  resolveCanonicalLead: async (scope, event) => {
+    const canonicalLeadId = canonicalLeadFixtures.get(canonicalLeadKey(scope, event));
+    return canonicalLeadId ? { source: 'synthetic_fixture', canonicalLeadId } : null;
+  },
+  validationTimeoutMs: 2000,
+  validateContract: async (body, nowMs, signal) => {
+    validationCalls++; latestValidationSignal = signal;
+    const receipt = await receiveIsolatedPaymentContractV2(body, nowMs, signal, () => { phpStarts++; });
+    if (validationFault === 'altered_receipt') {
+      const altered = JSON.parse(receipt); altered.authorizationVerified = true;
+      return JSON.stringify(altered);
+    }
+    if (validationFault === 'timeout') {
+      await new Promise<never>((_resolve, reject) => {
+        const abort = () => { validationAborts++; reject(new Error('SYNTHETIC_VALIDATION_DELAY_ABORTED')); };
+        if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
+      });
+    }
+    if (validationFault === 'session_expiry') clockOffset = sessionDeadline - Date.now() + 1;
+    return receipt;
+  },
+};
 const makeApi = () => createDurableTestQuoteApi({ pool, vault, quoteSchema: schema, accessSchema,
   dashboardEventId: eventId, allowedOrigin: 'http://127.0.0.1:4197', resolveExistingSession: () => proof, clock: () => Date.now() + clockOffset,
+  ...(paymentDraftsEnabled ? { testPaymentDrafts } : {}),
   catalogFor: async scope => {
     assert.deepEqual(scope, testScope, 'Catalog must come from the authorized workspace');
     if (pendingCatalog) {
@@ -423,6 +458,253 @@ const captureDraft = async (mode: '50' | '100' | '49', version: number) => {
   await page.getByText(/El servidor retiró o no pudo verificar este acceso/).waitFor(); await assertClosed();
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
   persisted = await store.read(testScope, eventId); assert.equal(persisted!.revision,11); assert.deepEqual(persisted!.paymentPreparations, []); assert.deepEqual(persisted!.paymentContractPreparationsV2, [originalPreparation, fullPreparation, fixedPreparation]); assert.equal(persisted!.decisions.length,3);
+  // Keep the established screenshots and their revision assertions above
+  // intact. The additive proof below uses real HTTP and the same durable SQL
+  // authority, then crosses the actual isolated PHP validator before commit.
+  const beforeHttpProof = structuredClone(persisted!);
+  assert.equal(validationCalls, 0); assert.equal(phpStarts, 0);
+  clockOffset = 0;
+  await pool.query(`UPDATE ${accessSchema}.sessions SET expires_at=$1,revoked_at=NULL`, [new Date(Date.now() + 600_000)]);
+  await pool.query(`UPDATE ${accessSchema}.event_grants SET enabled=true,can_write=true,can_approve=true,effective_to=NULL`);
+  paymentDraftsEnabled = true;
+  await api.close(); api = makeApi(); await api.listen({ host: '127.0.0.1', port: 4198 });
+  const httpBase = `http://127.0.0.1:4197/api/office/event-quotes`;
+  const authorityHeaders = async () => {
+    const response = await page.request.get(`${httpBase}/status`);
+    assert.equal(response.status(), 200, await response.text());
+    const status = await response.json();
+    assert.equal(status.session.mode, 'test');
+    assert.equal(status.paymentDraftsEnabled, true, 'The synthetic configuration capability requires explicit server composition');
+    sessionDeadline = status.session.expiresAtMs;
+    return { Origin: 'http://127.0.0.1:4197', 'x-event-quote-csrf': status.session.csrfToken as string,
+      'x-event-quote-access-revision': status.session.accessRevision as string };
+  };
+  const postCommand = async (command: unknown) => page.request.post(`${httpBase}/${eventId}/commands`, {
+    headers: await authorityHeaders(), data: command,
+  });
+  const commandRecord = async (command: unknown): Promise<EventQuoteRecord> => {
+    const response = await postCommand(command);
+    assert.equal(response.status(), 200, await response.text());
+    const result = await response.json() as EventQuoteView;
+    assert.equal(result.externalEffectsEnabled, false);
+    assert.deepEqual(await store.read(testScope, eventId), result.record, 'Only a committed SQL result may be reported over HTTP');
+    return result.record;
+  };
+  const browserCommand = async (action: string, click: () => Promise<unknown>) => {
+    const responsePromise = page.waitForResponse(response => response.url() === `${httpBase}/${eventId}/commands`
+      && response.request().method() === 'POST' && response.request().postDataJSON()?.action === action);
+    await click();
+    const response = await responsePromise;
+    assert.equal(response.status(), 200, await response.text());
+    const record = ((await response.json()) as EventQuoteView).record;
+    assert.deepEqual(await store.read(testScope, eventId), record);
+    await page.waitForFunction(() => !document.querySelector('[data-testid="persisted-quote-workspace"]')?.textContent?.includes('Guardando'));
+    return { record, command: response.request().postDataJSON() };
+  };
+  const assertRolledBack = async (before: EventQuoteRecord, command: unknown, status: number) => {
+    const response = await postCommand(command);
+    assert.equal(response.status(), status, await response.text());
+    assert.deepEqual(await store.read(testScope, eventId), before, 'Failed validation/authority must roll back record, audit and command receipt');
+  };
+
+  // These explicit far-future calendar fixtures are also exercised by the
+  // isolated v2 round-trip suite. They are never parsed from the free-text brief.
+  const configuredFacts = (mode: PaymentContractModeV2, balanceCents: number): PaymentConfigurationFactsV2 => ({
+    paymentTerms: `${testCatalog.terms}\nFixture de contrato v2: solo borrador interno, sin autorización de cobro.`,
+    termsChangeReason: 'Revisión expresa sintética de las nuevas condiciones.',
+    paymentSchedule: mode === 'full_upfront' ? null : mode === 'retainer_50'
+      ? { kind: mode, eventDate: '2099-12-15', eventTime: '18:00', timezone: 'America/New_York',
+        balanceDate: '2099-12-08', balanceTime: '12:00', timingExceptionReason: null }
+      : { kind: mode, balanceDate: '2099-12-01', balanceTime: '09:30', timezone: 'Asia/Kathmandu', agreedBalanceCents: balanceCents },
+    linkExpiration: { kind: 'at', date: '2099-11-20', time: '13:00', timezone: 'America/New_York' },
+  });
+
+  for (const mode of ['retainer_50', 'full_upfront', 'fixed_49_reservation'] as const) {
+    const prefix = `http-proof-${mode}`;
+    let record = (await store.read(testScope, eventId))!;
+    const existingQuote = record.quotes.at(-1)!;
+    record = await commandRecord({ action: 'quote', key: `${prefix}-quote`, expectedRevision: record.revision,
+      expectedBriefDigest: record.briefs.at(-1)!.digest, expectedCatalogDigest: existingQuote.catalogDigest,
+      selections: existingQuote.lines.map(line => ({ itemId: line.catalogItemId, quantity: line.qty })) });
+    const quote = structuredClone(record.quotes.at(-1)!);
+    record = await commandRecord({ action: 'approve', key: `${prefix}-quote-approval`, expectedRevision: record.revision,
+      quoteVersion: quote.version, quoteDigest: quote.digest, artifactSha256: quote.artifact.sha256, intendedRecipient: record.briefs.at(-1)!.recipient });
+    record = await commandRecord({ action: 'prepare_payment_v2', key: `${prefix}-preparation`, expectedRevision: record.revision,
+      quoteVersion: quote.version, quoteDigest: quote.digest, approvalDigest: record.decisions.at(-1)!.digest,
+      artifactSha256: quote.artifact.sha256, paymentMode: mode });
+    const preparation = structuredClone(record.paymentContractPreparationsV2!.at(-1)!);
+    const sourceQuotes = structuredClone(record.quotes), sourceBriefs = structuredClone(record.briefs), sourceDecisions = structuredClone(record.decisions);
+    const configurationCommand = { action: 'configure_payment_v2', key: `${prefix}-configuration`, expectedRevision: record.revision,
+      preparationId: preparation.id, preparationDigest: preparation.digest, ...configuredFacts(mode, preparation.paymentBalanceCents) };
+    const beforeConfiguration = structuredClone(record);
+    const beforePhp: number = phpStarts;
+    await assertRolledBack(beforeConfiguration, { ...configurationCommand, canonicalLeadId: 'browser-forged-lead' }, 400);
+    if (mode === 'retainer_50') {
+      await pool.query(`UPDATE ${accessSchema}.event_grants SET can_approve=false`);
+      await assertRolledBack(beforeConfiguration, configurationCommand, 403);
+      await pool.query(`UPDATE ${accessSchema}.event_grants SET can_approve=true`);
+      assert.equal(phpStarts, beforePhp, 'Browser injection and missing approval must not reach PHP');
+    }
+    if (mode === 'retainer_50') {
+      await notifyWithdrawal(); await openSaved();
+      await page.getByRole('heading', { name: `Revisión exacta · cotización v${quote.version}`, exact: true }).waitFor();
+      const draft = draftForQuote(quote.version), facts = configuredFacts(mode, preparation.paymentBalanceCents);
+      await draft.getByTestId('payment-v2-terms').fill(facts.paymentTerms);
+      await draft.getByTestId('payment-v2-terms-reason').fill(facts.termsChangeReason!);
+      await draft.getByTestId('payment-v2-event-date').fill('2099-12-15');
+      await draft.getByTestId('payment-v2-event-time').fill('18:00');
+      await draft.getByTestId('payment-v2-calendar-timezone').fill('America/New_York');
+      await draft.getByTestId('payment-v2-balance-date').fill('2099-12-08');
+      await draft.getByTestId('payment-v2-balance-time').fill('12:00');
+      await draft.getByTestId('payment-v2-expiration').selectOption('at');
+      await draft.getByTestId('payment-v2-expiration-date').fill('2099-11-20');
+      await draft.getByTestId('payment-v2-expiration-time').fill('13:00');
+      await draft.getByTestId('payment-v2-expiration-timezone').fill('America/New_York');
+      record = (await browserCommand('configure_payment_v2', () => draft.getByTestId('payment-v2-configure').click())).record;
+      await draft.getByTestId('persisted-payment-v2-review').waitFor();
+      assert.equal(await draft.getByTestId('payment-v2-confirm-review').isChecked(), false);
+      assert.equal(await draft.getByTestId('payment-v2-register').isDisabled(), true, 'Saving conditions cannot approve or register them automatically');
+      await capturePaymentState('payments-v2-conditions-review', draft);
+    } else record = await commandRecord(configurationCommand);
+    assert.equal(record.schemaVersion, 4);
+    const configuration = record.paymentConfigurationsV2!.at(-1)!;
+    if (mode !== 'retainer_50') assert.equal(configuration.id, configurationCommand.key);
+    assert.equal(configuration.configuration.canonicalLeadId, 'browser-synthetic-canonical-lead');
+    assert.equal(configuration.leadSource, 'synthetic_fixture');
+    assert.deepEqual(record.quotes, sourceQuotes); assert.deepEqual(record.briefs, sourceBriefs); assert.deepEqual(record.decisions, sourceDecisions);
+    assert.deepEqual(record.paymentContractPreparationsV2!.at(-1), preparation);
+    assert.equal(phpStarts, beforePhp, 'Saving configuration must not call PHP or create an agreement');
+    const register = { action: 'register_payment_draft_v2', key: `${prefix}-registration`, expectedRevision: record.revision,
+      configurationId: configuration.id, configurationDigest: configuration.digest, expectedReviewDigest: configuration.reviewDigest };
+    const beforeRegistration = structuredClone(record);
+    if (mode === 'retainer_50') {
+      await pool.query(`UPDATE ${accessSchema}.event_grants SET can_write=false,can_approve=false`);
+      await assertRolledBack(beforeRegistration, register, 403);
+      await pool.query(`UPDATE ${accessSchema}.event_grants SET can_write=true,can_approve=true`);
+      assert.equal(phpStarts, beforePhp, 'Read-only SQL authority must reject before validation');
+      for (const fault of ['altered_receipt', 'timeout', 'session_expiry'] as const) {
+        validationFault = fault;
+        const startsBeforeFailure: number = phpStarts;
+        try {
+          await assertRolledBack(beforeRegistration, register, fault === 'session_expiry' ? 403 : fault === 'altered_receipt' ? 422 : 503);
+          assert.equal(phpStarts, startsBeforeFailure + 1, 'Each injected post-PHP failure still validates the actual isolated contract exactly once');
+          if (fault === 'timeout') {
+            assert.equal(latestValidationSignal?.aborted, true, 'Workflow timeout must abort its validation signal');
+            assert.equal(validationAborts, 1);
+          }
+        } finally { validationFault = 'none'; clockOffset = 0; }
+      }
+    }
+    const successfulStarts: number = phpStarts, successfulCalls: number = validationCalls;
+    // Two identical HTTP workflows start in parallel; this does not force SQL
+    // contention. Together they must validate and append only once.
+    let committedCommand: unknown = register;
+    if (mode === 'retainer_50') {
+      // The user sees the exact persisted review before checking its separate
+      // approval and clicking the real registration control in the same card.
+      const draft = draftForQuote(quote.version);
+      await draft.getByTestId('payment-v2-confirm-review').check();
+      const registered = await browserCommand('register_payment_draft_v2', () => draft.getByTestId('payment-v2-register').click());
+      record = registered.record; committedCommand = registered.command;
+      assert.deepEqual(await commandRecord(committedCommand), record);
+      await draft.getByTestId('persisted-payment-v2-registration').getByText('Validación contractual sintética registrada', { exact: true }).waitFor();
+      assert.equal(await draft.locator('a').count(), 0);
+      await capturePaymentState('payments-v2-registered-retainer', draft);
+    } else {
+      const registered = await Promise.all([commandRecord(register), commandRecord(register)]);
+      assert.deepEqual(registered[0], registered[1]); record = registered[0];
+    }
+    assert.equal(phpStarts, successfulStarts + 1); assert.equal(validationCalls, successfulCalls + 1);
+    const registration = record.paymentDraftRegistrationsV2!.at(-1)!;
+    const committedKey = (committedCommand as { key: string }).key;
+    assert.equal(registration.id, committedKey); assert.equal(registration.configurationDigest, configuration.digest);
+    assert.equal(registration.reviewDigest, configuration.reviewDigest); assert.equal(registration.status, 'draft_internal');
+    assert.equal(registration.receipt.status, 'contract_validated_internal');
+    assert.equal(registration.receipt.prepared.plan.canonicalLeadId, 'browser-synthetic-canonical-lead');
+    assert.equal(registration.receipt.prepared.plan.paymentMode, mode);
+    assert.equal(registration.receipt.prepared.plan.initialPaymentCents, preparation.initialPaymentCents);
+    assert.equal(registration.receipt.prepared.plan.paymentBalanceCents, preparation.paymentBalanceCents);
+    assert.equal(registration.receipt.prepared.plan.sourceQuote.depositCents, quote.depositCents);
+    assert.deepEqual(registration.receipt.prepared.plan.sourceQuote.depositBasis, { kind: 'quoted_percentage', basisPoints: quote.catalog.depositBps });
+    for (const result of [registration, registration.receipt, registration.receipt.prepared]) {
+      assert.equal(result.executable, false); assert.equal(result.providerEnabled, false); assert.equal(result.publicPaymentUrl, null);
+    }
+    assert.equal(registration.authorizationVerified, false); assert.equal(registration.receipt.authorizationVerified, false);
+    if (mode === 'full_upfront') assert.equal(registration.receipt.prepared.plan.paymentSchedule, null);
+    assert.deepEqual(record.quotes, sourceQuotes); assert.deepEqual(record.briefs, sourceBriefs); assert.deepEqual(record.decisions, sourceDecisions);
+    assert.deepEqual(record.paymentContractPreparationsV2!.at(-1), preparation);
+    assert.deepEqual(record.paymentConfigurationsV2!.at(-1), configuration);
+    assert.equal(record.receipts.filter(receipt => receipt.key === committedKey).length, 1);
+    assert.equal(record.audit.filter(entry => entry.commandKey === committedKey).length, 1);
+
+    await api.close(); api = makeApi(); await api.listen({ host: '127.0.0.1', port: 4198 });
+    const afterRestart = await page.request.get(`${httpBase}/${eventId}`);
+    assert.equal(afterRestart.status(), 200); assert.deepEqual((await afterRestart.json()).record, record);
+    const startsBeforeReplay: number = phpStarts, callsBeforeReplay: number = validationCalls;
+    assert.deepEqual(await commandRecord(committedCommand), record, 'Restart replay must return the same committed aggregate');
+    assert.equal(phpStarts, startsBeforeReplay); assert.equal(validationCalls, callsBeforeReplay, 'A durable command receipt must skip PHP after restart');
+  }
+  const afterHttpProof = (await store.read(testScope, eventId))!;
+  assert.equal(afterHttpProof.schemaVersion, 4); assert.equal(afterHttpProof.revision, beforeHttpProof.revision + 15);
+  assert.equal(afterHttpProof.paymentConfigurationsV2!.length, 3); assert.equal(afterHttpProof.paymentDraftRegistrationsV2!.length, 3);
+  assert.deepEqual(afterHttpProof.quotes.slice(0, beforeHttpProof.quotes.length), beforeHttpProof.quotes);
+  assert.deepEqual(afterHttpProof.briefs, beforeHttpProof.briefs);
+  assert.deepEqual(afterHttpProof.paymentContractPreparationsV2!.slice(0, 3), beforeHttpProof.paymentContractPreparationsV2);
+  assert.deepEqual(afterHttpProof.paymentPreparations, []);
+  assert.equal(validationCalls, 6); assert.equal(phpStarts, 6); assert.equal(validationAborts, 1);
+  const startsBeforeFinalReload: number = phpStarts, callsBeforeFinalReload: number = validationCalls;
+  await page.reload(); await page.getByTestId('dashboard-verify-quotes').waitFor(); await openSaved();
+  await page.getByRole('heading', { name: `Revisión exacta · cotización v${afterHttpProof.quotes.at(-1)!.version}`, exact: true }).waitFor();
+  const visible = (text: string) => text.replace(/\s+/gu, ' ').trim();
+  for (const configuration of afterHttpProof.paymentConfigurationsV2!) {
+    const preparation = afterHttpProof.paymentContractPreparationsV2!.find(p => p.id === configuration.preparationId)!;
+    const draft = draftForQuote(preparation.quoteVersion), facts = configuration.configuration;
+    const review = draft.getByTestId('persisted-payment-v2-review');
+    await review.waitFor();
+    const text = visible(await review.innerText());
+    for (const value of [preparation.terms, facts.paymentTerms, facts.termsChangeReason, configuration.reviewDigest])
+      if (value !== null) assert.ok(text.includes(visible(value)), `Reload must retain reviewed ${preparation.paymentMode} facts`);
+    if (facts.paymentSchedule) {
+      const schedule = facts.paymentSchedule;
+      for (const value of [schedule.balanceDate, schedule.balanceTime, schedule.timezone]) assert.ok(text.includes(value));
+      if (schedule.kind === 'retainer_50') {
+        for (const value of [schedule.eventDate, schedule.eventTime, schedule.timingExceptionReason ?? 'Sin excepción solicitada'])
+          assert.ok(text.includes(value));
+      }
+    } else assert.ok(text.includes('Sin saldo futuro'));
+    if (facts.linkExpiration.kind === 'at')
+      for (const value of [facts.linkExpiration.date, facts.linkExpiration.time, facts.linkExpiration.timezone]) assert.ok(text.includes(value));
+    assert.match(await draft.getByTestId('persisted-payment-v2-registration').innerText(), /Validación contractual sintética (registrada|obsoleta)/);
+    assert.equal(await draft.getByTestId('payment-v2-register').count(), 0);
+    assert.equal(await draft.getByTestId('payment-v2-confirm-review').count(), 0);
+    assert.equal(await draft.locator('a').count(), 0);
+  }
+  assert.equal(await page.getByTestId('payment-v2-conditions-form').count(), 0);
+  assert.equal(phpStarts, startsBeforeFinalReload); assert.equal(validationCalls, callsBeforeFinalReload, 'Reload/read-only recovery must not validate PHP again');
+  assert.deepEqual(errors, []); assert.deepEqual(external, []);
+  const contractEvidence = new URL('../../test-results/gourmet-payments-contract/', import.meta.url);
+  await mkdir(contractEvidence, { recursive: true });
+  await writeFile(new URL('http-durable-v2.json', contractEvidence), JSON.stringify({
+    nodeVersion: process.version, source: 'Current durable HTTP/PostgreSQL/isolated PHP v2 execution',
+    initialRevision: beforeHttpProof.revision, finalRevision: afterHttpProof.revision, schemaVersion: afterHttpProof.schemaVersion,
+    validationCalls, actualPhpStarts: phpStarts, validationAborts,
+    rollbackCases: ['altered_receipt', 'validation_timeout', 'in_flight_session_expiry'],
+    authorityCases: ['browser_lead_injection_rejected', 'approval_grant_required', 'write_grant_required'],
+    restartReplays: 3, parallelIdenticalRequestModes: ['full_upfront', 'fixed_49_reservation'],
+    browserConfiguredAndConfirmedMode: 'retainer_50', sourceQuoteHistoryPreserved: true,
+    browserReloadPreservedAllConfiguredFacts: true,
+    registrations: afterHttpProof.paymentDraftRegistrationsV2!.map(registration => ({
+      paymentMode: registration.receipt.prepared.plan.paymentMode,
+      quotedDepositCents: registration.receipt.prepared.plan.sourceQuote.depositCents,
+      quotedDepositBasis: registration.receipt.prepared.plan.sourceQuote.depositBasis,
+      initialPaymentCents: registration.receipt.prepared.plan.initialPaymentCents,
+      paymentBalanceCents: registration.receipt.prepared.plan.paymentBalanceCents,
+      bodySha256: registration.bodySha256, receiptDigest: registration.receiptDigest, reviewDigest: registration.reviewDigest,
+      status: registration.status, executable: registration.executable, providerEnabled: registration.providerEnabled,
+      publicPaymentUrl: registration.publicPaymentUrl, authorizationVerified: registration.authorizationVerified,
+    })),
+  }, null, 2) + '\n');
+  console.log('PASS: actual durable HTTP authorization -> PostgreSQL -> isolated PHP v2 -> committed draft for all three modes; explicit server-only synthetic lead binding; altered receipt, timeout/abort and in-flight session expiry roll back aggregate/audit/receipt; SQL permissions reject before PHP; two identical requests initiated in parallel validate once; API restart and command replay skip PHP; final browser reload retains all three configured reviews without registration controls or payment links; source quote history unchanged; 6 actual PHP validation starts, 3 successful internal drafts, no payment URL or customer authorization.');
   console.log('PASS: durable SQL session and fixed-event Dashboard projection; explicit access with no reads on mount/reload/restore/history; Chromium desktop/mobile create -> quote -> internal approval -> explicit 50-percent double-click-safe v2 payment draft without provider URL -> API restart -> recovery -> stale edit -> quote v2 -> explicit full-upfront draft -> quote v3 -> explicit fixed-49 draft; no automatic 49 selection; full-page and readable detail screenshots for all three saved modes in desktop/mobile; artifact isolation; SQL session revocation and grant withdrawal; delayed real GET discarded on close; persisted read-only enforcement and grant expiry; no JS errors or external requests. PostgreSQL preserves exact revisions and decisions. Screenshots in test-results/dashboard-visual/.');
 } finally {
   await browser?.close(); await vite?.close(); await api?.close();

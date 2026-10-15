@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { PaymentConditionsFormV2, PaymentConfigurationReviewV2 } from './PaymentDraftConditionsV2';
 import type { BriefInput, EventQuoteView, QuoteCommand, PaymentContractModeV2 } from '../backend/event-quote-contracts';
-import { EventQuoteClientError, exactPaymentContractV2Preparation, paymentContractV2PreparationBlocked, isPaymentContractModeV2, paymentPreparationIsCurrent, exactQuoteApproval, exactQuoteReviewKey, latestBriefInput, quoteApprovalBlocked, quoteArtifactUrl, verifyQuoteArtifact,
+import { EventQuoteClientError, exactPaymentContractV2Preparation, paymentContractV2PreparationBlocked, isPaymentContractModeV2, paymentConfigurationV2IsCurrent, paymentPreparationIsCurrent, exactQuoteApproval, exactQuoteReviewKey, latestBriefInput, quoteApprovalBlocked, quoteArtifactUrl, verifyQuoteArtifact,
   type EventQuoteClient, type EventQuoteStatusResponse } from '../event-quote-client';
 
 export interface PersistedQuoteWorkspaceProps {
@@ -151,7 +152,7 @@ function BoundWorkspace({ client, eventId }: PersistedQuoteWorkspaceProps) {
         <p className="gew-muted">Impuesto: {status.catalog.taxBps / 100}% · anticipo solicitado: {status.catalog.depositBps / 100}% · vigencia: {new Date(status.catalog.validUntilMs).toISOString()}</p>
         <fieldset className="gew-attestation" disabled={!writable || !view || dirty}><legend>Cantidades explícitas</legend><div className="gew-editor-fields">{status.catalog.items.map(item => <label key={item.id}>{item.label} · {money(item.unitPriceCents)} / {item.unit}<input type="number" min={0} max={1000} step={1} value={quantities[item.id] ?? ''} placeholder="0" onChange={event => { setQuantities(previous => ({ ...previous, [item.id]: event.target.value })); setReviewed(null); }} /></label>)}</div></fieldset>
         <p>{status.catalog.terms}</p><div className="gew-actions"><button type="button" className="gew-button gew-button-primary" disabled={!writable || !view || dirty || !quantitiesValid} onClick={generate}>Generar versión de cotización</button></div></> : <p>Sin catálogo autorizado disponible. No se completan precios automáticamente.</p>}
-    </Card></div><div><PersistedQuoteReview view={view} status={status} writable={writable} dirty={dirty} reviewed={reviewed} verified={verified} onReviewed={setReviewed} onApprove={approve} /><PersistedPaymentPreparation view={view} status={status} writable={writable} dirty={dirty} verified={verified} paymentMode={paymentMode} onPaymentModeChange={setPaymentMode} onPrepare={preparePayment} /></div></div>}
+    </Card></div><div><PersistedQuoteReview view={view} status={status} writable={writable} dirty={dirty} reviewed={reviewed} verified={verified} onReviewed={setReviewed} onApprove={approve} /><PersistedPaymentPreparation view={view} status={status} writable={writable} dirty={dirty} verified={verified} paymentMode={paymentMode} onPaymentModeChange={setPaymentMode} onPrepare={preparePayment} onCommand={command => void execute(command)} /></div></div>}
   </div>;
 }
 
@@ -184,17 +185,18 @@ export function PersistedQuoteReview({ view, status, writable = false, dirty = t
 
 
 /** Reuses the approved card layout; pending preparations never expose a payment link. */
-export function PersistedPaymentPreparation({ view, status, writable = false, dirty = true, verified = null, paymentMode = '', onPaymentModeChange = () => {}, onPrepare = () => {} }: {
+export function PersistedPaymentPreparation({ view, status, writable = false, dirty = true, verified = null, paymentMode = '', onPaymentModeChange = () => {}, onPrepare = () => {}, onCommand = () => {} }: {
   view: EventQuoteView | null; status: EventQuoteStatusResponse; writable?: boolean; dirty?: boolean;
-  verified?: string | null; paymentMode?: PaymentContractModeV2 | ''; onPaymentModeChange?: (mode: PaymentContractModeV2 | '') => void; onPrepare?: () => void;
+  verified?: string | null; paymentMode?: PaymentContractModeV2 | ''; onPaymentModeChange?: (mode: PaymentContractModeV2 | '') => void; onPrepare?: () => void; onCommand?: (command: QuoteCommand) => void;
 }) {
   const preparations = view?.record.paymentPreparations ?? [], drafts = view?.record.paymentContractPreparationsV2 ?? [];
   const quote = view?.record.quotes.at(-1);
+  const hasCurrentPreparation = drafts.some(p => p.quoteDigest === quote?.digest && p.briefDigest === view?.record.briefs.at(-1)?.digest);
   const unavailable = !writable || dirty || !view || verified !== exactQuoteReviewKey(view) || paymentContractV2PreparationBlocked(view, status);
   const blocked = unavailable || !isPaymentContractModeV2(paymentMode) || paymentMode === 'fixed_49_reservation' && (!quote || quote.totalCents <= 4900);
   return <Card title="Preparación de enlace de pago">
     <p>Guarda un borrador interno ligado a la cotización aprobada y a una modalidad elegida expresamente. No crea un enlace, acuerdo de pago, cobro ni envío.</p>
-    <label>Modalidad de pago<select data-testid="persisted-payment-mode" value={paymentMode} disabled={unavailable} onChange={event => onPaymentModeChange(isPaymentContractModeV2(event.target.value) ? event.target.value : '')}>
+    {(!hasCurrentPreparation || status.paymentDraftsEnabled !== true) && <><label>Modalidad de pago<select data-testid="persisted-payment-mode" value={paymentMode} disabled={unavailable} onChange={event => onPaymentModeChange(isPaymentContractModeV2(event.target.value) ? event.target.value : '')}>
       <option value="">Selecciona una modalidad</option>
       <option value="retainer_50">50 % inicial y 50 % de saldo</option>
       <option value="full_upfront">100 % por adelantado</option>
@@ -203,26 +205,47 @@ export function PersistedPaymentPreparation({ view, status, writable = false, di
     {paymentMode === 'retainer_50' && <p className="gew-muted">Propuesta: 50 % inicial; saldo con fecha propuesta de 7 días calendario antes del evento. Requiere fecha del evento y zona horaria verificadas, condiciones y aprobación.</p>}
     {paymentMode === 'full_upfront' && <p className="gew-muted">Pago único del 100 %. Sin saldo futuro. Requiere condiciones explícitas y aprobación.</p>}
     {paymentMode === 'fixed_49_reservation' && <p className="gew-muted">Excepción de reserva fija de USD 49; saldo con fecha acordada. Requiere condiciones explícitas, calendario y aprobación.</p>}
-    <button type="button" className="gew-button gew-button-primary" data-testid="persisted-payment-prepare" disabled={blocked} onClick={onPrepare}>Preparar solicitud de enlace</button>
+    <button type="button" className="gew-button gew-button-primary" data-testid="persisted-payment-prepare" disabled={blocked} onClick={onPrepare}>Preparar solicitud de enlace</button></>}
     {!preparations.length && !drafts.length && <p className="gew-muted">Sin solicitud guardada. Requiere la aprobación interna de la versión vigente, permiso de aprobación y elegir una modalidad.</p>}
     {drafts.map(preparation => {
       const current = view!.currentQuoteStatus === 'approved_internal_unsent' && preparation.quoteDigest === quote?.digest
         && preparation.briefDigest === view!.record.briefs.at(-1)?.digest && preparation.catalogDigest === status.catalogDigest && !!quote && quote.catalog.validUntilMs > Date.now();
+      const configuration = view!.record.paymentConfigurationsV2?.find(c => c.preparationId === preparation.id);
+      const configurationCurrent = !!configuration && current && paymentConfigurationV2IsCurrent(configuration, view!, status.catalogDigest);
+      const registration = configuration && view!.record.paymentDraftRegistrationsV2?.find(r => r.configurationId === configuration.id);
+      const registrationCurrent = !!registration && configurationCurrent && registration.configurationDigest === configuration?.digest
+        && registration.preparationDigest === preparation.digest && registration.reviewDigest === configuration?.reviewDigest;
+      const canManageDraft = writable && !dirty && verified === exactQuoteReviewKey(view!) && current && status.enabled
+        && status.paymentDraftsEnabled === true && status.session.mode === 'test' && view!.record.scope.mode === 'test'
+        && status.session.canWrite && status.session.canApprove && status.session.expiresAtMs > Date.now()
+        && !!status.catalog && status.catalog.validUntilMs > Date.now();
+      const stage = !current ? 'Borrador obsoleto · conservar solo como historial' : registration
+        ? registrationCurrent ? 'Acuerdo borrador de prueba registrado · sin enlace' : 'Validación contractual sintética obsoleta · conservar solo como historial'
+        : configuration ? configurationCurrent ? 'Condiciones de prueba guardadas · pendientes de revisión' : 'Configuración sintética obsoleta · conservar solo como historial'
+          : status.paymentDraftsEnabled === true ? 'Completar condiciones del borrador de prueba · sin enlace' : 'Pendiente de configuración y aprobación · sin enlace';
       return <section key={preparation.id} className="gew-notice" data-testid="persisted-payment-v2-request">
         <h4>Borrador de contrato v2 · cotización v{preparation.quoteVersion}</h4>
-        <p className="gew-tag">{current ? 'Pendiente de configuración y aprobación · sin enlace' : 'Borrador obsoleto · conservar solo como historial'}</p>
+        <p className="gew-tag">{stage}</p>
         <p>Destinatario previsto: {preparation.intendedRecipient}</p>
         <p>Total cotizado: {money(preparation.totalCents)} · Anticipo cotizado: {money(preparation.depositCents)} ({preparation.depositBasis.basisPoints / 100} %) · resto cotizado: {money(preparation.remainingCents)}. Cobrado: desconocido.</p>
-        <p>{preparation.terms}</p>
+        {!configuration && <p>{preparation.terms}</p>}
         {preparation.paymentMode === 'full_upfront' ? <p><strong>100 % por adelantado</strong> · Pago único: {money(preparation.initialPaymentCents)}. Sin saldo futuro.</p>
-          : preparation.paymentMode === 'retainer_50' ? <><p><strong>50 % inicial y 50 % de saldo</strong> · Inicial: {money(preparation.initialPaymentCents)} · saldo: {money(preparation.paymentBalanceCents)}.</p><p>Fecha propuesta: 7 días calendario antes del evento. El calendario requiere fecha del evento y zona horaria verificadas y aprobación.</p></>
-            : <><p><strong>Reserva fija de USD 49 (excepción)</strong> · Inicial: {money(preparation.initialPaymentCents)} · saldo: {money(preparation.paymentBalanceCents)}.</p><p>El saldo requiere una fecha acordada y un calendario aprobado.</p></>}
-        {!preparation.quotedDepositMatchesMode && <p className="gew-notice gew-notice-warning">El importe inicial o la base de cálculo de la modalidad elegida difieren del anticipo cotizado. El anticipo y las condiciones originales se conservan; falta resolver y aprobar esa diferencia.</p>}
-        <ul><li>Proveedor desactivado y receptor del contrato v2 no disponible. Ninguna solicitud se ha enviado.</li>
+          : preparation.paymentMode === 'retainer_50' ? <><p><strong>50 % inicial y 50 % de saldo</strong> · Inicial: {money(preparation.initialPaymentCents)} · saldo: {money(preparation.paymentBalanceCents)}.</p>{!configuration && <p>Fecha propuesta: 7 días calendario antes del evento. El calendario requiere fecha del evento y zona horaria verificadas y aprobación.</p>}</>
+            : <><p><strong>Reserva fija de USD 49 (excepción)</strong> · Inicial: {money(preparation.initialPaymentCents)} · saldo: {money(preparation.paymentBalanceCents)}.</p>{!configuration && <p>El saldo requiere una fecha acordada y un calendario aprobado.</p>}</>}
+        {!preparation.quotedDepositMatchesMode && <p className={configuration ? 'gew-muted' : 'gew-notice gew-notice-warning'}>El importe inicial o la base de cálculo de la modalidad elegida difieren del anticipo cotizado. {configuration ? 'La cotización original y el motivo de revisión se conservan en los hechos guardados.' : 'El anticipo y las condiciones originales se conservan; falta resolver y aprobar esa diferencia.'}</p>}
+        {configuration ? <>
+          <p data-testid="persisted-payment-v2-configuration"><strong>{configurationCurrent ? 'Configuración sintética guardada' : 'Configuración sintética obsoleta · conservar solo como historial'}</strong>{' '}<span>Datos de prueba guardados, sin autorización comercial.</span></p>
+          {registration && <p data-testid="persisted-payment-v2-registration"><strong>{registrationCurrent ? 'Validación contractual sintética registrada' : 'Validación contractual sintética obsoleta · conservar solo como historial'}</strong>{' '}<span>Borrador interno sin enlace; ejecución desactivada y autorización comercial sin verificar.</span></p>}
+          <PaymentConfigurationReviewV2 key={`${configuration.id}:${configuration.digest}:${view!.record.revision}`} view={view!} status={status} configuration={configuration} enabled={canManageDraft && configurationCurrent} showApproval={!registration && current && configurationCurrent && status.paymentDraftsEnabled === true && status.session.mode === 'test'} registered={!!registration} onCommand={onCommand} />
+          {registration && <p data-testid="payment-v2-draft-agreement">Acuerdo borrador de prueba registrado · sin enlace. Ejecución: desactivada. Proveedor: desactivado. Autorización comercial: sin verificar. Cobrado: desconocido.</p>}
+          <p className="gew-muted">La preparación original conserva sus importes y condiciones. Proveedor desactivado. Ninguna solicitud se ha enviado.</p>
+        </> : status.paymentDraftsEnabled === true && current ? <p className="gew-muted">Completa las condiciones para revisar este borrador de prueba. El proveedor y la ejecución permanecen desactivados.</p> : <ul><li>Proveedor desactivado y receptor del contrato v2 no disponible. Ninguna solicitud se ha enviado.</li>
           <li>Falta vincular el lead canónico autorizado.</li>
           <li>Falta la expiración aprobada del eventual enlace.</li>
           {preparation.paymentMode !== 'full_upfront' && <li>Faltan calendario de pago y zona horaria aprobados. La fecha propuesta del evento no aprueba ese calendario.</li>}
-          <li>Faltan las condiciones explícitas del contrato v2 y su aprobación autorizada. La aprobación interna de la cotización no autoriza este contrato.</li></ul>
+          <li>Faltan las condiciones explícitas del contrato v2 y su aprobación autorizada. La aprobación interna de la cotización no autoriza este contrato.</li></ul>}
+        {!configuration && current && status.paymentDraftsEnabled === true && status.session.mode === 'test' && view!.record.scope.mode === 'test'
+          && <PaymentConditionsFormV2 key={`${preparation.id}:${preparation.digest}`} view={view!} status={status} preparation={preparation} enabled={canManageDraft} onCommand={onCommand} />}
         <p className="gew-muted">Solicitud: <span className="gew-hash">{preparation.id}</span></p>
         <p className="gew-muted">Huella: <span className="gew-hash">{preparation.digest}</span></p>
       </section>;

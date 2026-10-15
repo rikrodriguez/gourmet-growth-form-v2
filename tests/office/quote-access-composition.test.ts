@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { after, before, beforeEach, test } from 'node:test';
 import { Pool } from 'pg';
-import type { EventQuoteRecord, EventQuoteView, QuoteCommand } from '../../src/office/backend/event-quote-contracts';
+import type { EventQuoteRecord, EventQuoteView, QuoteCommand, TestPaymentDraftDependenciesV2 } from '../../src/office/backend/event-quote-contracts';
 import { createDurableTestQuoteApi } from '../../src/office/backend/event-quote-durable';
 import { EVENT_QUOTE_API as API, EVENT_QUOTE_CSRF_HEADER as CSRF } from '../../src/office/backend/event-quote-http';
 import { eventQuoteStorageKey, PostgresEventQuoteStore } from '../../src/office/backend/event-quote-postgres';
@@ -24,17 +24,81 @@ const headers = { host: 'quote.test', origin: 'https://quote.test', 'content-typ
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 let now = TEST_AT;
 let eventId: string;
+const expirySources = ['session', 'membership', 'grant'] as const;
 
-function makeApp(onCatalog?: (call: number) => void | Promise<void>) {
+function makeApp(onCatalog?: (call: number) => void | Promise<void>, testPaymentDrafts?: TestPaymentDraftDependenciesV2) {
   let calls = 0;
   return createDurableTestQuoteApi({ pool, vault, accessSchema, quoteSchema, allowedOrigin: headers.origin,
-    clock: () => now, resolveExistingSession: async () => proof,
+    clock: () => now, resolveExistingSession: async () => proof, testPaymentDrafts,
     catalogFor: async scope => {
       assert.deepEqual(scope, testScope);
       await onCatalog?.(++calls);
       return structuredClone(testCatalog);
     },
   });
+}
+
+// This mock isolates the authorization-after-SQL boundary. The browser harness
+// separately runs the actual network-disabled PHP validator for all three modes.
+const syntheticPaymentDrafts: TestPaymentDraftDependenciesV2 = {
+  async resolveCanonicalLead(scope, id) {
+    assert.deepEqual(scope, testScope); assert.equal(id, eventId);
+    return { source: 'synthetic_fixture', canonicalLeadId: `fixture:${id}` };
+  },
+  async validateContract(body) {
+    return JSON.stringify({ status: 'contract_validated_internal', prepared: JSON.parse(body),
+      executable: false, providerEnabled: false, publicPaymentUrl: null, authorizationVerified: false });
+  },
+};
+async function seedPaymentConfiguration(app: App, configure: boolean) {
+  const quoted = await seed(app, true);
+  const approved = await execute(app, approve(quoted));
+  const q = approved.record.quotes.at(-1)!, d = approved.record.decisions.at(-1)!;
+  const selected = await execute(app, { action: 'prepare_payment_v2', key: 'synthetic-select-mode', expectedRevision: approved.record.revision,
+    quoteVersion: q.version, quoteDigest: q.digest, approvalDigest: d.digest, artifactSha256: q.artifact.sha256, paymentMode: 'full_upfront' });
+  const p = selected.record.paymentContractPreparationsV2!.at(-1)!;
+  const input: QuoteCommand = { action: 'configure_payment_v2', key: 'synthetic-configure-payment', expectedRevision: selected.record.revision,
+    preparationId: p.id, preparationDigest: p.digest, paymentTerms: 'Explicit synthetic full payment conditions.',
+    termsChangeReason: 'Synthetic fixture separately reviews full payment instead of quoted percentage.',
+    paymentSchedule: null, linkExpiration: { kind: 'never' } };
+  return configure ? { record: (await execute(app, input)).record, input } : { record: selected.record, input };
+}
+
+for (const source of expirySources) {
+  for (const action of ['configure_payment_v2', 'register_payment_draft_v2'] as const) {
+    test(`${source} expiry after SQL ${action} rolls back its draft, audit and receipt`, async () => {
+      let app = makeApp(undefined, syntheticPaymentDrafts);
+      try {
+        const seeded = await seedPaymentConfiguration(app, action === 'register_payment_draft_v2');
+        const config = seeded.record.paymentConfigurationsV2?.at(-1);
+        const input: QuoteCommand = action === 'configure_payment_v2' ? seeded.input
+          : { action, key: 'synthetic-register-payment', expectedRevision: seeded.record.revision,
+            configurationId: config!.id, configurationDigest: config!.digest, expectedReviewDigest: config!.reviewDigest };
+        const persisted = await snapshot(), attempts = await writeAttempts(), deadline = TEST_AT + 1000;
+        await expireAt(source, deadline);
+        await app.close();
+        let sawPendingWrite = false;
+        app = makeApp(async () => {
+          // Revalidation can make additional catalogue reads before SQL. Only
+          // expire authority after the nontransactional probe proves the append.
+          if (await writeAttempts() !== attempts + 1) return;
+          sawPendingWrite = true; now = deadline;
+        }, syntheticPaymentDrafts);
+        assertDenied(await command(app, input));
+        assert.equal(sawPendingWrite, true);
+        assert.equal(await writeAttempts(), attempts + 1);
+        assert.deepEqual(await snapshot(), persisted);
+        now = TEST_AT;
+        await app.close(); app = makeApp(undefined, syntheticPaymentDrafts);
+        const retried = await execute(app, input);
+        assert.equal(retried.record.revision, seeded.record.revision + 1);
+        const committed = await snapshot();
+        assert.deepEqual(await execute(app, input), retried);
+        assert.deepEqual(await snapshot(), committed);
+        assert.equal(await writeAttempts(), attempts + 2);
+      } finally { await app.close(); }
+    });
+  }
 }
 type App = ReturnType<typeof makeApp>;
 const command = (app: App, payload: QuoteCommand) => app.inject({ method: 'POST', url: `${API}/${eventId}/commands`, headers, payload });
@@ -69,7 +133,6 @@ async function writeAttempts(): Promise<number> {
   const result = await pool.query(`SELECT CASE WHEN is_called THEN last_value ELSE 0 END AS attempts FROM ${quoteSchema}.write_attempts`);
   return Number(result.rows[0].attempts);
 }
-const expirySources = ['session', 'membership', 'grant'] as const;
 async function expireAt(source: typeof expirySources[number], deadline: number) {
   const table = source === 'session' ? 'sessions' : source === 'membership' ? 'memberships' : 'event_grants';
   const column = source === 'session' ? 'expires_at' : 'effective_to';

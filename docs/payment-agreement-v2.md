@@ -43,6 +43,7 @@ the selection or retrying a different mode under the old idempotency key.
 | 1 | Existing briefs, quotes and decisions, without preparations |
 | 2 | Existing immutable legacy `paymentPreparations` |
 | 3 | Both the legacy ledger, possibly empty, and nonempty `paymentContractPreparationsV2` |
+| 4 | The same immutable ledgers plus explicit synthetic configurations and PHP-validated internal draft registrations |
 
 Schemas 1/2 keep their exact old validation and replay rules. Only a new v2 write
 promotes the encrypted aggregate to schema 3. Both ledgers are append-only;
@@ -98,11 +99,13 @@ is integrity evidence, not authentication; this helper cannot establish a real
 lead relationship or consent. It creates only `prepared_internal` review
 evidence, with `executable:false`, null URL and provider/receiver blockers.
 
-No configuration editor, configuration approval API, storage for completed plan
-reviews or runtime caller is registered. The visible/persisted flow therefore
-stays pending until those sources and approvals are deliberately configured.
-The isolated helper and tests exercise that future contract without claiming
-that operational composition exists. An additive, unregistered PHP v2 contract
+The subsequent [persisted synthetic draft workflow](payment-draft-v2.md) adds
+configuration and separate internal review through the existing command route,
+with encrypted schema 4 storage and explicit server fixture dependencies. The
+same card offers explicit condition entry, review and separate draft confirmation
+only for that test capability. There is no commercial runtime registration, and
+the original preparation remains immutable.
+An additive, unregistered PHP v2 contract
 validator now validates and echoes that exact internal plan through isolated
 TS → PHP → TS checks; see [the receiver boundary](../integrations/gourmet-payments-v2/README.md).
 It reuses original canonical Money only for the explicit USD 49 mode, does not
@@ -130,7 +133,7 @@ guarded subprocess tests the additive PHP v2 contract, original Money reuse,
 exact source/new fact round trips and incompatibility rejections. Its test count
 and log remain distinct from those original 114 checks.
 
-No receiver/provider registration, payment transport, credential, account, real
+No operational receiver/provider registration, payment transport, credential, account, real
 client, link, charge, remote migration, merge or deployment is introduced. The
 legacy PHP E2E that truncates its target database is never used. CI evidence for
 the exact published revision is recorded in draft PR 3, not inferred from the

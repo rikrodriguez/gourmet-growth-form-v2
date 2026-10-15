@@ -28,7 +28,8 @@ function exact(raw: unknown, keys: readonly string[]): raw is Record<string, unk
 /**
  * Server-only, pure preparation. Resolve record, clock, configuration and actor
  * through authorized composition before calling; this helper authenticates none
- * of them. There is no transport or runtime caller. Only the existing reviewed
+ * of them. The synthetic quote workflow calls it without payment transport.
+ * Only the existing reviewed
  * helper can originate a wire snapshot; never accept a client-supplied Prepared.
  */
 export function prepareGourmetPaymentsV2Wire(input: PaymentAgreementReviewInputV2, approval?: unknown): GourmetPaymentsV2Wire | Blocked {

@@ -31,6 +31,7 @@ export type EventQuoteHttpDependencies = { allowedOrigin: string; clock?: () => 
 });
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,95}$/;
 const CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox";
+const APPROVAL_ACTIONS = ['approve', 'prepare_payment', 'prepare_payment_v2', 'configure_payment_v2', 'register_payment_draft_v2'];
 function fail(status: number): never { throw new EventQuoteError('REQUEST_REJECTED', status); }
 function eventId(request: FastifyRequest): string {
   const id = (request.params as Record<string, string>).eventId;
@@ -108,12 +109,13 @@ export function registerEventQuoteRoutes(app: FastifyInstance, dependencies: Eve
     routes.post(`${EVENT_QUOTE_API}/:eventId/commands`, { bodyLimit: 65_536 }, request => {
       const id = eventId(request), body = request.body;
       const action = body && typeof body === 'object' && !Array.isArray(body) ? (body as { action?: unknown }).action : null;
-      const kind = action === 'approve' || action === 'prepare_payment' || action === 'prepare_payment_v2' ? 'approve' : action === 'create' ? 'create' : 'write';
+      const requiresApproval = typeof action === 'string' && APPROVAL_ACTIONS.includes(action);
+      const kind = requiresApproval ? 'approve' : action === 'create' ? 'create' : 'write';
       return run(request, { kind, eventId: id }, async (identity, service) => {
         if (!identity.actor.canWrite || !equalToken(request.headers[EVENT_QUOTE_CSRF_HEADER], identity.csrfToken)) fail(403);
         if (!body || typeof body !== 'object' || Array.isArray(body)) fail(400);
         if (['scope', 'actor', 'actorId', 'organizationId', 'workspaceId', 'mode', 'tenantId'].some(key => Object.hasOwn(body, key))) fail(400);
-        if ((action === 'approve' || action === 'prepare_payment' || action === 'prepare_payment_v2') && !identity.actor.canApprove) fail(403);
+        if (requiresApproval && !identity.actor.canApprove) fail(403);
         return { ...await service.execute(identity.scope, actorOf(identity), id, body),
           ...(dependencies.dashboardAccess && identity.accessRevision ? { accessRevision: identity.accessRevision } : {}) };
       });

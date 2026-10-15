@@ -80,9 +80,30 @@ test('write and approval capabilities are enforced before calling the workflow',
     t.identity({ scope, actor: { ...actor, canWrite: false }, csrfToken: headers[CSRF], expiresAtMs: NOW + 60_000 });
     assert.equal((await t.app.inject({ method: 'POST', url: API + '/test-event/commands', headers, payload: { action: 'create' } })).statusCode, 403);
     t.identity({ scope, actor: { ...actor, canApprove: false }, csrfToken: headers[CSRF], expiresAtMs: NOW + 60_000 });
-    assert.equal((await t.app.inject({ method: 'POST', url: API + '/test-event/commands', headers, payload: { action: 'approve' } })).statusCode, 403);
+    for (const action of ['approve', 'prepare_payment', 'prepare_payment_v2', 'configure_payment_v2', 'register_payment_draft_v2']) {
+      assert.equal((await t.app.inject({ method: 'POST', url: API + '/test-event/commands', headers, payload: { action } })).statusCode, 403, action);
+    }
     assert.equal(t.calls.length, 0);
   } finally { await t.app.close(); }
+});
+
+test('payment draft commands request approval authorization before accessing the workflow', async () => {
+  const t = setup();
+  const targets: unknown[] = [];
+  const app = createEventQuoteApi({ allowedOrigin: ORIGIN, clock: () => NOW,
+    runAuthorized: async (_request, target, operation) => {
+      targets.push(target);
+      return operation({ scope, actor, csrfToken: headers[CSRF], expiresAtMs: NOW + 60_000 }, t.service);
+    },
+  });
+  try {
+    for (const action of ['configure_payment_v2', 'register_payment_draft_v2']) {
+      const response = await app.inject({ method: 'POST', url: API + '/test-event/commands', headers, payload: { action } });
+      assert.equal(response.statusCode, 200, response.body);
+    }
+    assert.deepEqual(targets, [{ kind: 'approve', eventId: 'test-event' }, { kind: 'approve', eventId: 'test-event' }]);
+    assert.equal(t.calls.length, 2);
+  } finally { await app.close(); await t.app.close(); }
 });
 
 test('exact-version artifact GET is authenticated, scoped, read-only, no-store and sandboxed', async () => {
