@@ -7,7 +7,8 @@ export default defineConfig({
   retries: 1,
   workers: 1,
   reporter: 'list',
-  use: { baseURL: 'http://127.0.0.1:4174', trace: 'retain-on-failure' },
+  use: { baseURL: 'http://127.0.0.1:4174', trace: 'retain-on-failure',
+    launchOptions: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : undefined },
   webServer: {
     command: 'npm run dashboard:preview',
     url: 'http://127.0.0.1:4174/',

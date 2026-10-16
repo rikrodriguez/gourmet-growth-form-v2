@@ -1,6 +1,7 @@
 import pg from 'pg';
 import type {
   AuthenticatedStaff,
+  DashboardLeadDetail,
   DashboardListFilters,
   DashboardStore,
   ExperimentReportFilters,
@@ -431,10 +432,10 @@ export class PostgresDashboardStore implements DashboardStore {
     };
   }
 
-  async leadDetail(leadId: string, includeQa: boolean): Promise<Record<string, unknown> | null> {
-    const lead = await this.pool.query(
+  async leadDetail(leadId: string, includeQa: boolean): Promise<DashboardLeadDetail | null> {
+    const lead = await this.pool.query<DashboardLeadDetail['lead']>(
       `SELECT lead_id,session_id,visitor_id,intent_cluster,status,is_qa,created_at,updated_at,
-              crm_status,monday_item_url,monday_synced_at,crm_last_error_code,crm_last_error_at
+              crm_status,monday_item_id::text AS monday_item_id,monday_item_url,monday_synced_at,crm_last_error_code,crm_last_error_at
        FROM growth_v2.leads WHERE lead_id=$1 AND ($2::boolean OR NOT is_qa) AND deleted_at IS NULL`,
       [leadId, includeQa],
     );

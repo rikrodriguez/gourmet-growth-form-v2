@@ -14,7 +14,7 @@ import {
   verifyStaffPassword,
 } from './auth';
 import type { DashboardConfig } from './config';
-import type { AuthenticatedStaff, DashboardStore } from './contracts';
+import type { AuthenticatedStaff, DashboardStore, StaffLeadReadContext } from './contracts';
 import { InvalidDashboardFilterError, parseExperimentFilters, parseListFilters, parseReportingRange } from './filters';
 
 type DashboardAppDependencies = {
@@ -165,11 +165,24 @@ export async function buildDashboardApp({ config, store, serveStatic = true }: D
   app.get('/v1/admin/leads', { preHandler: requireStaff }, async (request) =>
     store.leads(parseListFilters(request.query as Record<string, unknown>)));
   app.get('/v1/admin/leads/:leadId', { preHandler: requireStaff }, async (request, reply) => {
-    const leadId = (request.params as { leadId?: string }).leadId;
-    if (!isUuid(leadId)) throw new InvalidDashboardFilterError('Invalid lead id.');
+    const requestedId = (request.params as { leadId?: string }).leadId;
+    if (!isUuid(requestedId)) throw new InvalidDashboardFilterError('Invalid lead id.');
+    const leadId = requestedId.toLowerCase();
     const range = parseReportingRange(request.query as Record<string, unknown>);
     const detail = await store.leadDetail(leadId, range.includeQa);
-    return detail ?? reply.code(404).send({ error: 'lead_not_found' });
+    if (!detail) return reply.code(404).send({ error: 'lead_not_found' });
+    // The lead read can wait on storage. Reuse the same session owner after I/O
+    // so a withdrawn, expired or disabled identity cannot restore a private view.
+    await requireStaff(request, reply);
+    if (reply.sent) return;
+    if (detail.lead.lead_id !== leadId) throw new Error('lead_context_mismatch');
+    const staff = authenticated.get(request)!;
+    const context: StaffLeadReadContext = {
+      staff_user_id: staff.staffUserId, staff_session_id: staff.staffSessionId, role: staff.role, expires_at: staff.expiresAt,
+      lead_id: detail.lead.lead_id, monday_item_id: detail.lead.monday_item_id,
+      can_read: true, can_approve_document: false, document_status: 'unlinked', event_id: null, proposal_id: null,
+    };
+    return { ...detail, review_context: context };
   });
   app.get('/v1/admin/attribution', { preHandler: requireStaff }, async (request) =>
     store.attribution(parseReportingRange(request.query as Record<string, unknown>)));

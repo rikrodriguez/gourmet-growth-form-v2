@@ -13,6 +13,19 @@ export type AuthenticatedStaff = Omit<StaffUser, 'passwordHash'> & {
   expiresAt: string;
 };
 
+export type DashboardLeadDetail = {
+  lead: Record<string, unknown> & { lead_id: string; monday_item_id: string | null };
+  answers: Record<string, unknown>;
+};
+
+/** Read projection of existing SQL authority. No document or approval authority. */
+export type StaffLeadReadContext = {
+  staff_user_id: string; staff_session_id: string; role: StaffRole; expires_at: string;
+  lead_id: string; monday_item_id: string | null;
+  can_read: true; can_approve_document: false;
+  document_status: 'unlinked'; event_id: null; proposal_id: null;
+};
+
 export type ReportingRange = {
   from: Date;
   to: Date;
@@ -52,7 +65,7 @@ export interface DashboardStore {
   sessions(filters: DashboardListFilters, graceMinutes: number): Promise<Record<string, unknown>>;
   sessionDetail(sessionId: string, includeQa: boolean, graceMinutes: number): Promise<Record<string, unknown> | null>;
   leads(filters: DashboardListFilters): Promise<Record<string, unknown>>;
-  leadDetail(leadId: string, includeQa: boolean): Promise<Record<string, unknown> | null>;
+  leadDetail(leadId: string, includeQa: boolean): Promise<DashboardLeadDetail | null>;
   attribution(range: ReportingRange): Promise<Record<string, unknown>>;
   experiments(filters: ExperimentReportFilters): Promise<Record<string, unknown>>;
   crmHealth(): Promise<Record<string, unknown>>;
