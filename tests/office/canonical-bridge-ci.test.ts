@@ -15,6 +15,7 @@ const verificationBranches = [
   'feat/operational-records-demo-20261016',
   'feat/proposal-host-provider-contract-20261016',
   'fix/proposal-draft-recovery-20261016',
+  'fix/proposal-existing-session-proof-20261016',
   'fix/supply-assignment-withdrawal-20261016',
 ];
 

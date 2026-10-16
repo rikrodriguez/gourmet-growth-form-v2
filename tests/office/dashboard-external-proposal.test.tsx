@@ -41,6 +41,8 @@ test('commercial, contradictory, broad, expired and non-durable server projectio
   (v: ReturnType<typeof projection>) => { Object.assign(v.target, { actorId: 'untrusted' }); },
   (v: ReturnType<typeof projection>) => { v.access.identityKey = 'raw_unbound_identity'; },
   (v: ReturnType<typeof projection>) => { v.csrfToken = ''; },
+  (v: ReturnType<typeof projection>) => { v.csrfToken = 'a'.repeat(513); },
+  (v: ReturnType<typeof projection>) => { v.csrfToken = 'invalid:synthetic:csrf'; },
  ];
  for (const change of changes) {
   const value = projection(); change(value);
@@ -48,6 +50,13 @@ test('commercial, contradictory, broad, expired and non-durable server projectio
   await assert.rejects(() => integration.source.read(signal()));
   assert.equal(integration.renderForLead({ leadId: value.target.leadId, identityKey: value.access.identityKey }), null);
  }
+});
+for (const length of [16, 256, 257, 512]) test(`existing server CSRF proof of ${length} characters preserves the mapped Dashboard context`, async () => {
+ const value = projection(); value.csrfToken = 'a'.repeat(length);
+ const integration = createTestProposalDashboardIntegration({ quoteClient: quotes, subscribe: () => () => {}, fetch: async () => json(value) });
+ const access = await integration.source.read(signal()); assert.equal(access.state, 'ready');
+ const node = integration.renderForLead({ leadId: value.target.leadId, identityKey: value.access.identityKey });
+ assert.match(renderToStaticMarkup(node), /persisted-quote-workspace/);
 });
 test('only the detached server-mapped lead and identity mount the existing workspace; no guessed IDs', async () => {
  const value = projection(); let reads = 0;
