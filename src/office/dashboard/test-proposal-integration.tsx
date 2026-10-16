@@ -56,7 +56,7 @@ export function createTestProposalDashboardIntegration(options: {
         || !/^proposal-[A-Za-z0-9_-]{43}$/.test(access.identityKey) || access.leadIds.length !== 1
         || !target || Object.keys(target).sort().join(',') !== 'eventId,leadId,proposalId'
         || !id(target.leadId) || !id(target.eventId) || !id(target.proposalId) || target.leadId !== access.leadIds[0]
-        || typeof raw.csrfToken !== 'string' || !/^[a-zA-Z0-9_-]{16,256}$/.test(raw.csrfToken)) return deny();
+        || typeof raw.csrfToken !== 'string' || !/^[a-zA-Z0-9_-]{16,512}$/.test(raw.csrfToken)) return deny();
       context = { access: structuredClone(access), target: structuredClone(target), csrfToken: raw.csrfToken, epoch };
       return structuredClone(access);
     },
