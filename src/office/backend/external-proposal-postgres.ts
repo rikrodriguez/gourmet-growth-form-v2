@@ -8,7 +8,7 @@ import type { MondayVault } from './monday-store';
 import { ExternalProposalError, type ProposalAuthority, type ProposalRecord, type SyntheticProposalDocument } from './external-proposal';
 import type { ProposalTarget } from '../external-proposal-contracts';
 import { verifyExternalProposalResponse } from '../external-proposal-response';
-import { historicalLeadKey, normalizeHistoricalLink } from './lead-link-history';
+import { verifyProposalDocument } from './external-proposal-provider';
 
 export type ProposalMapping = Pick<ProposalAuthority, 'bindingId' | 'leadVersionId' | 'eventVersionId' | 'source'>;
 export type DurableProposalCase = {
@@ -54,13 +54,8 @@ export class PostgresExternalProposalRepository {
     exact(value.mapping, ['bindingId', 'leadVersionId', 'eventVersionId', 'source']);
     const versions = new Set<string>();
     for (const doc of value.documents) {
-      exact(doc, ['scope', 'leadId', 'eventId', 'proposalId', 'provider', 'sourceVersion', 'content', 'evidenceRef', 'historicalLink']);
-      const link = normalizeHistoricalLink(doc.historicalLink);
-      if (doc.provider !== 'synthetic' || !same(doc.scope, value.scope) || doc.leadId !== value.target.leadId || doc.eventId !== value.target.eventId || doc.proposalId !== value.target.proposalId
-        || typeof doc.sourceVersion !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(doc.sourceVersion) || versions.has(doc.sourceVersion)
-        || typeof doc.evidenceRef !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(doc.evidenceRef)
-        || doc.content !== null && (typeof doc.content !== 'string' || !doc.content.trim() || Buffer.byteLength(doc.content) > 262144)
-        || link.category !== 'quote' || link.status === 'quarantined' || historicalLeadKey(link.provenance) !== historicalLeadKey(value.mapping.source)) fail();
+      try { verifyProposalDocument(doc, { target: value.target, scope: value.scope, source: value.mapping.source }); } catch { fail(); }
+      if (versions.has(doc.sourceVersion)) fail();
       versions.add(doc.sourceVersion);
     }
     const record = value.record;

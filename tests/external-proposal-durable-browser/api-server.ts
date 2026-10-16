@@ -11,33 +11,40 @@ import { testCatalog } from '../office/event-quote-fixtures';
 import type { EventQuoteIdentity } from '../../src/office/backend/event-quote-http';
 import { EventQuoteError } from '../../src/office/backend/event-quote-contracts';
 import { TEST_PROPOSAL_IDENTITY } from '../../src/office/external-proposal-contracts';
+import { createExistingProposalSessionResolver } from '../../src/office/backend/proposal-host-session';
+import type { FastifyRequest } from 'fastify';
 const config = JSON.parse(process.argv[2]);
 const pool = new Pool({ connectionString: DEFAULT_OFFICE_DATABASE_URL, connectionTimeoutMillis: 1000, max: 6 });
 const vault = proposalVault(), proof = durableProposalProof;
+// Same pre-existing synthetic proof and SQL authority. The host port supplies
+// constraints; the repository must corroborate them on every operation.
+const resolveExistingSession = createExistingProposalSessionResolver({ target: config.target, owner: {
+ readExistingSession: () => ({ proof, target: config.target, actorId: config.actorId, scope: config.scope, expiresAtMs: config.at + 600000 }),
+} });
 const service = createDurableTestProposalService({ ...config, pool, vault });
 const access = new PostgresQuoteAccessRepository(pool, { schema: config.accessSchema });
-const app = createTestProposalApi({ service, allowedOrigin: 'http://127.0.0.1:4194', resolveExistingSession: () => proof });
+const app = createTestProposalApi({ service, allowedOrigin: 'http://127.0.0.1:4194', resolveExistingSession });
 app.addHook('preHandler', async request => {
  if (config.dashboard && request.url.startsWith('/__durable-quote/')) {
-  const projected = await service.access(proof);
+  const projected = await service.access(await resolveExistingSession(request));
   if (request.headers[TEST_PROPOSAL_IDENTITY] !== projected.access.identityKey) throw new EventQuoteError('ACCESS_CHANGED', 403);
  }
 });
 const catalog = { ...testCatalog, validUntilMs: config.at + 600000 };
-const quotes = <T,>(operation: (client: ReturnType<typeof createEventQuoteService>, identity: EventQuoteIdentity) => Promise<T>) => access.run(proof, { kind: 'read', eventId: config.target.eventId }, async (identity, client) => {
+const quotes = async <T,>(request: FastifyRequest, operation: (client: ReturnType<typeof createEventQuoteService>, identity: EventQuoteIdentity) => Promise<T>) => access.run(await resolveExistingSession(request), { kind: 'read', eventId: config.target.eventId }, async (identity, client) => {
  const store = new PostgresEventQuoteStore(pool, { vault, schema: config.quoteSchema, transaction: client });
  return operation(createEventQuoteService({ store, catalogFor: async () => catalog }), identity);
 });
 // Read-only existing workspace. No quote writes, payment routes or new editor.
-app.get('/__durable-quote/status', () => quotes(async (service, identity) => ({ ...await service.status(identity.scope, { ...identity.actor, expiresAtMs: identity.expiresAtMs, canWrite: false, canApprove: false }),
+app.get('/__durable-quote/status', request => quotes(request, async (service, identity) => ({ ...await service.status(identity.scope, { ...identity.actor, expiresAtMs: identity.expiresAtMs, canWrite: false, canApprove: false }),
  session: { mode: 'test', canWrite: false, canApprove: false, csrfToken: proof.csrfToken, expiresAtMs: identity.expiresAtMs }, externalEffectsEnabled: false })));
-app.get('/__durable-quote/read', () => quotes((service, identity) => service.read(identity.scope, { ...identity.actor, expiresAtMs: identity.expiresAtMs }, config.target.eventId)));
+app.get('/__durable-quote/read', request => quotes(request, (service, identity) => service.read(identity.scope, { ...identity.actor, expiresAtMs: identity.expiresAtMs }, config.target.eventId)));
 app.post('/__durable-fixture/control', async request => {
  const action = (request.body as { action: string }).action;
  if (action === 'version') {
-  const value = await service.history(proof); if (!value) throw new Error('Missing fixture');
+  const value = await service.history(await resolveExistingSession(request)); if (!value) throw new Error('Missing fixture');
   const document = structuredClone(value.documents.at(-1)!); document.sourceVersion = `v${value.documents.length + 1}`; document.content += '\nVersión durable sintética actualizada.';
-  await service.publish(proof, document);
+  await service.publishFromProvider(await resolveExistingSession(null), { async read() { return document; } });
  } else if (['readonly', 'revoke', 'restore'].includes(action)) {
   // Fixture controls only: mutate these pre-existing isolated SQL grants.
   const client = await pool.connect();

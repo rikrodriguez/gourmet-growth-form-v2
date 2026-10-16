@@ -5,15 +5,13 @@ import { serializeExternalProposalReview } from '../external-proposal-contracts'
 import type { EventQuoteIdentity } from './event-quote-http';
 import type { LeadLinkIdentity } from './lead-link-http';
 import { CanonicalBridge } from './canonical-bridge';
-import { historicalLeadKey, normalizeHistoricalLink, type HistoricalLinkInput } from './lead-link-history';
+import { ExternalProposalError, readProposalDocument, type ExternalProposalDocumentProvider } from './external-proposal-provider';
+export { ExternalProposalError, type SyntheticProposalDocument } from './external-proposal-provider';
 
 const hash = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
 const digest = (value: unknown) => hash(JSON.stringify(value));
 const copy = <T,>(value: T): T => structuredClone(value);
 const id = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value);
-export class ExternalProposalError extends Error {
-  constructor(readonly code: string) { super(code); }
-}
 function fail(code: string): never { throw new ExternalProposalError(code); }
 function targetInput(target: ProposalTarget): ProposalTarget {
   if (!target || Object.keys(target).sort().join() !== 'eventId,leadId,proposalId' || !Object.values(target).every(id)) fail('INVALID_TARGET');
@@ -26,11 +24,6 @@ export type ProposalAuthority = {
   bindingId: string; leadVersionId: string; eventVersionId: string;
   source: { accountId: string; boardId: string; itemId: string };
   brief: { digest: string; recipient: string };
-};
-export type SyntheticProposalDocument = ProposalTarget & {
-  scope: EventQuoteIdentity['scope']; provider: 'synthetic'; sourceVersion: string;
-  /** Exact UTF-8 text from the trusted fixture provider, never a caller-supplied digest or URL fetch. */
-  content: string | null; evidenceRef: string; historicalLink: HistoricalLinkInput;
 };
 export type ProposalRecord = {
   revision: number; snapshots: ExternalProposalSnapshot[]; approvals: ExternalProposalApproval[];
@@ -65,7 +58,7 @@ export class ExternalProposalService {
   constructor(private readonly options: {
     bridge: CanonicalBridge; store: ExternalProposalStore;
     resolveAuthority(target: ProposalTarget): Promise<ProposalAuthority | null>;
-    provider: { read(target: ProposalTarget): Promise<SyntheticProposalDocument> };
+    provider?: ExternalProposalDocumentProvider;
     clock?: () => number;
   }) {}
   private now() { return (this.options.clock ?? Date.now)(); }
@@ -103,17 +96,11 @@ export class ExternalProposalService {
     return binding;
   }
   private async evidence(a: ProposalAuthority, target: ProposalTarget, associationRevision = 0): Promise<ExternalProposalSnapshot> {
-    const document = copy(await this.options.provider.read(copy(target)));
-    if (document.provider !== 'synthetic' || digest(document.scope) !== digest(a.quote.scope)
-      || document.leadId !== target.leadId || document.eventId !== target.eventId || document.proposalId !== target.proposalId
-      || !id(document.sourceVersion) || !id(document.evidenceRef)
-      || document.content !== null && (typeof document.content !== 'string' || !document.content.trim() || Buffer.byteLength(document.content) > 262144)) fail('PROVIDER_MISMATCH');
-    const history = normalizeHistoricalLink(document.historicalLink);
-    if (history.status === 'quarantined' || history.category !== 'quote'
-      || historicalLeadKey(history.provenance) !== historicalLeadKey(a.source)) fail('SOURCE_MISMATCH');
+    const { document, sha256 } = await readProposalDocument(this.options.provider, { target, scope: a.quote.scope, source: a.source });
+    const history = document.historicalLink;
     const binding = await this.binding(a, target);
     const snapshot = { ...target, provider: 'synthetic' as const, sourceVersion: document.sourceVersion,
-      content: document.content, sha256: document.content === null ? null : hash(document.content),
+      content: document.content, sha256,
       provenance: { ...a.source, observedAt: history.provenance.observedAt, evidenceRef: document.evidenceRef },
       bindingDigest: binding.digest, briefDigest: a.brief.digest, intendedRecipient: a.brief.recipient, associationRevision };
     return { ...snapshot, reviewKey: hash(serializeExternalProposalReview(snapshot)) };

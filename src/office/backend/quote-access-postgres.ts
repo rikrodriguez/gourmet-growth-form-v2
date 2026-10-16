@@ -5,9 +5,10 @@ import type { Pool, PoolClient, QueryResultRow } from 'pg';
 import { EventQuoteError } from './event-quote-contracts';
 import { assertEventId } from './event-quote-workflow';
 import type { EventQuoteIdentity, QuoteAccessTarget } from './event-quote-http';
+import { snapshotQuoteHostBinding, type ExistingQuoteHostBinding } from './proposal-host-session';
 
 /** Proof from an existing server-owned session adapter. This module never issues credentials. */
-export type ExistingQuoteSession = Readonly<{ sessionToken: string; csrfToken: string }>;
+export type ExistingQuoteSession = Readonly<{ sessionToken: string; csrfToken: string; hostIdentity?: ExistingQuoteHostBinding }>;
 const denied = () => new EventQuoteError('ACCESS_DENIED', 403);
 const unauthenticated = () => new EventQuoteError('AUTHENTICATION_REQUIRED', 401);
 const unavailable = () => new EventQuoteError('QUOTE_ACCESS_UNAVAILABLE', 503);
@@ -77,6 +78,7 @@ export class PostgresQuoteAccessRepository {
     if (!proof || !validToken(proof.sessionToken) || !validToken(proof.csrfToken)) throw unauthenticated();
     // Never retain mutable adapter inputs across an await, or store/log raw tokens.
     const tokenHash = hash(proof.sessionToken), csrfToken = proof.csrfToken, csrfHash = hash(csrfToken);
+    const host = proof.hostIdentity === undefined ? undefined : snapshotQuoteHostBinding(proof.hostIdentity);
     const access = structuredClone(target);
     if (access.kind !== 'status') assertEventId(access.eventId);
     if (!['status', 'read', 'artifact', 'create', 'write', 'approve'].includes(access.kind)) throw denied();
@@ -146,7 +148,9 @@ export class PostgresQuoteAccessRepository {
           || !Number.isSafeInteger(row.membership_version) || row.membership_version < 1
           || !/^[a-f0-9]{64}$/.test(row.csrf_hash) || !timingSafeEqual(Buffer.from(csrfHash), Buffer.from(row.csrf_hash))) throw unauthenticated();
         for (const value of [row.organization_id, row.workspace_id, row.actor_id]) assertEventId(value);
-        let deadline = Math.min(millis(row.expires_ms), windowCheck(row.membership_from_ms, row.membership_to_ms, startedAt));
+        if (host && (host.scope.organizationId !== row.organization_id || host.scope.workspaceId !== row.workspace_id || host.scope.mode !== row.mode
+          || host.actorId !== row.actor_id || access.kind === 'status' || host.eventId !== access.eventId)) throw denied();
+        let deadline = Math.min(millis(row.expires_ms), windowCheck(row.membership_from_ms, row.membership_to_ms, startedAt), host?.expiresAtMs ?? Number.MAX_SAFE_INTEGER);
         if (deadline <= startedAt) throw unauthenticated();
         if (!['ADMIN','MANAGER','OPERATIONS','CLOSER'].includes(row.role)) throw denied();
         let canWrite = true, canApprove = ['ADMIN','MANAGER'].includes(row.role);
@@ -168,9 +172,11 @@ export class PostgresQuoteAccessRepository {
           if (['create', 'write', 'approve'].includes(access.kind) && !canWrite || access.kind === 'approve' && !canApprove) throw denied();
           eventGrant = grant;
         }
+        const revisionInputs: unknown[] = [tokenHash, row, access.kind === 'status' ? null : access.eventId, eventGrant];
+        if (host) revisionInputs.push(host);
         const identity: EventQuoteIdentity = { scope: { organizationId: row.organization_id, workspaceId: row.workspace_id, mode: 'test' },
           actor: { actorId: row.actor_id, durable: true, canWrite, canApprove }, csrfToken, expiresAtMs: deadline,
-          accessRevision: createHmac('sha256', this.revisionKey).update(JSON.stringify([tokenHash, row, access.kind === 'status' ? null : access.eventId, eventGrant])).digest('base64url') };
+          accessRevision: createHmac('sha256', this.revisionKey).update(JSON.stringify(revisionInputs)).digest('base64url') };
         const value = await operation(identity, client);
         assertActive();
         // Mutable authority rows remain locked through commit. Temporal expiry is

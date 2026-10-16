@@ -17,7 +17,7 @@ async function stopChild() {
  try { const [code, signal] = await exited; return { code, signal }; } finally { clearTimeout(timer); }
 }
 async function startChild() {
- const config = { target: fixture.target, at: fixture.at, accessSchema: fixture.accessSchema, quoteSchema: fixture.quoteSchema, bridgeSchema: fixture.bridgeSchema, proposalSchema: fixture.proposalSchema, dashboard };
+ const config = { target: fixture.target, actorId: fixture.actorId, scope: fixture.scope, at: fixture.at, accessSchema: fixture.accessSchema, quoteSchema: fixture.quoteSchema, bridgeSchema: fixture.bridgeSchema, proposalSchema: fixture.proposalSchema, dashboard };
  child = fork('tests/external-proposal-durable-browser/api-server.ts', [JSON.stringify(config)], { execArgv: ['--import', 'tsx'], stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
  const current = child;
  await new Promise<void>((resolve, reject) => {
