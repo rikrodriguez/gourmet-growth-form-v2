@@ -1,0 +1,82 @@
+name: Verify staff lead read-only integration
+
+# Branch-only verification. No publication, deployment or live services.
+on:
+  push:
+    branches:
+      - feat/staff-lead-readonly-20261016
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staff-lead-readonly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.repository == 'rikrodriguez/gourmet-growth-form-v2' && github.ref == 'refs/heads/feat/staff-lead-readonly-20261016'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: gourmet_growth_staff_read_test
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gourmet_growth_staff_read_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CI: 'true'
+      TEST_ADMIN_DATABASE_URL: postgres://postgres@127.0.0.1:5432/gourmet_growth_staff_read_test
+      TEST_DATABASE_URL: postgres://gourmet_growth_app_test@127.0.0.1:5432/gourmet_growth_staff_read_test
+    steps:
+      - name: Check out the exact triggering revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Use Node 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Prepare the existing isolated SQL runtime-role fixture
+        run: |
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const client = new pg.Client({ connectionString: process.env.TEST_ADMIN_DATABASE_URL });
+          await client.connect();
+          try { await client.query('CREATE ROLE gourmet_growth_app_test LOGIN'); }
+          finally { await client.end(); }
+          NODE
+      - name: Apply unchanged migrations only to the ephemeral test database
+        env:
+          MIGRATION_DATABASE_URL: postgres://postgres@127.0.0.1:5432/gourmet_growth_staff_read_test
+          APP_DATABASE_ROLE: gourmet_growth_app_test
+        run: npm run db:migrate
+      - name: Check all unit and PostgreSQL regressions
+        run: npm test
+      - name: Check types and both existing builds
+        run: |
+          npm run typecheck
+          npm run build
+          npm run dashboard:build
+      - name: Install the lockfile-compatible test browser
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Check the existing Dashboard in Chromium on three viewport sizes
+        run: npm run test:dashboard:e2e -- --retries=0
+      - name: Retain only synthetic lead-review screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gourmet-staff-lead-readonly-visual
+          path: test-results/staff-lead-visual/*.png
+          retention-days: 3
+          if-no-files-found: error
+          include-hidden-files: false

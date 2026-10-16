@@ -1,5 +1,6 @@
 import React, { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import type { StaffLeadReadContext } from '../contracts';
 import './styles.css';
 
 type NavPage = 'overview' | 'funnel' | 'sessions' | 'leads' | 'attribution' | 'experiments';
@@ -245,20 +246,50 @@ function Sessions({ filters, nonce, unauthorized }: { filters: FilterState; nonc
   return <div className="page-stack"><ListFilterControls value={search} onChange={setSearch} sessions /><section className="panel table-panel">{data && data.rows.length === 0 ? <Empty message="No sessions match this range and filter set." /> : <table><thead><tr><th>Status</th><th>Started</th><th>Last activity</th><th>Step</th><th>Guests</th><th>Service</th><th>ZIP</th><th>Lead</th><th>Source</th><th>Campaign</th><th>Device</th><th>Duration</th></tr></thead><tbody>{data?.rows.map((row: any) => <tr key={row.session_id} onClick={() => setDetail(row.session_id)} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setDetail(row.session_id); }}><td><Status value={row.status} />{row.is_qa && <span className="qa-badge">QA</span>}</td><td>{when(row.started_at)}</td><td>{when(row.last_activity)}</td><td>{row.last_step_id ?? '—'}</td><td>{row.guest_range ?? '—'}</td><td>{row.service_style ?? '—'}</td><td>{row.zip_code ?? '—'}</td><td>{row.lead_captured ? 'Yes ✓' : 'No'}</td><td>{row.source ?? 'Direct'}</td><td>{row.campaign ?? '—'}</td><td>{row.device ?? '—'}</td><td>{duration(row.duration_ms)}</td></tr>)}</tbody></table>}</section>{data?.next_cursor && <button className="load-more" disabled={loadingMore} onClick={() => void load(data.next_cursor, true)}>{loadingMore ? 'Loading…' : 'Load next 50'}</button>}{detail && <SessionDetail id={detail} includeQa={filters.includeQa} close={() => setDetail(null)} />}</div>;
 }
 
-function LeadDetail({ id, includeQa, close }: { id: string; includeQa: boolean; close: () => void }) {
-  const [data, setData] = useState<any>(null);
-  useEffect(() => { void api<any>(`/v1/admin/leads/${id}?range=7d&include_qa=${includeQa}`).then(setData); }, [id, includeQa]);
+function LeadDetail({ id, includeQa, close, user, unauthorized }: { id: string; includeQa: boolean; close: () => void; user: User; unauthorized: () => void }) {
+  const [data, setData] = useState<any>(null), [error, setError] = useState(false);
+  useEffect(() => {
+    let active = true, timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
+    setData(null); setError(false);
+    void api<any>(`/v1/admin/leads/${id}?range=7d&include_qa=${includeQa}`, { signal: controller.signal, cache: 'no-store' }).then(result => {
+      if (!active) return;
+      const context = result?.review_context as StaffLeadReadContext | undefined;
+      const expiresAt = Date.parse(context?.expires_at ?? '');
+      if (!context || context.staff_user_id !== user.staff_user_id || context.role !== user.role
+        || typeof context.staff_session_id !== 'string' || !context.staff_session_id
+        || context.lead_id !== id || result.lead?.lead_id !== id || context.monday_item_id !== result.lead.monday_item_id
+        || context.can_read !== true || context.can_approve_document !== false || context.document_status !== 'unlinked'
+        || context.event_id !== null || context.proposal_id !== null || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('unverified_context');
+      setData(result);
+      timer = setTimeout(() => { if (active) { setData(null); unauthorized(); } }, Math.min(expiresAt - Date.now(), 2_147_483_647));
+    }).catch(reason => {
+      if (!active) return;
+      setData(null);
+      if (reason instanceof Error && reason.message === 'unauthorized') unauthorized();
+      else setError(true);
+    });
+    return () => { active = false; controller.abort(); clearTimeout(timer); };
+  }, [id, includeQa, user.staff_user_id, user.role, unauthorized]);
+  if (error) return <DetailDrawer title="Lead unavailable" subtitle="LEAD" close={close}><p role="alert">The lead and staff session could not be verified. Close this view and open it again.</p></DetailDrawer>;
   if (!data) return <DetailDrawer title="Loading…" subtitle="LEAD" close={close}><div className="loading-grid" /></DetailDrawer>;
   const crmLabel: Record<string, string> = { not_queued: 'Not queued', pending: 'Pending', synced: 'Synced', retrying: 'Retrying', dead: 'Failed' };
-  return <DetailDrawer title={shortId(data.lead.lead_id)} subtitle="LEAD DETAIL" close={close}><div className="detail-actions"><span className="phone-safe">Phone captured ✓</span>{data.lead.is_qa && <span className="qa-badge">QA</span>}</div><dl className="detail-grid"><div><dt>Captured</dt><dd>{when(data.lead.created_at)}</dd></div><div><dt>Status</dt><dd>{data.lead.status}</dd></div><div><dt>Session</dt><dd>{shortId(data.lead.session_id)}</dd></div><div><dt>Intent</dt><dd>{data.lead.intent_cluster}</dd></div><div><dt>Monday</dt><dd>{crmLabel[data.lead.crm_status] ?? 'Unknown'}{data.lead.monday_item_url && <>{' · '}<a href={data.lead.monday_item_url} target="_blank" rel="noreferrer">Open item</a></>}</dd></div></dl><section className="drawer-section"><h3>Lead answers</h3><div className="answer-grid">{Object.entries(data.answers).map(([key, value]) => <div key={key}><span>{key.replaceAll('_', ' ')}</span><strong>{String(value)}</strong></div>)}</div></section><p className="privacy-callout">Phone contents remain encrypted and are intentionally unavailable in the dashboard.</p></DetailDrawer>;
+  return <DetailDrawer title={shortId(data.lead.lead_id)} subtitle="LEAD DETAIL" close={close}><div className="detail-actions"><span className="phone-safe">Phone captured ✓</span>{data.lead.is_qa && <span className="qa-badge">QA</span>}</div><dl className="detail-grid"><div><dt>Captured</dt><dd>{when(data.lead.created_at)}</dd></div><div><dt>Status</dt><dd>{data.lead.status}</dd></div><div><dt>Session</dt><dd>{shortId(data.lead.session_id)}</dd></div><div><dt>Intent</dt><dd>{data.lead.intent_cluster}</dd></div><div><dt>Monday</dt><dd>{crmLabel[data.lead.crm_status] ?? 'Unknown'}{data.lead.monday_item_url && <>{' · '}<a href={data.lead.monday_item_url} target="_blank" rel="noreferrer">Open item</a></>}</dd></div></dl>
+    <section className="drawer-section lead-read-context" aria-label="Lead review context">
+      <h3>Lead review context</h3><p>Staff read access verified.</p>
+      <dl className="detail-grid"><div><dt>Lead ID</dt><dd>{data.review_context.lead_id}</dd></div><div><dt>CRM item</dt><dd>{data.review_context.monday_item_id ?? 'Not linked'}</dd></div></dl>
+      <p>No authorized event or proposal binding is available. Document approval remains disabled.</p>
+      <button className="primary-button" disabled>Approve document</button>
+    </section>
+    <section className="drawer-section"><h3>Lead answers</h3><div className="answer-grid">{Object.entries(data.answers).map(([key, value]) => <div key={key}><span>{key.replaceAll('_', ' ')}</span><strong>{String(value)}</strong></div>)}</div></section><p className="privacy-callout">Phone contents remain encrypted and are intentionally unavailable in the dashboard.</p></DetailDrawer>;
 }
 
-function Leads({ filters, nonce, unauthorized }: { filters: FilterState; nonce: number; unauthorized: () => void }) {
+function Leads({ filters, nonce, unauthorized, user }: { filters: FilterState; nonce: number; unauthorized: () => void; user: User }) {
   const [data, setData] = useState<any>(null); const [error, setError] = useState(''); const [detail, setDetail] = useState<string | null>(null); const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState<ListSearch>({ status: '', step: '', source: '', campaign: '', intent: '', id: '' });
   const load = useCallback(async (cursor?: string | null, append = false) => { try { if (append) setLoadingMore(true); const result = await api<any>(`/v1/admin/leads?${query(filters, listQuery(search, cursor))}`); setData((previous: any) => append && previous ? { ...result, rows: [...previous.rows, ...result.rows] } : result); setError(''); } catch (e) { if (e instanceof Error && e.message === 'unauthorized') unauthorized(); else setError(e instanceof Error ? e.message : 'error'); } finally { setLoadingMore(false); } }, [filters, search, unauthorized]);
   useEffect(() => { void load(); }, [load, nonce]); if (error) return <ErrorPanel error={error} retry={() => void load()} />;
-  return <div className="page-stack"><ListFilterControls value={search} onChange={setSearch} sessions={false} /><section className="panel table-panel">{data && data.rows.length === 0 ? <Empty message="No leads were captured in this range." /> : <table><thead><tr><th>Captured</th><th>Status</th><th>Event</th><th>Guests</th><th>Service</th><th>ZIP</th><th>Time to lead</th><th>Source</th><th>Campaign</th><th>Completed</th><th>Session</th></tr></thead><tbody>{data?.rows.map((row: any) => <tr key={row.lead_id} onClick={() => setDetail(row.lead_id)} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setDetail(row.lead_id); }}><td>{when(row.created_at)}</td><td><strong>{row.status}</strong>{row.is_qa && <span className="qa-badge">QA</span>}</td><td>{row.event_type ?? '—'}</td><td>{row.guest_range ?? '—'}</td><td>{row.service_style ?? '—'}</td><td>{row.zip_code ?? '—'}</td><td>{duration(row.time_to_lead_ms)}</td><td>{row.source ?? 'Direct'}</td><td>{row.campaign ?? '—'}</td><td>{row.completed ? 'Yes ✓' : 'No'}</td><td>{shortId(row.session_id)}</td></tr>)}</tbody></table>}</section>{data?.next_cursor && <button className="load-more" disabled={loadingMore} onClick={() => void load(data.next_cursor, true)}>{loadingMore ? 'Loading…' : 'Load next 50'}</button>}{detail && <LeadDetail id={detail} includeQa={filters.includeQa} close={() => setDetail(null)} />}</div>;
+  return <div className="page-stack"><ListFilterControls value={search} onChange={setSearch} sessions={false} /><section className="panel table-panel">{data && data.rows.length === 0 ? <Empty message="No leads were captured in this range." /> : <table><thead><tr><th>Captured</th><th>Status</th><th>Event</th><th>Guests</th><th>Service</th><th>ZIP</th><th>Time to lead</th><th>Source</th><th>Campaign</th><th>Completed</th><th>Session</th></tr></thead><tbody>{data?.rows.map((row: any) => <tr key={row.lead_id} onClick={() => setDetail(row.lead_id)} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setDetail(row.lead_id); }}><td>{when(row.created_at)}</td><td><strong>{row.status}</strong>{row.is_qa && <span className="qa-badge">QA</span>}</td><td>{row.event_type ?? '—'}</td><td>{row.guest_range ?? '—'}</td><td>{row.service_style ?? '—'}</td><td>{row.zip_code ?? '—'}</td><td>{duration(row.time_to_lead_ms)}</td><td>{row.source ?? 'Direct'}</td><td>{row.campaign ?? '—'}</td><td>{row.completed ? 'Yes ✓' : 'No'}</td><td>{shortId(row.session_id)}</td></tr>)}</tbody></table>}</section>{data?.next_cursor && <button className="load-more" disabled={loadingMore} onClick={() => void load(data.next_cursor, true)}>{loadingMore ? 'Loading…' : 'Load next 50'}</button>}{detail && <LeadDetail key={JSON.stringify([user.staff_user_id, user.role, detail, filters.includeQa, nonce])} id={detail} includeQa={filters.includeQa} user={user} unauthorized={unauthorized} close={() => setDetail(null)} />}</div>;
 }
 
 function Attribution({ filters, nonce, unauthorized }: { filters: FilterState; nonce: number; unauthorized: () => void }) {
@@ -282,7 +313,7 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
   }, [polling]);
   async function logout() { try { await api('/v1/admin/auth/logout', { method: 'POST', body: '{}' }); } finally { onLogout(); } }
   const title = NAV.find((item) => item.id === page)?.label ?? 'Overview';
-  const content = page === 'overview' ? <Overview filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'funnel' ? <FunnelPage filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'sessions' ? <Sessions filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'leads' ? <Leads filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'attribution' ? <Attribution filters={filters} nonce={nonce} unauthorized={unauthorized} /> : <Experiments filters={filters} nonce={nonce} unauthorized={unauthorized} />;
+  const content = page === 'overview' ? <Overview filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'funnel' ? <FunnelPage filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'sessions' ? <Sessions filters={filters} nonce={nonce} unauthorized={unauthorized} /> : page === 'leads' ? <Leads filters={filters} nonce={nonce} unauthorized={unauthorized} user={user} /> : page === 'attribution' ? <Attribution filters={filters} nonce={nonce} unauthorized={unauthorized} /> : <Experiments filters={filters} nonce={nonce} unauthorized={unauthorized} />;
   return <div className="dashboard-shell"><aside className={`sidebar ${mobileNav ? 'open' : ''}`}><div className="brand-lockup"><span className="brand-mark">G</span><span>GOURMET<br /><small>GROWTH OS</small></span></div><nav>{NAV.map((item) => <button className={page === item.id ? 'active' : ''} key={item.id} onClick={() => { setPage(item.id); setMobileNav(false); }}><i>{item.glyph}</i>{item.label}</button>)}</nav><div className="sidebar-foot"><span className="pulse" /> PostgreSQL live</div></aside><main className="workspace"><header className="topbar"><button className="menu-button" onClick={() => setMobileNav(!mobileNav)} aria-label="Toggle navigation">☰</button><div><p className="eyebrow">GROWTH FORM V2</p><h1>{title}</h1></div><div className="topbar-user"><div><strong>{user.email}</strong><span>{user.role}</span></div><button onClick={() => void logout()}>Logout</button></div></header><div className="toolbar"><span className="timezone">Reporting timezone <strong>America/Los_Angeles</strong></span><Filters value={filters} onChange={setFilters} refresh={() => setNonce((value) => value + 1)} polling={polling} setPolling={setPolling} /></div>{filters.includeQa && <div className="qa-banner">QA traffic is included in this view.</div>}<div className="content">{content}</div></main></div>;
 }
 

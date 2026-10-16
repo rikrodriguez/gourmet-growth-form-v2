@@ -10,6 +10,8 @@ import { createPostgresStore } from '../../src/backend/postgres-store';
 import type { DashboardStore } from '../../src/dashboard/contracts';
 import { parseListFilters, parseReportingRange } from '../../src/dashboard/filters';
 import { createPostgresDashboardStore } from '../../src/dashboard/postgres-dashboard-store';
+import { buildDashboardApp } from '../../src/dashboard/app';
+import { hashSessionToken } from '../../src/dashboard/auth';
 import { eventFixture } from '../helpers/fixtures';
 
 const { Pool } = pg;
@@ -20,6 +22,7 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
   let inspection: pg.Pool;
   let runtimeCheck: pg.Pool;
   let dashboardStore: DashboardStore;
+  let growthStore: ReturnType<typeof createPostgresStore>;
   const origin = 'https://gourmet-corporation.com';
 
   before(async () => {
@@ -35,6 +38,7 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
       googleAdsConversionActionId: '7476344812',
     };
     const store = createPostgresStore(databaseUrl!);
+    growthStore = store;
     app = await buildApp({
       config,
       store,
@@ -56,10 +60,110 @@ describe('PostgreSQL backend integration', { skip: !databaseUrl, concurrency: 1 
     await dashboardStore?.close();
   });
 
+  async function staffLeadFixture(role: 'admin' | 'viewer' = 'viewer') {
+    const staffUserId = randomUUID(), staffSessionId = randomUUID();
+    const token = `synthetic_staff_${randomUUID()}`, expiresAt = new Date(Date.now() + 60_000);
+    const leadIds: string[] = [], visitorIds: string[] = [], sessionIds: string[] = [];
+    for (const itemId of ['900000000001', '900000000002']) {
+      const visitorId = randomUUID(), sessionId = randomUUID(); visitorIds.push(visitorId); sessionIds.push(sessionId);
+      const captured = await growthStore.captureLead({
+        visitor_id: visitorId, session_id: sessionId, intent_cluster: 'bbq', idempotency_key: randomUUID(),
+        experiment_id: null, variant_id: null, enhancedConversionEligible: false,
+        encryptedPhone: createPhoneEncryptor(Buffer.alloc(32, 7).toString('base64'), 'integration-v1').encrypt('5035550198'),
+      }, false);
+      const leadId = captured.leadId;
+      await inspection.query('UPDATE growth_v2.leads SET monday_item_id=$2 WHERE lead_id=$1', [leadId, itemId]);
+      leadIds.push(leadId);
+    }
+    await inspection.query(`INSERT INTO growth_v2.staff_users (staff_user_id,email,password_hash,role)
+      VALUES ($1,$2,'synthetic-invalid-login-hash',$3)`, [staffUserId, `${staffUserId}@example.test`, role]);
+    await inspection.query(`INSERT INTO growth_v2.staff_sessions
+      (staff_session_id,staff_user_id,token_hash,created_at,expires_at)
+      VALUES ($1,$2,$3,now()-interval '1 hour',$4)`, [staffSessionId, staffUserId, hashSessionToken(token), expiresAt]);
+    const store = createPostgresDashboardStore(databaseUrl!);
+    const dashboard = await buildDashboardApp({ serveStatic: false, store, config: {
+      environment: 'test', host: '127.0.0.1', port: 3002, databaseUrl: databaseUrl!,
+      origin: 'https://dashboard.example.test', cookieName: 'gourmet_staff_session_v1', sessionTtlHours: 12,
+      abandonmentGraceMinutes: 10, reportingTimezone: 'America/Los_Angeles', gitSha: 'synthetic-staff-read',
+      trustProxy: false, staticDirectory: 'unused',
+    } });
+    return { dashboard, store, staffUserId, staffSessionId, expiresAt, leadIds,
+      headers: { cookie: `gourmet_staff_session_v1=${token}` },
+      async withdraw(kind: 'revoked' | 'expired' | 'disabled') {
+        if (kind === 'disabled') await inspection.query('UPDATE growth_v2.staff_users SET enabled=false WHERE staff_user_id=$1', [staffUserId]);
+        else await inspection.query(`UPDATE growth_v2.staff_sessions SET ${kind === 'revoked' ? 'revoked_at=now()' : "expires_at=now()-interval '1 second'"} WHERE staff_session_id=$1`, [staffSessionId]);
+      },
+      async close() {
+        await dashboard.close(); await inspection.query('DELETE FROM growth_v2.staff_users WHERE staff_user_id=$1', [staffUserId]);
+        await inspection.query('DELETE FROM growth_v2.leads WHERE lead_id=ANY($1::uuid[])', [leadIds]);
+        await inspection.query('DELETE FROM growth_v2.sessions WHERE session_id=ANY($1::uuid[])', [sessionIds]);
+        await inspection.query('DELETE FROM growth_v2.visitors WHERE visitor_id=ANY($1::uuid[])', [visitorIds]);
+      },
+    };
+  }
+
+  for (const role of ['admin', 'viewer'] as const) it(`projects the existing SQL staff session and exact lead with read-only document access for ${role}`, async () => {
+    const f = await staffLeadFixture(role);
+    try {
+      const response = await f.dashboard.inject({ url: `/v1/admin/leads/${f.leadIds[0]}`, headers: f.headers });
+      assert.equal(response.statusCode, 200);
+      assert.deepEqual(response.json().review_context, {
+        staff_user_id: f.staffUserId, staff_session_id: f.staffSessionId, role, expires_at: f.expiresAt.toISOString(),
+        lead_id: f.leadIds[0], monday_item_id: '900000000001', can_read: true, can_approve_document: false,
+        document_status: 'unlinked', event_id: null, proposal_id: null,
+      });
+      assert.doesNotMatch(response.body, /token_hash|password_hash|phone_ciphertext|synthetic_staff_/);
+      assert.equal(response.json().lead.monday_item_id, '900000000001');
+      assert.equal((await f.dashboard.inject({ method: 'POST', url: `/v1/admin/leads/${f.leadIds[0]}`,
+        headers: { ...f.headers, origin: 'https://dashboard.example.test', 'content-type': 'application/json' },
+        payload: { action: 'approve', role: 'admin', event_id: 'forged', proposal_id: 'forged' } })).statusCode, 404);
+    } finally { await f.close(); }
+  });
+
+  it('keeps SQL lead mappings separate and ignores request-supplied actor, event and proposal IDs', async () => {
+    const f = await staffLeadFixture();
+    try {
+      for (const [index, leadId] of f.leadIds.entries()) {
+        const r = await f.dashboard.inject({ url: `/v1/admin/leads/${leadId}?event_id=forged&proposal_id=forged&staff_user_id=forged`, headers: f.headers });
+        assert.equal(r.statusCode, 200); const context = r.json().review_context;
+        assert.equal(context.lead_id, leadId); assert.equal(context.staff_user_id, f.staffUserId);
+        assert.equal(context.monday_item_id, String(900000000001 + index));
+        assert.equal(context.event_id, null); assert.equal(context.proposal_id, null); assert.equal(context.can_approve_document, false);
+        assert.ok(!r.body.includes(f.leadIds[1 - index]));
+      }
+      assert.equal((await f.dashboard.inject({ url: `/v1/admin/leads/${randomUUID()}`, headers: f.headers })).statusCode, 404);
+      const uppercase = await f.dashboard.inject({ url: `/v1/admin/leads/${f.leadIds[0].toUpperCase()}`, headers: f.headers });
+      assert.equal(uppercase.statusCode, 200); assert.equal(uppercase.json().review_context.lead_id, f.leadIds[0]);
+      assert.equal((await f.dashboard.inject({ url: `/v1/admin/leads/${f.leadIds[0]}` })).statusCode, 401);
+    } finally { await f.close(); }
+  });
+
+  for (const kind of ['revoked', 'expired', 'disabled'] as const) {
+    it(`withholds the lead context from an existing ${kind} staff session`, async () => {
+      const f = await staffLeadFixture();
+      try {
+        await f.withdraw(kind);
+        const r = await f.dashboard.inject({ url: `/v1/admin/leads/${f.leadIds[0]}`, headers: f.headers });
+        assert.equal(r.statusCode, 401); assert.deepEqual(r.json(), { error: 'unauthorized' });
+      } finally { await f.close(); }
+    });
+    it(`reauthorizes a ${kind} staff session after the SQL lead read`, async () => {
+      const f = await staffLeadFixture(); let release!: () => void, arrived!: () => void;
+      const waiting = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { arrived = resolve; });
+      const read = f.store.leadDetail.bind(f.store);
+      f.store.leadDetail = async (...args) => { const result = await read(...args); arrived(); await waiting; return result; };
+      try {
+        const pending = f.dashboard.inject({ url: `/v1/admin/leads/${f.leadIds[0]}`, headers: f.headers });
+        void pending.then(() => {}); await started; await f.withdraw(kind); release();
+        const r = await pending; assert.equal(r.statusCode, 401); assert.deepEqual(r.json(), { error: 'unauthorized' });
+      } finally { release(); await f.close(); }
+    });
+  }
+
   it('reports health with verified database connectivity', async () => {
     const response = await app.inject({ method: 'GET', url: '/health' });
     assert.equal(response.statusCode, 200);
-    assert.match(response.headers['x-request-id'] ?? '', /^[0-9a-f-]{36}$/i);
+    assert.match(String(response.headers['x-request-id'] ?? ''), /^[0-9a-f-]{36}$/i);
     assert.deepEqual(response.json(), {
       status: 'ok', database: 'connected', version: 'integration-test', git_sha: 'integration-test',
     });
