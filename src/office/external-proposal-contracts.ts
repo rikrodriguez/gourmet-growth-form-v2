@@ -1,7 +1,16 @@
 import type { QuoteScope } from './backend/event-quote-contracts';
+export const TEST_PROPOSAL_API = '/api/office/test-proposals';
+export const TEST_PROPOSAL_IDENTITY = 'x-test-proposal-identity';
+export const TEST_PROPOSAL_CSRF = 'x-test-proposal-csrf';
 
 /** A document reference, deliberately separate from a calculated QuoteVersion. */
 export type ProposalTarget = { leadId: string; eventId: string; proposalId: string };
+/** Non-secret cache-isolation identity. Preserve strict token parsers even when
+ * the existing base64url access revision starts with '-' or '_'. */
+export function externalProposalIdentityKey(accessRevision: string): string {
+  if (typeof accessRevision !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(accessRevision)) throw new Error('Invalid proposal access revision');
+  return `proposal-${accessRevision}`;
+}
 export type ExternalProposalSnapshot = ProposalTarget & {
   provider: 'synthetic'; sourceVersion: string; content: string | null; sha256: string | null;
   provenance: { accountId: string; boardId: string; itemId: string; observedAt: string; evidenceRef: string };
