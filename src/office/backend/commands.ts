@@ -6,6 +6,7 @@ import { commercialHistoryBinding, resolveCommercialThread } from './commercial-
 import { generateSalesDraft, readSalesDraftContext } from './sales-flow';
 import type { SalesFlowOptions, SalesFlowError } from './sales-flow';
 import { applySupplyOperation, assertSupplyReviewCurrent, bindSupplyReview, ensureSupplyWorkflow, recordSupplyReviewDecision } from './supply-workflow';
+import { applyOperationalOperation } from './operational-workflow';
 
 function demoText(text: string) { return text.startsWith('DEMO — ') ? text : `DEMO — ${text}`; }
 
@@ -52,7 +53,10 @@ export async function executeOfficeCommand(store: OfficeStore, raw: unknown, clo
     if (command.functionId === 'suppliers' && command.action !== 'chat' && item.saleClosed !== true) throw new OfficeError('SALE_NOT_CLOSED', 403);
     const token = sha256(command.idempotencyKey).slice(0, 24);
     let salesFlow: import('./state').CommandRecord['salesFlow'];
-    if (command.action === 'chat') {
+    if (command.operational !== undefined) {
+      const outcome = applyOperationalOperation(state, command, atMs);
+      recordHistory(state, command, atMs, outcome.title, outcome.detail, 'completed');
+    } else if (command.action === 'chat') {
       const response = scriptedResponse(state, caseId, command.functionId);
       const ev = evidence(caseId, `chat-${token}`, atMs, 'demo:scripted-chat');
       item.messages.push({ id: `message-${token}-user`, area: FUNCTION_AREAS[command.functionId], functionId: command.functionId, author: 'Operador · identidad DEMO', text: `DEMO — ${command.text!}`, evidence: ev }, { id: `message-${token}-response`, area: FUNCTION_AREAS[command.functionId], functionId: command.functionId, author: `${FUNCTION_NAMES[command.functionId]} · guion DEMO`, text: response, evidence: { ...ev, reference: `${ev.reference}:response` } });

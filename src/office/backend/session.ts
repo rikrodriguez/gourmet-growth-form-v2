@@ -51,6 +51,7 @@ function tokenFromCookie(cookie: string | undefined) {
 }
 export function authorizeCommand(session: DevelopmentSession, command: OfficeCommand) {
   if (session.role !== 'operator' || !session.caseIds.includes(command.caseId as DemoCaseId) || !session.functionIds.includes(command.functionId)) throw new OfficeError('FORBIDDEN_SCOPE', 403);
+  if (command.operational?.step === 'close_demo' && !session.functionIds.includes('logistics')) throw new OfficeError('FORBIDDEN_SCOPE', 403);
 }
 export function scopeSnapshot(snapshot: OfficeSnapshot, session: DevelopmentSession): OfficeSnapshot {
   const result = structuredClone(snapshot);
@@ -61,6 +62,11 @@ export function scopeSnapshot(snapshot: OfficeSnapshot, session: DevelopmentSess
       if (!session.functionIds.includes('suppliers')) delete scoped.supplyWorkflow.sourcing;
       if (!session.functionIds.includes('logistics')) delete scoped.supplyWorkflow.procurement;
       if (!session.functionIds.includes('suppliers') && !session.functionIds.includes('logistics')) delete scoped.supplyWorkflow;
+    }
+    if (scoped.operationalWorkflow) {
+      if (!session.functionIds.includes('logistics')) delete scoped.operationalWorkflow.logistics;
+      if (!session.functionIds.includes('quality')) delete scoped.operationalWorkflow.quality;
+      if (!session.functionIds.includes('logistics') && !session.functionIds.includes('quality')) delete scoped.operationalWorkflow;
     }
     return scoped;
   });

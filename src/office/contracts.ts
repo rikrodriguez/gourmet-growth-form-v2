@@ -1,4 +1,5 @@
 import type { SupplyOperation, SupplyReviewContext, SupplyWorkflow } from './supply-contracts';
+import type { OperationalOperation, OperationalWorkflow } from './operational-contracts';
 
 export type AreaId = 'sales' | 'coordination' | 'kitchen' | 'finance' | 'direction';
 export type FunctionId = 'sales' | 'proposals' | 'coordination' | 'logistics' | 'suppliers' | 'finance' | 'quality' | 'marketing' | 'talent';
@@ -28,9 +29,10 @@ export type OfficeCase = {
   tasks: OfficeTask[]; results: OfficeResult[]; approvals: OfficeApproval[]; messages: OfficeMessage[];
   commercialThreads?: CommercialThread[];
   supplyWorkflow?: SupplyWorkflow;
+  operationalWorkflow?: OperationalWorkflow;
 };
 export type OfficeSnapshot = { mode: DataMode; asOf: string; cases: OfficeCase[]; note: string; hasMore?: boolean; outboundEffects: 0; mondayWrites: 0 };
-export type OfficeCommand = { idempotencyKey: string; caseId: string; functionId: FunctionId; action: 'draft' | 'chat' | 'approve' | 'reject' | 'cancel' | 'revise'; text?: string; approvalId?: string; revision?: number; digest?: string; commercialThreadId?: string; commercialThreadRevision?: number; commercialThreadDigest?: string; supply?: SupplyOperation };
+export type OfficeCommand = { idempotencyKey: string; caseId: string; functionId: FunctionId; action: 'draft' | 'chat' | 'approve' | 'reject' | 'cancel' | 'revise'; text?: string; approvalId?: string; revision?: number; digest?: string; commercialThreadId?: string; commercialThreadRevision?: number; commercialThreadDigest?: string; supply?: SupplyOperation; operational?: OperationalOperation };
 
 export const STATUS_LABELS: Record<WorkStatus, string> = {
   queued: 'En cola', running: 'En curso', awaiting_approval: 'Por aprobar', blocked: 'Bloqueado',

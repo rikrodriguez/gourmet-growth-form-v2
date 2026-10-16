@@ -6,6 +6,9 @@ import { readSalesWorkflow } from './sales-workflow';
 import type { SupplyReviewContext, SupplyState } from '../supply-contracts';
 import { isSupplyOperation } from '../supply-contracts';
 import { assertSupplyState, projectSupplyWorkflow } from './supply-workflow';
+import { isOperationalOperation, operationalFunction } from '../operational-contracts';
+import type { OperationalState } from '../operational-contracts';
+import { assertOperationalState, projectOperationalWorkflow } from './operational-workflow';
 
 export const DEMO_ACTOR = 'OFFICE_DEMO_OPERATOR';
 export const CASE_IDS = ['demo-aurora', 'demo-cedar', 'demo-harbor'] as const;
@@ -18,14 +21,14 @@ export type OfficeJob = { id: string; caseId: DemoCaseId; area: AreaId; function
 export type ApprovalLink = { id: string; caseId: DemoCaseId; functionId: FunctionId; coreDraftId: string; title: string; account: string; channel: 'email'; recipient: string; attachments: string[]; revision: number; digest: string; status: 'pending' | 'approved_demo' | 'rejected_demo' | 'cancelled_demo'; evidence: Evidence; coreApprovalId?: string; jobId: string; commercialContext?: CommercialThread; supplyContext?: SupplyReviewContext };
 export type CommandRecord = { key: string; digest: string; input: OfficeCommand; actorId: typeof DEMO_ACTOR; atMs: number; salesFlow?: { fingerprint: string; approvalId?: string; error?: 'SALES_PLANNER_FAILED' | 'SALES_PLANNER_TIMEOUT' | 'INVALID_SALES_PLAN' } };
 export type HistoryRecord = OfficeHistory & { caseId: DemoCaseId; commandKey: string | null };
-export type DemoCase = Omit<OfficeCase, 'history' | 'tasks' | 'approvals' | 'commercialThreads' | 'supplyWorkflow'>;
+export type DemoCase = Omit<OfficeCase, 'history' | 'tasks' | 'approvals' | 'commercialThreads' | 'supplyWorkflow' | 'operationalWorkflow'>;
 export type CoreDraft = { kind: string; gourmetEventId: string; currentRevision: number; revisions: Record<string, { draftId: string; revision: number; text?: string; contentDigest: string; [key: string]: unknown }> };
 export type OfficeState = {
   version: 1; mode: 'simulation';
   leads: Record<string, unknown>; closers: Record<string, unknown>; assignments: Record<string, unknown>; callBindings: Record<string, unknown>; callEvents: Record<string, unknown>;
   payments: Record<string, unknown>; invoices: Record<string, unknown>; exceptions: Record<string, unknown>; drafts: Record<string, CoreDraft>; approvals: Record<string, { valid: boolean; [key: string]: unknown }>;
   commands: Record<string, unknown>; sourceLeadBindings: Record<string, unknown>; providerEvents: Record<string, unknown>; audit: Record<string, unknown>; reconciliations: Record<string, unknown>; closerIdentityBindings: Record<string, unknown>;
-  office: { version: 1; syntheticOnly: true; actorId: typeof DEMO_ACTOR; initializedAtMs: number; cases: Record<DemoCaseId, DemoCase>; approvals: Record<string, ApprovalLink>; jobs: Record<string, OfficeJob>; history: Record<string, HistoryRecord>; commands: Record<string, CommandRecord>; supply?: SupplyState };
+  office: { version: 1; syntheticOnly: true; actorId: typeof DEMO_ACTOR; initializedAtMs: number; cases: Record<DemoCaseId, DemoCase>; approvals: Record<string, ApprovalLink>; jobs: Record<string, OfficeJob>; history: Record<string, HistoryRecord>; commands: Record<string, CommandRecord>; supply?: SupplyState; operational?: OperationalState };
 };
 export interface OfficeStore { transact<T>(fn: (state: OfficeState) => T | Promise<T>): Promise<T>; snapshot(): Promise<OfficeState>; }
 
@@ -58,10 +61,12 @@ export function parseOfficeCommand(body: unknown): OfficeCommand {
   const commercialKeys = ['commercialThreadId', 'commercialThreadRevision', 'commercialThreadDigest'];
   const commercial = commercialKeys.some(key => Object.hasOwn(body, key));
   const supply = Object.hasOwn(body, 'supply');
+  const operational = Object.hasOwn(body, 'operational');
+  if (operational && (body.action !== 'draft' || !['logistics', 'quality'].includes(body.functionId as string) || commercial || supply || Object.hasOwn(body, 'text'))) throw new OfficeError('INVALID_OPERATIONAL_COMMAND');
   if (supply && (body.action !== 'draft' || !['suppliers', 'logistics'].includes(body.functionId as string) || commercial || Object.hasOwn(body, 'text'))) throw new OfficeError('INVALID_SUPPLY_COMMAND');
   if (commercial && (body.action !== 'draft' || body.functionId !== 'sales')) throw new OfficeError('INVALID_COMMERCIAL_DRAFT');
   const required = [...base, ...(decision ? ['approvalId', 'revision', 'digest'] : []), ...(['chat', 'revise'].includes(body.action) ? ['text'] : []), ...(commercial ? commercialKeys : [])];
-  const allowed = [...required, ...(body.action === 'draft' && !commercial && !supply ? ['text'] : []), ...(supply ? ['supply'] : [])];
+  const allowed = [...required, ...(body.action === 'draft' && !commercial && !supply && !operational ? ['text'] : []), ...(supply ? ['supply'] : []), ...(operational ? ['operational'] : [])];
   for (const key of Reflect.ownKeys(body)) {
     const descriptor = Object.getOwnPropertyDescriptor(body, key);
     if (typeof key !== 'string' || !allowed.includes(key) || !descriptor?.enumerable || !('value' in descriptor)) throw new OfficeError('UNKNOWN_FIELD');
@@ -78,6 +83,10 @@ export function parseOfficeCommand(body: unknown): OfficeCommand {
     if (!isSupplyOperation(body.supply)) throw new OfficeError('INVALID_SUPPLY_COMMAND');
     const sourcing = ['queue_sourcing', 'ingest_digest', 'evaluate_candidate', 'verify_availability', 'approve_terms', 'select_candidate', 'assign_demo', 'withdraw_assignment'].includes(body.supply.step);
     if (body.functionId !== (sourcing ? 'suppliers' : 'logistics')) throw new OfficeError('INVALID_SUPPLY_FUNCTION', 403);
+  }
+  if (operational) {
+    if (!isOperationalOperation(body.operational)) throw new OfficeError('INVALID_OPERATIONAL_COMMAND');
+    if (body.functionId !== operationalFunction(body.operational)) throw new OfficeError('INVALID_OPERATIONAL_FUNCTION', 403);
   }
   return structuredClone(body) as OfficeCommand;
 }
@@ -97,6 +106,7 @@ export function assertOfficeState(state: OfficeState): void {
     if (link.functionId !== 'sales' || link.recipient !== link.commercialContext.recipient) throw new OfficeError('INVALID_COMMERCIAL_CONTEXT', 503);
   }
   assertSupplyState(state);
+  assertOperationalState(state);
   for (const link of Object.values(state.office.approvals)) if (link.supplyContext !== undefined) {
     if (link.supplyContext.caseId !== link.caseId || link.functionId !== (link.supplyContext.kind === 'selection' ? 'suppliers' : 'logistics') || link.recipient !== 'supply-review@invalid.test' || link.commercialContext !== undefined) throw new OfficeError('INVALID_SUPPLY_CONTEXT', 503);
     assertEvidence(link.supplyContext.evidence, link.caseId);
@@ -128,6 +138,7 @@ export function projectOfficeSnapshot(state: OfficeState, nowMs: number): Office
       return { ...state.office.cases[id],
       commercialThreads: createCommercialThreads(id, state.office.initializedAtMs),
       supplyWorkflow: projectSupplyWorkflow(state, id, nowMs),
+      operationalWorkflow: projectOperationalWorkflow(state, id, nowMs),
       results: bounded([...state.office.cases[id].results, ...workflow.results], false, true).map(currentArea), messages: bounded([...state.office.cases[id].messages]).map(currentArea),
       tasks: bounded([...Object.values(state.office.jobs).filter(row => row.caseId === id), ...workflow.tasks], false, true).map(job => { const { caseId: _caseId, approvalId: _approvalId, revision: _revision, ...task } = job as OfficeJob; return { ...currentArea(task), status: task.status === 'waiting_approval' ? 'awaiting_approval' : task.status }; }),
       approvals: bounded(Object.values(state.office.approvals).filter(row => row.caseId === id), true).map(row => ({ id: row.id, area: FUNCTION_AREAS[row.functionId], functionId: row.functionId, title: row.title, body: state.drafts[row.coreDraftId]?.revisions[row.revision]?.text ?? '', recipient: row.recipient, account: row.account, attachments: row.attachments, channel: row.channel, revision: row.revision, digest: row.digest, status: row.status, evidence: row.evidence, ...(row.commercialContext !== undefined ? { commercialContext: row.commercialContext } : {}), ...(row.supplyContext !== undefined ? { supplyContext: row.supplyContext } : {}) })),
