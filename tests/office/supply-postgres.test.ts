@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { describe, it } from 'node:test';
 import type { TestContext } from 'node:test';
 import type { SupplyOperation } from '../../src/office/supply-contracts';
@@ -7,7 +9,7 @@ import { executeOfficeCommand } from '../../src/office/backend/commands';
 import { PostgresOfficeStore } from '../../src/office/backend/postgres-store';
 import { getSupplyFixtures } from '../../src/office/backend/supply-fixtures';
 import { projectSupplyWorkflow } from '../../src/office/backend/supply-workflow';
-import { OfficeError, canonical, projectOfficeSnapshot } from '../../src/office/backend/state';
+import { OfficeError, canonical, projectOfficeSnapshot, sha256 } from '../../src/office/backend/state';
 import type { ApprovalLink, DemoCaseId, OfficeStore } from '../../src/office/backend/state';
 
 const AT = Date.parse('2026-10-11T16:00:00.000Z');
@@ -66,6 +68,86 @@ async function preparePurchase(store: OfficeStore, prefix: string) {
   assert(reviewed.approvalId);
   return { option: reviewed, link: state.office.approvals[reviewed.approvalId] };
 }
+
+describe('operational records on the existing PostgreSQL aggregate', () => {
+  const exec = promisify(execFile);
+  const view = async (store: OfficeStore) => projectOfficeSnapshot(await store.snapshot(), AT).cases[0].operationalWorkflow!;
+  async function opCommand(store: OfficeStore, detail: Record<string, unknown>, key: string) {
+    const v = await view(store);
+    return { idempotencyKey: key, caseId: 'demo-aurora', functionId: ['set_policy', 'record_receipt', 'confirm_milestone'].includes(detail.step as string) ? 'logistics' : 'quality', action: 'draft', operational: { ...detail, eventId: v.eventId, revision: v.revision, contextDigest: v.contextDigest } };
+  }
+  async function ready(store: OfficeStore, prefix: string) {
+    const selection = await prepareSelection(store, prefix); await approve(store, selection.link, `${prefix}-approve`);
+    await run(store, { step: 'assign_demo', selectionId: selection.selection.id, revision: 1 }, `${prefix}-assign`);
+    const purchase = await preparePurchase(store, prefix); await approve(store, purchase.link, `${prefix}-purchase-approved`);
+    const apply = async (detail: Record<string, unknown>, key: string) => executeOfficeCommand(store, await opCommand(store, detail, key), () => AT);
+    await apply({ step: 'set_policy', policyFixtureId: 'ops-policy-synthetic-v1' }, `${prefix}-policy`);
+    await apply({ step: 'record_receipt', fixtureId: 'ops-demo-aurora-receipt-complete' }, `${prefix}-receipt`);
+    for (const milestone of ['preparation', 'assembly', 'service', 'delivery']) await apply({ step: 'confirm_milestone', milestone, fixtureId: `ops-demo-aurora-${milestone}` }, `${prefix}-${milestone}`);
+    return { apply };
+  }
+  it('persists the complete journey across independent backend processes and replays a lost close result', async t => {
+    const { store, connect, disconnect, stateId } = await database(t);
+    const old = await store.snapshot(); assert.equal(old.office.operational, undefined);
+    const { apply } = await ready(store, 'ops-pg-restart');
+    await apply({ step: 'open_incident', description: 'Material sintético pendiente', owner: 'coordination_demo' }, 'ops-pg-open');
+    const incident = (await view(store)).quality!.incidents[0];
+    await apply({ step: 'acknowledge_incident', incidentId: incident.id }, 'ops-pg-ack');
+    await apply({ step: 'resolve_incident', incidentId: incident.id, resolution: 'Material de ensayo comprobado', fixtureId: 'ops-demo-aurora-resolution' }, 'ops-pg-resolve');
+    const command = await opCommand(store, { step: 'close_demo', reviewDigest: (await view(store)).closure.reviewDigest }, 'ops-pg-close');
+    await disconnect(store);
+    // Invoke the real store/command modules in separate Node processes. No new
+    // server, route, credentials or application harness is introduced.
+    const program = `import {PostgresOfficeStore} from './src/office/backend/postgres-store.ts'; import {executeOfficeCommand} from './src/office/backend/commands.ts'; const store=new PostgresOfficeStore({stateId:process.argv[1]}); try { await store.initialize(${AT}); const r=await executeOfficeCommand(store,JSON.parse(process.argv[2]),()=>${AT}); const v=r.snapshot.cases[0].operationalWorkflow; console.log(JSON.stringify({pid:process.pid,replayed:r.replayed,revision:v.revision,status:v.closure.status,recordId:v.closure.recordId})); } finally {await store.close();}`;
+    const first = JSON.parse((await exec(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', program, stateId, JSON.stringify(command)])).stdout);
+    const second = JSON.parse((await exec(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', program, stateId, JSON.stringify(command)])).stdout);
+    assert.notEqual(first.pid, second.pid); assert.equal(first.replayed, false); assert.equal(second.replayed, true);
+    assert.equal(second.status, 'closed_demo'); assert.equal(first.recordId, second.recordId); assert.equal(first.revision, second.revision);
+    const reopened = await connect(), after = await reopened.snapshot();
+    for (const [key, row] of Object.entries(old.office.commands)) assert.deepEqual(after.office.commands[key], row);
+    assert(after.office.operational!.cases['demo-aurora'].records.every(r => r.actorId === 'OFFICE_DEMO_OPERATOR'));
+    const count = await reopened.pool.query('SELECT count(*)::int AS count FROM office_demo.command_events WHERE state_id=$1 AND command_key=$2', [stateId, command.idempotencyKey]);
+    assert.equal(count.rows[0].count, 1);
+    console.log('OPERATIONAL_RESTART_EVIDENCE=' + JSON.stringify({ ...second, firstPid: first.pid, independentProcesses: true, persisted: true }));
+  });
+  it('serializes an incident racing closure and concurrent retries without losing either audit history', async t => {
+    const { store, connect } = await database(t); await ready(store, 'ops-pg-race'); const other = await connect();
+    const close = await opCommand(store, { step: 'close_demo', reviewDigest: (await view(store)).closure.reviewDigest }, 'ops-pg-race-close');
+    const incident = await opCommand(store, { step: 'open_incident', description: 'Incidencia que compite con cierre', owner: 'quality_demo' }, 'ops-pg-race-incident');
+    const raced = await Promise.allSettled([executeOfficeCommand(store, close, () => AT), executeOfficeCommand(other, incident, () => AT)]);
+    assert.equal(raced.filter(r => r.status === 'fulfilled').length, 1);
+    const rejected = raced.find(r => r.status === 'rejected') as PromiseRejectedResult;
+    assert.equal(rejected.reason.code, 'OPERATIONAL_REVISION_CONFLICT');
+    if ((await view(store)).closure.status === 'closed_demo') {
+      const next = await opCommand(other, { step: 'open_incident', description: 'Incidencia posterior al cierre', owner: 'quality_demo' }, 'ops-pg-after-close');
+      const replayed = await Promise.all([executeOfficeCommand(store, next, () => AT), executeOfficeCommand(other, next, () => AT)]);
+      assert.equal(replayed.filter(r => r.replayed).length, 1);
+    } else {
+      const replayed = await Promise.all([executeOfficeCommand(store, incident, () => AT), executeOfficeCommand(other, incident, () => AT)]);
+      assert(replayed.every(r => r.replayed));
+    }
+    const final = await view(store);
+    assert.notEqual(final.closure.status, 'closed_demo'); assert.equal(final.quality!.incidents.length, 1);
+    const stored = await store.snapshot(), prefix = structuredClone(stored.office.operational!.cases['demo-aurora'].records);
+    await assert.rejects(store.transact(s => {
+      const record = s.office.operational!.cases['demo-aurora'].records[0]; record.evidence.at = new Date(AT + 1).toISOString();
+      const { digest: _digest, ...content } = record; record.digest = sha256(content);
+    }), e => e instanceof OfficeError && e.code === 'OPERATIONAL_APPEND_ONLY');
+    assert.deepEqual((await store.snapshot()).office.operational!.cases['demo-aurora'].records, prefix);
+  });
+  it('reopens old aggregates unchanged and rejects stale dependency bindings after another pool updates the menu', async t => {
+    const { store, connect, disconnect } = await database(t); await ready(store, 'ops-pg-stale'); const other = await connect();
+    const before = await store.snapshot();
+    const late = await opCommand(store, { step: 'confirm_milestone', milestone: 'delivery', fixtureId: 'ops-demo-aurora-delivery' }, 'ops-pg-late');
+    await run(other, { step: 'validate_menu', fixtureId: 'supply-menu-demo-aurora-missing-quantity' }, 'ops-pg-menu-changed');
+    await disconnect(store); const reopened = await connect();
+    await assert.rejects(executeOfficeCommand(reopened, late, () => AT), e => e instanceof OfficeError && e.code === 'OPERATIONAL_REVISION_CONFLICT');
+    const after = await reopened.snapshot();
+    assert.deepEqual(after.office.operational, before.office.operational);
+    assert.equal((await view(reopened)).summary.receipt, 'stale');
+    assert((await view(reopened)).blockers.some(b => /abastecimiento/.test(b)));
+  });
+});
 
 describe('assignment withdrawal on independent PostgreSQL pools', () => {
   it('reads the previous assignment payload and persists withdrawal/replacement without rewriting old command digests', async t => {

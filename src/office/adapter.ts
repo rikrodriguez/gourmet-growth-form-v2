@@ -1,6 +1,7 @@
 import type { AreaId, CommercialThread, DataMode, Evidence, FunctionId, OfficeCase, OfficeCommand, OfficeSnapshot, WorkStatus } from './contracts';
 import { isSupplyOperation } from './supply-contracts';
 import type * as Supply from './supply-contracts';
+import { isOperationalOperation, operationalFunction, readOperationalWorkflow } from './operational-contracts';
 
 export type OfficeErrorCode = 'unauthorized' | 'forbidden' | 'offline' | 'incompatible' | 'conflict' | 'validation';
 const ERROR_MESSAGES: Record<OfficeErrorCode, string> = {
@@ -313,7 +314,7 @@ function supplyWorkflow(value: unknown, mode: DataMode, caseId: string): Supply.
 }
 function officeCase(value: unknown, mode: DataMode): OfficeCase {
   const c = record(value);
-  keys(c, ['id', 'title', 'subtitle', 'evidence', 'payment', 'paymentEvidence', 'supplier', 'supplierEvidence', 'capturedAt', 'attemptedAt', 'connectedAt', 'humanContactVerified', 'callEvidence', 'closerAvailable', 'assignment', 'saleClosed', 'history', 'tasks', 'results', 'approvals', 'messages'], ['commercialThreads', 'supplyWorkflow']);
+  keys(c, ['id', 'title', 'subtitle', 'evidence', 'payment', 'paymentEvidence', 'supplier', 'supplierEvidence', 'capturedAt', 'attemptedAt', 'connectedAt', 'humanContactVerified', 'callEvidence', 'closerAvailable', 'assignment', 'saleClosed', 'history', 'tasks', 'results', 'approvals', 'messages'], ['commercialThreads', 'supplyWorkflow', 'operationalWorkflow']);
   const caseId = id(c.id);
   const result: OfficeCase = {
     id: caseId, title: string(c.title, 200), subtitle: string(c.subtitle, 600), evidence: evidence(c.evidence, mode, caseId),
@@ -342,6 +343,10 @@ function officeCase(value: unknown, mode: DataMode): OfficeCase {
     result.commercialThreads = collection(c.commercialThreads, value => commercialThread(value, mode, caseId));
   }
   if (Object.hasOwn(c, 'supplyWorkflow')) result.supplyWorkflow = supplyWorkflow(c.supplyWorkflow, mode, caseId);
+  if (Object.hasOwn(c, 'operationalWorkflow')) {
+    if (mode !== 'demo') bad();
+    try { result.operationalWorkflow = readOperationalWorkflow(c.operationalWorkflow, caseId); } catch { bad(); }
+  }
   if ((result.payment === 'verified' && !result.paymentEvidence) || (result.supplier === 'accepted' && !result.supplierEvidence)) bad();
   if ((result.attemptedAt || result.connectedAt || result.humanContactVerified) && !result.callEvidence) bad();
   if (result.connectedAt && !result.humanContactVerified) bad();
@@ -438,7 +443,7 @@ function validatedCommand(command: OfficeCommand): OfficeCommand {
     const decision = ['approve', 'reject', 'cancel', 'revise'].includes(command.action);
     const required = ['idempotencyKey', 'caseId', 'functionId', 'action', ...(decision ? ['approvalId', 'revision', 'digest'] : []), ...(['chat', 'revise'].includes(command.action) ? ['text'] : [])];
     const commercialFields = ['commercialThreadId', 'commercialThreadRevision', 'commercialThreadDigest'];
-    keys(item, required, command.action === 'draft' ? ['text', ...commercialFields, 'supply'] : []);
+    keys(item, required, command.action === 'draft' ? ['text', ...commercialFields, 'supply', 'operational'] : []);
     const commandId = (value: unknown) => { const result = id(value); if (result.length > 96 || ['__proto__', 'prototype', 'constructor'].includes(result)) bad(); return result; };
     commandId(item.idempotencyKey); choice(item.caseId, ['demo-aurora', 'demo-cedar', 'demo-harbor']); choice(item.functionId, FUNCTIONS);
     if (item.text !== undefined) string(item.text, 2000);
@@ -456,6 +461,7 @@ function validatedCommand(command: OfficeCommand): OfficeCommand {
       const procurement = ['validate_menu', 'build_purchase_list', 'choose_purchase_option', 'review_purchase'].includes(item.supply.step);
       if (item.functionId !== (procurement ? 'logistics' : 'suppliers')) bad();
     }
+    if (Object.hasOwn(item, 'operational') && (item.action !== 'draft' || !isOperationalOperation(item.operational) || item.functionId !== operationalFunction(item.operational) || ['text', 'supply', ...commercialFields].some(key => Object.hasOwn(item, key)))) bad();
     if (['chat', 'revise'].includes(command.action) && item.text === undefined) bad();
     if (['approve', 'reject', 'cancel', 'revise'].includes(command.action) && (item.approvalId === undefined || item.revision === undefined || item.digest === undefined)) bad();
     return { ...command };

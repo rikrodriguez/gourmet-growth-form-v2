@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 import type { TestContext } from 'node:test';
+import { assertOfficeState } from '../../src/office/backend/state';
 import type { OfficeSnapshot } from '../../src/office/contracts';
 import type { SupplyOperation, SupplyWorkflow } from '../../src/office/supply-contracts';
 import { executeOfficeCommand } from '../../src/office/backend/commands';
 import { createOfficeFixtureState } from '../../src/office/backend/fixtures';
 import { createOfficeApi } from '../../src/office/backend/http';
-import { validateOfficeSnapshot } from '../../src/office/adapter';
+import { OfficeReadError, validateOfficeSnapshot } from '../../src/office/adapter';
+import { readOperationalWorkflow } from '../../src/office/operational-contracts';
 import { getSupplyFixtures } from '../../src/office/backend/supply-fixtures';
 import { parseSupplyOperation, projectSupplyWorkflow } from '../../src/office/backend/supply-workflow';
-import { SESSION_TTL_MS } from '../../src/office/backend/session';
+import { DevelopmentSessions, scopeSnapshot, SESSION_TTL_MS } from '../../src/office/backend/session';
 import { OfficeError, canonical, projectOfficeSnapshot, sha256 } from '../../src/office/backend/state';
 import type { ApprovalLink, DemoCaseId, OfficeState, OfficeStore } from '../../src/office/backend/state';
 
@@ -38,6 +41,224 @@ function supplyCommand(operation: SupplyOperation, key: string, caseId: DemoCase
   return { idempotencyKey: key, caseId, functionId: PROCUREMENT_STEPS.has(operation.step) ? 'logistics' : 'suppliers', action: 'draft', supply: operation };
 }
 function error(code: string) { return (value: unknown) => value instanceof OfficeError && value.code === code; }
+function operationalCommand(state: OfficeState, detail: Record<string, unknown>, key: string, caseId: DemoCaseId = 'demo-aurora') {
+  const v = projectOfficeSnapshot(state, AT).cases.find(c => c.id === caseId)!.operationalWorkflow!;
+  return { idempotencyKey: key, caseId, functionId: ['set_policy', 'record_receipt', 'confirm_milestone'].includes(detail.step as string) ? 'logistics' : 'quality', action: 'draft', operational: { ...detail, eventId: v.eventId, revision: v.revision, contextDigest: v.contextDigest } };
+}
+async function preparedOperational(store: SerializedStore, prefix: string) {
+  const selection = await prepareSelection(store, prefix);
+  await executeOfficeCommand(store, decision(selection.link, 'approve', `${prefix}-approve`), () => AT);
+  await run(store, { step: 'assign_demo', selectionId: selection.selection.id, revision: 1 }, `${prefix}-assign`);
+  const purchase = await preparePurchase(store, prefix);
+  await executeOfficeCommand(store, decision(purchase.link, 'approve', `${prefix}-buy-approve`), () => AT);
+  const apply = (detail: Record<string, unknown>, suffix: string) => executeOfficeCommand(store, operationalCommand(store.state, detail, `${prefix}-${suffix}`), () => AT);
+  await apply({ step: 'set_policy', policyFixtureId: 'ops-policy-synthetic-v1' }, 'policy');
+  await apply({ step: 'record_receipt', fixtureId: 'ops-demo-aurora-receipt-complete' }, 'receipt');
+  for (const milestone of ['preparation', 'assembly', 'service', 'delivery']) await apply({ step: 'confirm_milestone', milestone, fixtureId: `ops-demo-aurora-${milestone}` }, milestone);
+  return { apply, selection, purchase };
+}
+
+describe('operational journal in the existing Office aggregate', () => {
+  for (const boundary of ['contract', 'snapshot adapter'] as const) it(`rejects a status-only forged closure on the real initial projection at the ${boundary} boundary`, () => {
+    const snapshot = projectOfficeSnapshot(createOfficeFixtureState(AT), AT);
+    validateOfficeSnapshot(snapshot, 'demo');
+    const view = snapshot.cases[0].operationalWorkflow!;
+    assert.equal(view.closure.status, 'blocked');
+    assert.equal(view.revision, 0);
+    assert.equal(view.closure.recordId, null);
+    assert.equal(view.policy, null);
+    assert.equal(view.summary.receipt, 'pending');
+    assert(view.summary.milestones.every(m => !m.current && m.recordId === null));
+    const altered = structuredClone(snapshot);
+    altered.cases[0].operationalWorkflow!.closure.status = 'closed_demo';
+    if (boundary === 'contract') assert.throws(() => readOperationalWorkflow(altered.cases[0].operationalWorkflow, snapshot.cases[0].id), /INVALID_OPERATIONAL_WORKFLOW/);
+    else assert.throws(() => validateOfficeSnapshot(altered, 'demo'), value => value instanceof OfficeReadError && value.code === 'incompatible');
+  });
+  it('accepts legitimate scoped closure states and rejects contradictions in a closed projection', async () => {
+    const store = new SerializedStore();
+    const validateScopes = () => {
+      const snapshot = projectOfficeSnapshot(store.state, AT);
+      for (const functionIds of [['logistics'], ['quality'], ['logistics', 'quality']] as const) {
+        const { session } = new DevelopmentSessions(() => AT).create({ caseIds: ['demo-aurora'], functionIds: [...functionIds] });
+        validateOfficeSnapshot(scopeSnapshot(snapshot, session), 'demo');
+      }
+      return snapshot;
+    };
+    validateScopes();
+    const { apply } = await preparedOperational(store, 'ops-response');
+    assert.equal(validateScopes().cases[0].operationalWorkflow!.closure.status, 'review_ready');
+    await apply({ step: 'close_demo', reviewDigest: projectOfficeSnapshot(store.state, AT).cases[0].operationalWorkflow!.closure.reviewDigest }, 'close');
+    const closed = validateScopes();
+    assert.equal(closed.cases[0].operationalWorkflow!.closure.status, 'closed_demo');
+    for (const change of ['revision', 'record', 'policy', 'blockers', 'assignment', 'option', 'receipt', 'milestone', 'close_context', 'close_record', 'close_revision', 'incident'] as const) {
+      const altered = structuredClone(closed), v = altered.cases[0].operationalWorkflow!;
+      if (change === 'revision') v.revision = 0;
+      if (change === 'record') v.closure.recordId = null;
+      if (change === 'policy') v.policy = null;
+      if (change === 'blockers') v.blockers.push('Pendiente sintético');
+      if (change === 'assignment') v.summary.activeAssignmentId = null;
+      if (change === 'option') v.summary.selectedOptionId = null;
+      if (change === 'receipt') v.summary.receipt = 'reference_only';
+      if (change === 'milestone') v.summary.milestones[0].current = false;
+      if (change === 'close_context') v.quality!.records.at(-1)!.operation.contextDigest = '0'.repeat(64);
+      if (change === 'close_record') v.closure.recordId = v.logistics!.records[0].id;
+      if (change === 'close_revision') v.revision++;
+      if (change === 'incident') v.quality!.incidents.push({ id: 'ops-unresolved', description: 'Pendiente sintético', owner: 'quality_demo', milestone: null, status: 'open', current: false, resolutionId: null });
+      assert.throws(() => validateOfficeSnapshot(altered, 'demo'), value => value instanceof OfficeReadError && value.code === 'incompatible', change);
+    }
+    await apply({ step: 'confirm_milestone', milestone: 'delivery', fixtureId: 'ops-demo-aurora-delivery' }, 'new-evidence');
+    assert.equal(validateScopes().cases[0].operationalWorkflow!.closure.status, 'stale');
+    await apply({ step: 'set_policy', policyFixtureId: null }, 'remove-policy');
+    assert.equal(validateScopes().cases[0].operationalWorkflow!.closure.status, 'stale');
+  });
+  it('shows an explicit missing-policy closure gate before any operational record exists', () => {
+    const store = new SerializedStore();
+    const view = projectOfficeSnapshot(store.state, AT).cases[0].operationalWorkflow;
+    assert(view, 'the existing case must expose its operational workflow');
+    assert.equal(view.revision, 0);
+    assert.equal(view.policy, null);
+    assert.equal(view.closure.status, 'blocked');
+    assert(view.blockers.includes('Falta política operativa; no se infieren mínimos ni firmante.'));
+  });
+  it('completes reception, milestones, incident and resolution under an explicit rehearsal policy only', async () => {
+    const store = new SerializedStore(), before = facts(store.state);
+    const assigned = await prepareSelection(store, 'ops-flow');
+    await executeOfficeCommand(store, decision(assigned.link, 'approve', 'ops-flow-approved'), () => AT);
+    await run(store, { step: 'assign_demo', selectionId: assigned.selection.id, revision: 1 }, 'ops-flow-assigned');
+    const purchase = await preparePurchase(store, 'ops-flow');
+    await executeOfficeCommand(store, decision(purchase.link, 'approve', 'ops-purchase-approved'), () => AT);
+    const view = () => projectOfficeSnapshot(store.state, AT).cases[0].operationalWorkflow!;
+    let seq = 0;
+    const apply = async (detail: Record<string, unknown>) => {
+      const v = view();
+      return executeOfficeCommand(store, { idempotencyKey: `ops-step-${++seq}`, caseId: 'demo-aurora', functionId: ['set_policy', 'record_receipt', 'confirm_milestone'].includes(detail.step as string) ? 'logistics' : 'quality', action: 'draft', operational: { ...detail, eventId: v.eventId, revision: v.revision, contextDigest: v.contextDigest } }, () => AT);
+    };
+    await apply({ step: 'set_policy', policyFixtureId: 'ops-policy-synthetic-v1' });
+    await apply({ step: 'record_receipt', fixtureId: 'ops-demo-aurora-receipt-reference' });
+    assert.equal(view().summary.receipt, 'reference_only');
+    assert.equal(view().logistics!.records.at(-1)!.proof!.contentHash, null);
+    await apply({ step: 'record_receipt', fixtureId: 'ops-demo-aurora-receipt-partial' });
+    assert.equal(view().summary.receipt, 'partial_demo');
+    await apply({ step: 'record_receipt', fixtureId: 'ops-demo-aurora-receipt-complete' });
+    for (const milestone of ['preparation', 'assembly', 'service', 'delivery']) await apply({ step: 'confirm_milestone', milestone, fixtureId: `ops-demo-aurora-${milestone}` });
+    await apply({ step: 'open_incident', description: 'Falta material sintético de montaje', owner: 'coordination_demo', milestone: 'assembly' });
+    const incident = view().quality!.incidents[0];
+    assert.equal(incident.milestone, 'assembly');
+    await assert.rejects(apply({ step: 'close_demo', reviewDigest: view().closure.reviewDigest }), error('OPERATIONAL_CLOSE_BLOCKED'));
+    await apply({ step: 'acknowledge_incident', incidentId: incident.id });
+    await apply({ step: 'resolve_incident', incidentId: incident.id, resolution: 'Material de fixture comprobado', fixtureId: 'ops-demo-aurora-resolution' });
+    assert.equal(view().closure.status, 'review_ready');
+    const reviewDigest = view().closure.reviewDigest;
+    await apply({ step: 'close_demo', reviewDigest });
+    assert.equal(view().closure.status, 'closed_demo');
+    const closed = structuredClone(view());
+    await executeOfficeCommand(store, { idempotencyKey: 'ops-quality-draft', caseId: 'demo-aurora', functionId: 'quality', action: 'draft', text: 'DEMO — Un borrador no es una incidencia ni una resolución.' }, () => AT);
+    assert.deepEqual(view(), closed);
+    await apply({ step: 'set_policy', policyFixtureId: null });
+    assert.equal(view().closure.status, 'stale');
+    assert.match(view().blockers.join(' '), /Falta política/);
+    assert.deepEqual(facts(store.state), before);
+    validateOfficeSnapshot(projectOfficeSnapshot(store.state, AT), 'demo');
+  });
+  it('rejects stale and contradictory identities, unknown policies/fixtures and forged payloads without mutation', async () => {
+    const store = new SerializedStore();
+    const valid = operationalCommand(store.state, { step: 'set_policy', policyFixtureId: 'ops-policy-synthetic-v1' }, 'ops-input');
+    const before = canonical(store.state);
+    for (const raw of [
+      { ...valid, operational: { ...valid.operational, proof: { content: 'forged' } } },
+      { ...valid, operational: { ...valid.operational, revision: -1 } },
+      { ...valid, operational: { ...valid.operational, contextDigest: 'bad' } },
+      { ...valid, operational: { ...valid.operational, step: 'close_real' } },
+      { ...valid, text: 'DEMO' }, { ...valid, supply: { step: 'queue_sourcing' } },
+      { ...valid, operational: { ...valid.operational, description: 'unexpected' } },
+      { ...valid, functionId: 'quality', operational: { eventId: valid.operational.eventId, revision: 0, contextDigest: valid.operational.contextDigest, step: 'open_incident', description: 'Fixture', owner: 'quality_demo', milestone: 'unknown-real-step' } },
+    ]) await assert.rejects(executeOfficeCommand(store, raw, () => AT), error('INVALID_OPERATIONAL_COMMAND'));
+    await assert.rejects(executeOfficeCommand(store, { ...valid, operational: { ...valid.operational, eventId: 'supply-event-demo-cedar' } }, () => AT), error('OPERATIONAL_EVENT_MISMATCH'));
+    await assert.rejects(executeOfficeCommand(store, { ...valid, caseId: 'demo-cedar' }, () => AT), error('OPERATIONAL_EVENT_MISMATCH'));
+    await assert.rejects(executeOfficeCommand(store, { ...valid, functionId: 'quality' }, () => AT), error('INVALID_OPERATIONAL_FUNCTION'));
+    await assert.rejects(executeOfficeCommand(store, { ...valid, operational: { ...valid.operational, policyFixtureId: 'commercial-policy' } }, () => AT), error('OPERATIONAL_POLICY_UNKNOWN'));
+    assert.equal(canonical(store.state), before);
+    await executeOfficeCommand(store, valid, () => AT);
+    await assert.rejects(executeOfficeCommand(store, { ...valid, idempotencyKey: 'ops-old-view' }, () => AT), error('OPERATIONAL_REVISION_CONFLICT'));
+    const wrongSource = operationalCommand(store.state, { step: 'confirm_milestone', milestone: 'delivery', fixtureId: 'ops-demo-cedar-delivery' }, 'ops-other-fixture');
+    await assert.rejects(executeOfficeCommand(store, wrongSource, () => AT), error('OPERATIONAL_FIXTURE_NOT_FOUND'));
+    const incident = operationalCommand(store.state, { step: 'resolve_incident', incidentId: 'ops-other-case', fixtureId: 'ops-demo-aurora-resolution', resolution: 'No existe' }, 'ops-other-incident');
+    await assert.rejects(executeOfficeCommand(store, incident, () => AT), error('OPERATIONAL_INCIDENT_NOT_FOUND'));
+    await executeOfficeCommand(store, operationalCommand(store.state, { step: 'open_incident', description: 'Incidencia sintética\nSegunda línea de evidencia', owner: 'quality_demo' }, 'ops-multiline'), () => AT);
+  });
+  it('keeps content hashes and history immutable and invalidates the exact closure on changed dependencies', async () => {
+    const base = new SerializedStore(); await preparedOperational(base, 'ops-invalidate');
+    let v = projectOfficeSnapshot(base.state, AT).cases[0].operationalWorkflow!;
+    const close = operationalCommand(base.state, { step: 'close_demo', reviewDigest: v.closure.reviewDigest }, 'ops-close-exact');
+    const receipt = v.logistics!.records.find(r => r.operation.step === 'record_receipt')!;
+    assert.equal(receipt.proof!.contentHash, createHash('sha256').update(receipt.proof!.content!, 'utf8').digest('hex'));
+    await executeOfficeCommand(base, close, () => AT);
+    const frozen = structuredClone(base.state);
+    for (const change of ['brief', 'event', 'menu', 'assignment', 'selection_approval', 'purchase_approval', 'new_evidence', 'new_incident']) {
+      const store = new SerializedStore(); store.state = structuredClone(frozen);
+      const late = operationalCommand(store.state, { step: 'confirm_milestone', milestone: 'delivery', fixtureId: 'ops-demo-aurora-delivery' }, `ops-late-${change}`);
+      if (change === 'brief') store.state.office.cases['demo-aurora'].subtitle += ' · brief de fixture revisado';
+      if (change === 'event') store.state.office.supply!.cases['demo-aurora'].event.window.endAt = new Date(AT + 10 * 86400000).toISOString();
+      if (change === 'menu') await run(store, { step: 'validate_menu', fixtureId: 'supply-menu-demo-aurora-missing-quantity' }, 'ops-menu-change');
+      if (change === 'assignment') {
+        const a = Object.values(store.state.office.supply!.assignments)[0];
+        await run(store, { step: 'withdraw_assignment', assignmentId: a.id, revision: 1, reason: 'Retirada sintética' }, 'ops-withdraw-change');
+      }
+      if (change.endsWith('_approval')) {
+        const link = Object.values(store.state.office.approvals).find(l => l.supplyContext?.kind === (change === 'selection_approval' ? 'selection' : 'purchase'))!;
+        store.state.approvals[link.coreApprovalId!].valid = false;
+      }
+      if (change === 'new_evidence') await executeOfficeCommand(store, late, () => AT);
+      if (change === 'new_incident') await executeOfficeCommand(store, operationalCommand(store.state, { step: 'open_incident', description: 'Incidencia posterior al cierre', owner: 'quality_demo' }, 'ops-post-close'), () => AT);
+      v = projectOfficeSnapshot(store.state, AT).cases[0].operationalWorkflow!;
+      assert.equal(v.closure.status, 'stale', change);
+      assert.deepEqual(store.state.office.operational!.cases['demo-aurora'].records.slice(0, frozen.office.operational!.cases['demo-aurora'].records.length), frozen.office.operational!.cases['demo-aurora'].records);
+      if (!['new_evidence', 'new_incident'].includes(change)) assert(v.summary.milestones.every(m => !m.current), change);
+      const replay = await executeOfficeCommand(store, close, () => AT);
+      assert.equal(replay.replayed, true); assert.equal(replay.snapshot.cases[0].operationalWorkflow!.closure.status, 'stale');
+      await assert.rejects(executeOfficeCommand(store, { ...close, idempotencyKey: `ops-reclose-${change}` }, () => AT), error('OPERATIONAL_REVISION_CONFLICT'));
+      if (!['new_evidence', 'new_incident'].includes(change)) await assert.rejects(executeOfficeCommand(store, late, () => AT), error('OPERATIONAL_REVISION_CONFLICT'));
+    }
+    const corrupted = structuredClone(frozen); corrupted.office.operational!.cases['demo-aurora'].records[1].proof!.content += 'tampered';
+    assert.throws(() => assertOfficeState(corrupted), error('OPERATIONAL_STATE_INVALID'));
+    const malformed = structuredClone(v); malformed.eventId = 'another-event';
+    assert.throws(() => validateOfficeSnapshot({ ...projectOfficeSnapshot(base.state, AT), cases: [{ ...projectOfficeSnapshot(base.state, AT).cases[0], operationalWorkflow: malformed }] }, 'demo'));
+  });
+  it('enforces existing server scopes, revocation and expiry before operational writes/replay', async t => {
+    let now = AT; const { api, store, login, post, baseHeaders } = await apiFixture(t, () => now);
+    const c = operationalCommand(store.state, { step: 'set_policy', policyFixtureId: 'ops-policy-synthetic-v1' }, 'ops-http');
+    for (const scope of [{ role: 'viewer', caseIds: ['demo-aurora'], functionIds: ['logistics'] }, { role: 'operator', caseIds: ['demo-cedar'], functionIds: ['logistics'] }, { role: 'operator', caseIds: ['demo-aurora'], functionIds: ['quality'] }]) {
+      const headers = await login(scope); assert.equal((await post(headers, c)).statusCode, 403);
+    }
+    const q = await login({ role: 'operator', caseIds: ['demo-aurora'], functionIds: ['quality'] });
+    let response = await api.inject({ method: 'GET', url: '/office-api/snapshot', headers: q });
+    const scoped = response.json().cases[0].operationalWorkflow;
+    assert.equal(scoped.logistics, undefined); assert(scoped.quality); assert.equal(response.json().cases.length, 1);
+    const closed = operationalCommand(store.state, { step: 'close_demo', reviewDigest: scoped.closure.reviewDigest }, 'ops-scoped-close');
+    assert.equal((await post(q, closed)).statusCode, 403);
+    const headers = await login({ role: 'operator', caseIds: ['demo-aurora'], functionIds: ['logistics', 'quality'] });
+    assert.equal((await post(headers, c)).statusCode, 200);
+    response = await api.inject({ method: 'DELETE', url: '/office-api/session', headers }); assert.equal(response.statusCode, 204);
+    assert.equal((await post(headers, c)).statusCode, 401);
+    const expiring = await login({ role: 'operator', caseIds: ['demo-aurora'], functionIds: ['logistics', 'quality'] });
+    now += 4 * 3600000 + 1; assert.equal((await post(expiring, c)).statusCode, 401);
+    assert.equal(Object.keys(store.state.office.commands).length, 1);
+    const viewer = await api.inject({ method: 'POST', url: '/office-api/session', headers: baseHeaders, payload: { role: 'viewer', caseIds: ['demo-cedar'], functionIds: ['sales'] } });
+    const snap = await api.inject({ method: 'GET', url: '/office-api/snapshot', headers: { ...baseHeaders, cookie: String(viewer.headers['set-cookie']).split(';')[0] } });
+    assert.equal(snap.json().cases[0].operationalWorkflow, undefined);
+  });
+  it('cannot rehabilitate an old reservation by recording new evidence after the event window changes', async () => {
+    const store = new SerializedStore(); await preparedOperational(store, 'ops-event-shift');
+    const row = store.state.office.supply!.cases['demo-aurora'];
+    row.event.window = { startAt: new Date(Date.parse(row.event.window.startAt) + 3600000).toISOString(), endAt: new Date(Date.parse(row.event.window.endAt) + 3600000).toISOString() };
+    const apply = (detail: Record<string, unknown>, key: string) => executeOfficeCommand(store, operationalCommand(store.state, detail, key), () => AT);
+    await apply({ step: 'record_receipt', fixtureId: 'ops-demo-aurora-receipt-complete' }, 'ops-shift-new-receipt');
+    for (const milestone of ['preparation', 'assembly', 'service', 'delivery']) await apply({ step: 'confirm_milestone', milestone, fixtureId: `ops-demo-aurora-${milestone}` }, `ops-shift-${milestone}`);
+    const v = projectOfficeSnapshot(store.state, AT).cases[0].operationalWorkflow!;
+    assert(v.blockers.some(b => /reserva interna/.test(b)), 'new proof cannot repair the stale selection/availability/window');
+    await assert.rejects(apply({ step: 'close_demo', reviewDigest: v.closure.reviewDigest }, 'ops-shift-close'), error('OPERATIONAL_CLOSE_BLOCKED'));
+  });
+});
 async function run(store: OfficeStore, operation: SupplyOperation, key: string, caseId: DemoCaseId = 'demo-aurora', atMs = AT) {
   return executeOfficeCommand(store, supplyCommand(operation, key, caseId), () => atMs);
 }

@@ -111,9 +111,11 @@ export class PostgresOfficeStore implements OfficeStore {
       const before = canonical(state);
       const oldHistory = structuredClone(state.office.history);
       const oldCommands = structuredClone(state.office.commands);
+      const oldOperational = structuredClone(state.office.operational?.cases ?? {});
       const oldKeys = new Set(Object.keys(state.office.commands));
       const output = await fn(state);
       assertOfficeState(state);
+      for (const [caseId, row] of Object.entries(oldOperational)) if (canonical(state.office.operational?.cases[caseId]?.records.slice(0, row.records.length)) !== canonical(row.records)) throw new OfficeError('OPERATIONAL_APPEND_ONLY', 409);
       for (const [key, row] of Object.entries(oldHistory)) if (!Object.hasOwn(state.office.history, key) || canonical(state.office.history[key]) !== canonical(row)) throw new OfficeError('HISTORY_APPEND_ONLY', 409);
       for (const [key, row] of Object.entries(oldCommands)) if (!Object.hasOwn(state.office.commands, key) || canonical(state.office.commands[key]) !== canonical(row)) throw new OfficeError('COMMANDS_APPEND_ONLY', 409);
       for (const row of Object.values(state.office.commands)) {

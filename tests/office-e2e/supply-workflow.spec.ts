@@ -70,7 +70,7 @@ async function boot(page: Page, role: 'viewer' | 'operator' = 'operator') {
   await page.getByRole('button', { name: 'Abrir sesión DEMO', exact: true }).click();
   await expect(page.getByText(role === 'operator' ? 'Operador · DEMO' : 'Sólo lectura · DEMO', { exact: true })).toBeVisible();
 }
-async function openFunction(page: Page, label: 'Proveedores' | 'Logística') {
+async function openFunction(page: Page, label: 'Proveedores' | 'Logística' | 'Calidad') {
   if (!await workspace(page).isVisible()) await page.getByRole('button', { name: 'Nueva tarea', exact: true }).click();
   const navigation = workspace(page).getByRole('navigation', { name: 'Funciones de la oficina', exact: true });
   await expect(navigation.getByRole('button')).toHaveCount(9);
@@ -245,6 +245,65 @@ test('persists source-to-assignment and validated-menu-to-review, with exact DEM
   await expect(workspace(page).getByTestId('supply-sourcing')).toContainText('Asignación interna DEMO registrada');
   await assertFits(page);
   await page.screenshot({ path: testInfo.outputPath('supply-sourcing-synthetic.png'), fullPage: true });
+
+  await openFunction(page, 'Logística');
+  let operational = workspace(page).getByTestId('operational-workflow');
+  await expect(operational).toContainText('Falta política operativa');
+  await clickCommand(page, operational.getByRole('button', { name: 'Usar política sintética v1', exact: true }));
+  await clickCommand(page, operational.getByRole('button', { name: 'Registrar Referencia sin documento verificable', exact: true }));
+  await expect(operational.getByTestId('operational-status')).toContainText('reference_only');
+  await expect(operational.getByTestId('operational-status')).toContainText('Falta recepción completa');
+  await clickCommand(page, operational.getByRole('button', { name: 'Registrar Recepción completa · contenido sintético', exact: true }));
+  for (const label of ['Preparación', 'Montaje', 'Servicio', 'Entrega']) await clickCommand(page, operational.getByRole('button', { name: `Confirmar ${label} DEMO`, exact: true }));
+  await expect(operational.getByTestId('operational-status')).toContainText('Listo para revisión de ensayo');
+  await operational.getByTestId('operational-status').screenshot({ path: `test-results/dashboard-visual/${testInfo.project.name}-operational-prepared.png` });
+  await openFunction(page, 'Calidad');
+  operational = workspace(page).getByTestId('operational-workflow');
+  await operational.getByLabel('Descripción de incidencia DEMO').fill('Falta material de montaje · sólo fixture');
+  await operational.getByLabel('Hito afectado del fixture').selectOption('assembly');
+  await clickCommand(page, operational.getByRole('button', { name: 'Registrar incidencia DEMO', exact: true }));
+  const incidentId = Object.values((await supplyApi.store.snapshot()).office.operational!.cases['demo-aurora'].records).find(r => r.operation.step === 'open_incident')!.id;
+  const incident = operational.getByTestId(`operational-incident-${incidentId}`);
+  await expect(incident).toContainText('Hito afectado: Montaje');
+  await expect(operational.getByRole('button', { name: 'Confirmar cierre de ensayo', exact: true })).toBeDisabled();
+  await expect(operational.getByTestId('operational-status')).toContainText('Hay incidencias abiertas');
+  await incident.screenshot({ path: `test-results/dashboard-visual/${testInfo.project.name}-operational-incident.png` });
+  const beforeDraft = structuredClone((await supplyApi.store.snapshot()).office.operational);
+  await workspace(page).getByLabel('Contenido del borrador', { exact: true }).fill('DEMO — Texto de calidad que no registra ni resuelve incidentes.');
+  await clickCommand(page, workspace(page).getByRole('button', { name: 'Preparar borrador', exact: false }));
+  expect((await supplyApi.store.snapshot()).office.operational).toEqual(beforeDraft);
+  await clickCommand(page, incident.getByRole('button', { name: 'Registrar acuse DEMO', exact: true }));
+  await incident.getByLabel('Resolución de ensayo').fill('Material comprobado con evidencia sintética del fixture');
+  await clickCommand(page, incident.getByRole('button', { name: 'Registrar resolución con fixture DEMO', exact: true }));
+  await expect(incident).toContainText('resolved_demo');
+  await clickCommand(page, operational.getByRole('button', { name: 'Confirmar cierre de ensayo', exact: true }));
+  await page.reload(); await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible(); await openFunction(page, 'Calidad');
+  operational = workspace(page).getByTestId('operational-workflow');
+  await expect(operational.getByTestId('operational-status')).toContainText('Cierre de ensayo registrado');
+  await expect(operational.getByTestId(`operational-incident-${incidentId}`)).toContainText('resolved_demo');
+  await expect(operational.getByTestId(`operational-incident-${incidentId}`)).toContainText('Hito afectado: Montaje');
+  await operational.getByTestId('operational-status').screenshot({ path: `test-results/dashboard-visual/${testInfo.project.name}-operational-closed-reloaded.png` });
+  await assertFits(page);
+  await workspace(page).getByRole('button', { name: 'Cerrar espacio de trabajo', exact: true }).click();
+  await page.locator('.office-session-menu > summary').click();
+  await page.getByLabel('Caso de demostración', { exact: true }).selectOption('demo-cedar');
+  await page.locator('.office-session-menu > summary').click(); await openFunction(page, 'Calidad');
+  await expect(workspace(page).getByTestId('operational-workflow')).toContainText('supply-event-demo-cedar');
+  await expect(workspace(page).getByTestId('operational-workflow')).not.toContainText('Falta material de montaje · sólo fixture');
+  await expect(workspace(page).getByTestId('operational-workflow')).toContainText('Falta política operativa');
+  await workspace(page).getByRole('button', { name: 'Cerrar espacio de trabajo', exact: true }).click();
+  await page.locator('.office-session-menu > summary').click(); await page.getByLabel('Caso de demostración', { exact: true }).selectOption('demo-aurora');
+  await page.locator('.office-session-menu > summary').click(); await openFunction(page, 'Logística');
+  await clickCommand(page, workspace(page).getByTestId('operational-workflow').getByRole('button', { name: 'Retirar política de ensayo', exact: true }));
+  await openFunction(page, 'Calidad'); operational = workspace(page).getByTestId('operational-workflow');
+  await expect(operational.getByTestId('operational-status')).toContainText('Cierre de ensayo requiere revisión');
+  await expect(operational.getByRole('button', { name: 'Confirmar cierre de ensayo', exact: true })).toBeDisabled();
+  await operational.getByTestId('operational-status').screenshot({ path: `test-results/dashboard-visual/${testInfo.project.name}-operational-policy-missing.png` });
+  state = await supplyApi.store.snapshot();
+  expect(state.office.cases['demo-aurora'].supplier).toBe('pending');
+  expect(Object.values(state.office.supply!.assignments)[0].externalHired).toBe(false);
+  expect(Object.values(state.office.supply!.cases['demo-aurora'].options).every(o => !o.externalOrdered && !o.externalPaid && !o.externalReceived)).toBe(true);
+  console.log('OPERATIONAL_BROWSER_EVIDENCE=' + JSON.stringify({ project: testInfo.project.name, eventId: 'supply-event-demo-aurora', records: state.office.operational!.cases['demo-aurora'].records.length, incidentId, closedAfterReload: true, qualityDraftHasNoEffect: true, otherCaseIsolated: true, missingPolicyBlocks: true, supplierAcceptance: state.office.cases['demo-aurora'].supplier }));
 });
 
 test('viewer reads supply facts and exact previews without write permission', async ({ page, supplyApi }) => {
@@ -253,11 +312,89 @@ test('viewer reads supply facts and exact previews without write permission', as
   await expect(workspace(page).getByTestId('supply-sourcing')).toContainText('En cola');
   await expect(workspace(page).getByRole('button', { name: 'Incorporar digest ficticio', exact: true })).toBeDisabled();
   await openFunction(page, 'Logística');
+  await expect(workspace(page).getByTestId('operational-workflow')).toContainText('Falta política operativa');
   const menu = workspace(page).getByTestId('supply-menu-preview-supply-menu-demo-aurora-complete');
   await expect(menu).toContainText('1000 g');
   await expect(menu.getByRole('button', { name: 'Validar menú y cantidades DEMO', exact: true })).toBeDisabled();
   for (const button of await workspace(page).getByTestId('supply-procurement').getByRole('button').all()) await expect(button).toBeDisabled();
+  for (const button of await workspace(page).getByTestId('operational-workflow').getByRole('button').all()) await expect(button).toBeDisabled();
+  await openFunction(page, 'Calidad');
+  for (const button of await workspace(page).getByTestId('operational-workflow').getByRole('button').all()) await expect(button).toBeDisabled();
   expect(Object.keys((await supplyApi.store.snapshot()).office.commands)).toHaveLength(0);
+  await assertFits(page);
+});
+
+test('rejects a status-only forged closure response and recovers the persisted initial workflow', async ({ page, context, supplyApi }, info) => {
+  await boot(page); await openFunction(page, 'Calidad');
+  const initialState = await supplyApi.store.snapshot();
+  const initial = projectOfficeSnapshot(initialState, Date.now()).cases[0].operationalWorkflow!;
+  expect(initial).toMatchObject({ revision: 0, policy: null, closure: { status: 'blocked', recordId: null }, summary: { receipt: 'pending' } });
+  expect(initial.summary.milestones.every(m => !m.current && m.recordId === null)).toBe(true);
+  let alter = true, alteredResponses = 0;
+  await context.route('**/office-api/snapshot', async route => {
+    const response = await supplyApi.inject(route);
+    expect(response.status).toBe(200);
+    if (!alter) return route.fulfill(response);
+    const snapshot = JSON.parse(response.body) as OfficeSnapshot;
+    expect(snapshot.cases[0].operationalWorkflow!.closure.status).toBe('blocked');
+    snapshot.cases[0].operationalWorkflow!.closure.status = 'closed_demo';
+    alteredResponses++;
+    await route.fulfill({ ...response, body: JSON.stringify(snapshot) });
+  });
+  const refresh = async () => {
+    await workspace(page).getByRole('button', { name: 'Cerrar espacio de trabajo', exact: true }).click();
+    await page.locator('.office-session-menu > summary').click();
+    await page.getByRole('button', { name: 'Actualizar oficina', exact: true }).click();
+    await page.locator('.office-session-menu > summary').click();
+    await openFunction(page, 'Calidad');
+  };
+  await refresh();
+  await expect(page.getByRole('alert')).toContainText('La respuesta no cumple el contrato de la oficina');
+  const status = workspace(page).getByTestId('operational-status');
+  await expect(status).toContainText('Cierre bloqueado');
+  await expect(status).not.toContainText('Cierre de ensayo registrado');
+  await expect(workspace(page).getByRole('button', { name: 'Confirmar cierre de ensayo', exact: true })).toBeDisabled();
+  await assertFits(page);
+  await workspace(page).screenshot({ path: `test-results/dashboard-visual/${info.project.name}-operational-response-rejected.png` });
+  await status.getByRole('heading', { name: 'Cierre bloqueado', exact: true }).scrollIntoViewIfNeeded();
+  await workspace(page).screenshot({ path: `test-results/dashboard-visual/${info.project.name}-operational-response-status.png` });
+  expect(alteredResponses).toBe(1);
+  expect((await supplyApi.store.snapshot()).office.operational).toEqual(initialState.office.operational);
+  expect(Object.keys((await supplyApi.store.snapshot()).office.commands)).toHaveLength(0);
+  alter = false;
+  await page.reload(); await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible(); await openFunction(page, 'Calidad');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(workspace(page).getByTestId('operational-status')).toContainText('Cierre bloqueado');
+  console.log('OPERATIONAL_RESPONSE_VALIDATION_EVIDENCE=' + JSON.stringify({ project: info.project.name, changedField: 'cases[0].operationalWorkflow.closure.status', rejected: true, persistedOperationalStateUnchanged: true, recoveredAfterReload: true }));
+});
+
+test('an uncertain operational record reloads and retries its exact durable intent once', async ({ page, context, supplyApi }) => {
+  const commands: OfficeCommand[] = [];
+  await context.route('**/office-api/command*', async route => {
+    const command = route.request().postDataJSON() as OfficeCommand;
+    if (!command.operational) return route.fallback();
+    commands.push(command);
+    if (commands.length === 1) {
+      const response = await supplyApi.inject(route); expect(response.status).toBe(200);
+      await route.abort('failed'); return;
+    }
+    await route.fallback();
+  });
+  await boot(page); await openFunction(page, 'Logística');
+  await workspace(page).getByRole('button', { name: 'Usar política sintética v1', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Operación sin confirmación', exact: true })).toBeVisible();
+  await page.reload(); await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible();
+  if (await workspace(page).isVisible()) await workspace(page).getByRole('button', { name: 'Cerrar espacio de trabajo', exact: true }).click();
+  await page.locator('.office-session-menu > summary').click();
+  await page.getByLabel('Caso de demostración', { exact: true }).selectOption('demo-cedar');
+  await page.locator('.office-session-menu > summary').click(); await openFunction(page, 'Logística');
+  await expect(workspace(page).getByTestId('operational-workflow')).toContainText('supply-event-demo-cedar');
+  const replay = await clickCommand(page, page.getByRole('button', { name: 'Reintentar operación exacta', exact: true }));
+  expect(replay.replayed).toBe(true); expect(commands).toHaveLength(2); expect(commands[1]).toEqual(commands[0]);
+  const state = await supplyApi.store.snapshot(); expect(state.office.operational!.cases['demo-aurora'].records).toHaveLength(1);
+  expect(state.office.operational!.cases['demo-cedar']).toBeUndefined();
+  await expect(workspace(page).getByTestId('operational-workflow')).toContainText('supply-event-demo-cedar');
+  await expect(workspace(page).getByTestId('operational-policy')).toContainText('Sin política operativa');
   await assertFits(page);
 });
 
