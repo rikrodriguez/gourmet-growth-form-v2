@@ -13,9 +13,11 @@ import { externalProposalIdentityKey } from '../external-proposal-contracts';
 import { projectLeadLinks } from './lead-link-view';
 import { normalizeHistoricalLink } from './lead-link-history';
 import type { EventQuoteIdentity } from './event-quote-http';
+import { snapshotProposalTarget, type ExistingProposalSession } from './proposal-host-session';
+import { readProposalDocument, snapshotProposalDocument, type ExternalProposalDocumentProvider } from './external-proposal-provider';
 
 /** Opt-in, fixed-case TEST_ONLY composition. No routes, initialization, identity
- * provisioning, provider calls or new permissions. Reuses existing event ACLs
+ * provisioning, automatic provider I/O or new permissions. Reuses existing event ACLs
  * for one server-mapped lead/event chain. All reads and writes share one client. */
 export function createDurableTestProposalService(options: {
   pool: Pool; vault: Pick<MondayVault, 'seal' | 'open'>;
@@ -23,15 +25,18 @@ export function createDurableTestProposalService(options: {
   proposalSchema: string; quoteSchema: string; accessSchema: string; bridgeSchema: string;
   clock?: () => number;
 }) {
-  const target = structuredClone(options.target), mapping = options.mapping && structuredClone(options.mapping);
+  const target = snapshotProposalTarget(options.target), mapping = options.mapping && structuredClone(options.mapping);
   const clock = options.clock ?? Date.now;
   const access = new PostgresQuoteAccessRepository(options.pool, { schema: options.accessSchema, clock });
   const repository = new PostgresExternalProposalRepository(options.pool, options.vault, options.proposalSchema);
   const sources = [{ sourceSystem: 'fixture:proposal', partition: 'demo' }] as const;
-  const run = <T,>(proof: ExistingQuoteSession | null, kind: 'read' | 'write' | 'approve', operation: (context: {
-    service: ExternalProposalService; identity: EventQuoteIdentity; value(): DurableProposalCase | null; publish(document: SyntheticProposalDocument): Promise<void>;
-  }) => Promise<T>) => access.run(proof, { kind, eventId: target.eventId }, async (identity, client) => {
+  const run = <T,>(proof: ExistingProposalSession | null, kind: 'read' | 'write' | 'approve', operation: (context: {
+    service: ExternalProposalService; identity: EventQuoteIdentity; source: ProposalMapping['source']; value(): DurableProposalCase | null; publish(document: SyntheticProposalDocument): Promise<void>;
+  }) => Promise<T>) => {
+    const selected = proof?.proposalTarget === undefined ? undefined : snapshotProposalTarget(proof.proposalTarget);
+    return access.run(proof, { kind, eventId: target.eventId }, async (identity, client) => {
     try {
+      if (selected && !isDeepStrictEqual(selected, target)) throw new EventQuoteError('ACCESS_DENIED', 403);
       if (identity.scope.mode !== 'test') throw new ExternalProposalError('ACCESS_DENIED');
       let current = await repository.load(client, identity.scope, identity.actor.actorId, target);
       const assigned = current?.mapping ?? mapping;
@@ -71,7 +76,7 @@ export function createDurableTestProposalService(options: {
           },
         },
       });
-      const result = await operation({ service, identity, value: () => structuredClone(current), async publish(document) {
+      const result = await operation({ service, identity, source: structuredClone(assigned.source), value: () => structuredClone(current), async publish(document) {
         const copy = structuredClone(document);
         if (current) {
           const existing = current.documents.find(d => d.sourceVersion === copy.sourceVersion);
@@ -84,6 +89,13 @@ export function createDurableTestProposalService(options: {
       if (current) await repository.assertCurrent(client, current);
       return result;
     } catch (error) { if (error instanceof ExternalProposalError) throw new EventQuoteError(error.code, 409); throw error; }
+    });
+  };
+  // Explicit server-side import through the current authorized transaction. No
+  // HTTP route or provider implementation is installed by this composition.
+  const publishFromProvider = (proof: ExistingProposalSession | null, provider?: ExternalProposalDocumentProvider) => run(proof, 'write', async c => {
+    const { document } = await readProposalDocument(provider, { target, scope: c.identity.scope, source: c.source });
+    await c.publish(document);
   });
   return {
     access: (proof: ExistingQuoteSession | null) => run(proof, 'read', async c => ({ access: {
@@ -106,7 +118,8 @@ export function createDurableTestProposalService(options: {
       if (expectedIdentity !== undefined && externalProposalIdentityKey(c.identity.accessRevision!) !== expectedIdentity) throw new EventQuoteError('ACCESS_CHANGED', 403);
       return c.service.execute(target, copy);
     }); },
-    publish: (proof: ExistingQuoteSession | null, document: SyntheticProposalDocument) => { const copy = structuredClone(document); return run(proof, 'write', async c => { await c.publish(copy); }); },
+    publish: (proof: ExistingQuoteSession | null, document: SyntheticProposalDocument) => { const copy = snapshotProposalDocument(document); return publishFromProvider(proof, { async read() { return copy; } }); },
+    publishFromProvider,
     history: (proof: ExistingQuoteSession | null) => run(proof, 'read', async c => c.value()),
   };
 }
