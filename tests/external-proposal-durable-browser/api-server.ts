@@ -9,12 +9,20 @@ import { createEventQuoteService } from '../../src/office/backend/event-quote-wo
 import { durableProposalProof, proposalVault } from '../office/external-proposal-durable-fixtures';
 import { testCatalog } from '../office/event-quote-fixtures';
 import type { EventQuoteIdentity } from '../../src/office/backend/event-quote-http';
+import { EventQuoteError } from '../../src/office/backend/event-quote-contracts';
+import { TEST_PROPOSAL_IDENTITY } from '../../src/office/external-proposal-contracts';
 const config = JSON.parse(process.argv[2]);
 const pool = new Pool({ connectionString: DEFAULT_OFFICE_DATABASE_URL, connectionTimeoutMillis: 1000, max: 6 });
 const vault = proposalVault(), proof = durableProposalProof;
 const service = createDurableTestProposalService({ ...config, pool, vault });
 const access = new PostgresQuoteAccessRepository(pool, { schema: config.accessSchema });
 const app = createTestProposalApi({ service, allowedOrigin: 'http://127.0.0.1:4194', resolveExistingSession: () => proof });
+app.addHook('preHandler', async request => {
+ if (config.dashboard && request.url.startsWith('/__durable-quote/')) {
+  const projected = await service.access(proof);
+  if (request.headers[TEST_PROPOSAL_IDENTITY] !== projected.access.identityKey) throw new EventQuoteError('ACCESS_CHANGED', 403);
+ }
+});
 const catalog = { ...testCatalog, validUntilMs: config.at + 600000 };
 const quotes = <T,>(operation: (client: ReturnType<typeof createEventQuoteService>, identity: EventQuoteIdentity) => Promise<T>) => access.run(proof, { kind: 'read', eventId: config.target.eventId }, async (identity, client) => {
  const store = new PostgresEventQuoteStore(pool, { vault, schema: config.quoteSchema, transaction: client });

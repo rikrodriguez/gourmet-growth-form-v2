@@ -28,7 +28,8 @@
     "test:dashboard:e2e": "playwright test --config dashboard-playwright.config.ts",
     "test:event-quotes:e2e": "node --import tsx tests/event-quote-browser/check.ts",
     "test:external-proposal:e2e": "playwright test --config external-proposal-playwright.config.ts",
-    "test:external-proposal:durable:e2e": "playwright test --config external-proposal-durable-playwright.config.ts"
+    "test:external-proposal:durable:e2e": "playwright test --config external-proposal-durable-playwright.config.ts",
+    "test:external-proposal:dashboard:e2e": "playwright test --config external-proposal-dashboard-playwright.config.ts"
   },
   "dependencies": {
     "@fastify/static": "10.1.4",
