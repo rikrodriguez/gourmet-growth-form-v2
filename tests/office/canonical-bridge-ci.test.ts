@@ -13,6 +13,7 @@ const verificationBranches = [
   'feat/gourmet-dashboard-reference-20261013',
   'feat/office-communications-review-20261013',
   'feat/proposal-host-provider-contract-20261016',
+  'fix/supply-assignment-withdrawal-20261016',
 ];
 
 // Read the actual checked-in policy, without evaluating workflow expressions or

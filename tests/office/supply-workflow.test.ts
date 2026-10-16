@@ -286,6 +286,86 @@ describe('persistent synthetic supplier workflow', () => {
   });
 });
 
+describe('explicit internal assignment withdrawal', () => {
+  it('accepts legacy active snapshots and rejects contradictory withdrawal metadata or multiple active reservations', async () => {
+    const store = new SerializedStore(), first = await prepareSelection(store, 'withdraw-adapter');
+    await executeOfficeCommand(store, decision(first.link, 'approve', 'withdraw-adapter-approved'), () => AT);
+    await run(store, { step: 'assign_demo', selectionId: first.selection.id, revision: 1 }, 'withdraw-adapter-assigned');
+    const legacy = projectOfficeSnapshot(store.state, AT); delete legacy.cases[0].supplyWorkflow!.sourcing!.assignments[0].revision;
+    assert.equal(validateOfficeSnapshot(legacy, 'demo').cases[0].supplyWorkflow!.sourcing!.assignments[0].revision, 1);
+    const duplicate = structuredClone(legacy), active = duplicate.cases[0].supplyWorkflow!.sourcing!.assignments;
+    active.push({ ...active[0], id: 'other-assignment' }); assert.throws(() => validateOfficeSnapshot(duplicate, 'demo'));
+    const id = workflow(store).sourcing!.assignments[0].id;
+    await run(store, { step: 'withdraw_assignment', assignmentId: id, revision: 1, reason: 'Retirada sintética validada' }, 'withdraw-adapter-retired');
+    const valid = projectOfficeSnapshot(store.state, AT);
+    for (const patch of [{ revision: 1 }, { withdrawal: null }, { status: 'assigned_demo' }]) {
+      const altered = structuredClone(valid); Object.assign(altered.cases[0].supplyWorkflow!.sourcing!.assignments[0], patch);
+      assert.throws(() => validateOfficeSnapshot(altered, 'demo'));
+    }
+  });
+  it('keeps an unavailable reservation until explicit withdrawal, then replaces it without reviving old replays', async () => {
+    const store = new SerializedStore();
+    const first = await prepareSelection(store, 'withdraw-first');
+    await executeOfficeCommand(store, decision(first.link, 'approve', 'withdraw-first-approve'), () => AT);
+    const assign = supplyCommand({ step: 'assign_demo', selectionId: first.selection.id, revision: first.selection.revision }, 'withdraw-first-assign');
+    await executeOfficeCommand(store, assign, () => AT);
+    const original = workflow(store).sourcing!.assignments[0];
+    const candidate = workflow(store).sourcing!.candidates.find(row => row.id === first.selection.candidateId)!;
+    await run(store, { step: 'verify_availability', candidateId: candidate.id, revision: candidate.revision, status: 'unavailable' }, 'withdraw-unavailable');
+    assert.equal(workflow(store).sourcing!.assignments[0].status, 'assigned_demo');
+    assert.equal(workflow(store).sourcing!.selections[0].reviewStatus, 'stale');
+    const second = await prepareSelection(store, 'withdraw-second', 'demo-aurora', 1);
+    await executeOfficeCommand(store, decision(second.link, 'approve', 'withdraw-second-approve'), () => AT);
+    await assert.rejects(run(store, { step: 'assign_demo', selectionId: second.selection.id, revision: second.selection.revision }, 'withdraw-before-explicit'), error('SUPPLY_CASE_ALREADY_ASSIGNED'));
+    const withdraw = supplyCommand({ step: 'withdraw_assignment', assignmentId: original.id, revision: 1, reason: 'Chef sintético no disponible' }, 'withdraw-explicit');
+    await executeOfficeCommand(store, withdraw, () => AT + 1);
+    let sourcing = workflow(store).sourcing!;
+    const retired = sourcing.assignments[0]; assert.equal(retired.status, 'withdrawn_demo'); assert.equal(retired.revision, 2);
+    assert.equal(retired.withdrawal!.reason, 'Chef sintético no disponible'); assert.deepEqual(retired.evidence, original.evidence);
+    assert.equal(retired.approvalId, original.approvalId); assert.deepEqual(retired.window, original.window);
+    assert.equal(sourcing.selections[0].digest, first.selection.digest); assert.equal(sourcing.selections[0].assignedDemo, false);
+    await run(store, { step: 'assign_demo', selectionId: second.selection.id, revision: second.selection.revision }, 'withdraw-replacement', 'demo-aurora', AT + 2);
+    const before = canonical(store.state);
+    for (const old of [assign, withdraw, decision(first.link, 'approve', 'withdraw-first-approve')]) assert.equal((await executeOfficeCommand(store, old, () => AT + 3)).replayed, true);
+    assert.equal(canonical(store.state), before);
+    await assert.rejects(executeOfficeCommand(store, { ...withdraw, supply: { ...withdraw.supply, reason: 'Otro motivo' } }, () => AT + 3), error('IDEMPOTENCY_CONFLICT'));
+    await assert.rejects(run(store, { step: 'assign_demo', selectionId: first.selection.id, revision: 1 }, 'withdraw-fresh-key-old-selection'), error('SUPPLY_REVIEW_STALE'));
+    sourcing = workflow(store).sourcing!; assert.equal(sourcing.assignments.length, 2); assert.equal(sourcing.assignments.filter(row => row.status === 'assigned_demo').length, 1);
+    assert.equal(store.state.office.cases['demo-aurora'].supplier, 'pending'); assertNoEffects(projectOfficeSnapshot(store.state, AT + 3));
+    validateOfficeSnapshot(projectOfficeSnapshot(store.state, AT + 3), 'demo');
+  });
+  it('requires a new selection and human approval even when retiring a currently valid assignment', async () => {
+    const store = new SerializedStore(), first = await prepareSelection(store, 'withdraw-valid');
+    await executeOfficeCommand(store, decision(first.link, 'approve', 'withdraw-valid-approved'), () => AT);
+    await run(store, { step: 'assign_demo', selectionId: first.selection.id, revision: 1 }, 'withdraw-valid-assigned');
+    await run(store, { step: 'withdraw_assignment', assignmentId: workflow(store).sourcing!.assignments[0].id, revision: 1, reason: 'Replanificación sintética' }, 'withdraw-valid-retired');
+    const candidate = workflow(store).sourcing!.candidates.find(row => row.id === first.selection.candidateId)!;
+    await run(store, { step: 'select_candidate', candidateId: candidate.id, revision: candidate.revision }, 'withdraw-valid-new-selection');
+    const next = workflow(store).sourcing!.selections.find(row => row.id !== first.selection.id)!;
+    assert.equal(next.revision, 2); assert.equal(next.reviewStatus, 'pending'); assert.deepEqual(next.snapshot, first.selection.snapshot);
+    await assert.rejects(run(store, { step: 'assign_demo', selectionId: next.id, revision: next.revision }, 'withdraw-valid-unapproved'), error('SUPPLY_REVIEW_NOT_APPROVED'));
+    await executeOfficeCommand(store, decision(store.state.office.approvals[next.approvalId!], 'approve', 'withdraw-valid-reapproved'), () => AT);
+    await run(store, { step: 'assign_demo', selectionId: next.id, revision: next.revision }, 'withdraw-valid-reassigned');
+    assert.equal(workflow(store).sourcing!.assignments.filter(row => row.status === 'assigned_demo').length, 1);
+    assert.equal(store.state.office.supply!.cases['demo-aurora'].selections[first.selection.id].digest, first.selection.digest);
+  });
+  it('rejects missing reasons, stale revisions, other cases and existing permission failures without mutation', async t => {
+    for (const reason of ['', '   ', 'x'.repeat(501), 'bad\nreason']) assert.throws(() => parseSupplyOperation({ step: 'withdraw_assignment', assignmentId: 'assignment', revision: 1, reason }));
+    const store = new SerializedStore(), first = await prepareSelection(store, 'withdraw-guards');
+    await executeOfficeCommand(store, decision(first.link, 'approve', 'withdraw-guards-approved'), () => AT);
+    await run(store, { step: 'assign_demo', selectionId: first.selection.id, revision: 1 }, 'withdraw-guards-assigned');
+    const id = workflow(store).sourcing!.assignments[0].id, before = canonical(store.state);
+    await assert.rejects(run(store, { step: 'withdraw_assignment', assignmentId: id, revision: 2, reason: 'Motivo DEMO' }, 'withdraw-stale'), error('SUPPLY_REVISION_CONFLICT'));
+    await assert.rejects(run(store, { step: 'withdraw_assignment', assignmentId: id, revision: 1, reason: 'Motivo DEMO' }, 'withdraw-other-case', 'demo-cedar'), error('SUPPLY_ASSIGNMENT_NOT_FOUND'));
+    assert.equal(canonical(store.state), before);
+    const api = await apiFixture(t);
+    for (const scope of [{ role: 'viewer', caseIds: ['demo-aurora'], functionIds: ['suppliers'] }, { role: 'operator', caseIds: ['demo-aurora'], functionIds: ['logistics'] }]) {
+      const headers = await api.login(scope);
+      assert.equal((await api.post(headers, supplyCommand({ step: 'withdraw_assignment', assignmentId: id, revision: 1, reason: 'Motivo DEMO' }, 'withdraw-forbidden'))).statusCode, 403);
+    }
+  });
+});
+
 describe('persistent synthetic procurement workflow', () => {
   it('blocks lists from unvalidated recipes or quantities and retains missing evidence explicitly', async () => {
     const fixtures = getSupplyFixtures('demo-aurora', AT);

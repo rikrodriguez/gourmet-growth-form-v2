@@ -91,6 +91,50 @@ async function assertFits(page: Page) {
   expect(await workspace(page).evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
 }
 
+test('withdraws an unavailable internal reservation explicitly, preserves evidence and replaces after reload', async ({ page, supplyApi }, info) => {
+  test.setTimeout(120000);
+  await boot(page); await openFunction(page, 'Proveedores');
+  const sourcing = workspace(page).getByTestId('supply-sourcing');
+  await clickCommand(page, sourcing.getByRole('button', { name: 'Incorporar digest ficticio', exact: true }));
+  async function prepare(suffix: 'alba' | 'beto') {
+    const candidate = sourcing.getByTestId(`supply-candidate-candidate-demo-${suffix}`);
+    await clickCommand(page, candidate.getByRole('button', { name: 'Evaluar como elegible DEMO', exact: true }));
+    await clickCommand(page, candidate.getByRole('button', { name: 'Verificar disponible DEMO', exact: true }));
+    await clickCommand(page, candidate.locator('article.result-card').filter({ hasText: `supply-terms-demo-aurora-${suffix}-complete` }).getByRole('button', { name: 'Validar condiciones DEMO', exact: true }));
+    await clickCommand(page, candidate.getByRole('button', { name: 'Preparar selección para aprobación', exact: true }));
+    const selection = Object.values((await supplyApi.store.snapshot()).office.supply!.cases['demo-aurora'].selections).find(row => row.candidateId === `candidate-demo-${suffix}`)!;
+    await clickCommand(page, workspace(page).getByTestId(`office-approval-${selection.approvalId}`).getByRole('button', { name: /^Aprobar revisión/ }));
+    return selection;
+  }
+  const first = await prepare('alba');
+  await clickCommand(page, sourcing.getByTestId(`supply-selection-${first.id}`).getByRole('button', { name: 'Registrar asignación DEMO', exact: true }));
+  const original = Object.values((await supplyApi.store.snapshot()).office.supply!.assignments)[0];
+  await clickCommand(page, sourcing.getByTestId('supply-candidate-candidate-demo-alba').getByRole('button', { name: 'Verificar no disponible DEMO', exact: true }));
+  let retired = sourcing.getByTestId(`supply-assignment-${original.id}`);
+  await expect(retired).toContainText('Requiere revisión'); await expect(retired).toContainText('Activa DEMO');
+  await expect(retired.getByRole('button', { name: 'Retirar asignación interna DEMO', exact: true })).toBeDisabled();
+  await retired.screenshot({ path: `test-results/dashboard-visual/${info.project.name}-supply-requires-review.png` });
+  await page.reload(); await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible(); await openFunction(page, 'Proveedores');
+  retired = sourcing.getByTestId(`supply-assignment-${original.id}`);
+  await expect(retired).toContainText('Requiere revisión'); await retired.getByLabel('Motivo de retirada interna DEMO').fill('Chef sintético no disponible; revisar sustitución');
+  const withdrawal = await clickCommand(page, retired.getByRole('button', { name: 'Retirar asignación interna DEMO', exact: true }));
+  expect(withdrawal.snapshot.cases[0].supplyWorkflow!.sourcing!.assignments[0].status).toBe('withdrawn_demo');
+  await expect(retired).toContainText('Chef sintético no disponible; revisar sustitución'); await expect(retired).toContainText('OFFICE_DEMO_OPERATOR');
+  const second = await prepare('beto');
+  await clickCommand(page, sourcing.getByTestId(`supply-selection-${second.id}`).getByRole('button', { name: 'Registrar asignación DEMO', exact: true }));
+  await page.reload(); await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible(); await openFunction(page, 'Proveedores');
+  await expect(sourcing.locator('article[data-testid^="supply-assignment-"]')).toHaveCount(2);
+  await expect(sourcing.getByTestId(`supply-assignment-${original.id}`)).toContainText('Retirada DEMO');
+  const persisted = Object.values((await supplyApi.store.snapshot()).office.supply!.assignments);
+  expect(persisted.filter(row => row.status === 'assigned_demo')).toHaveLength(1);
+  expect(persisted.find(row => row.status === 'assigned_demo')!.candidateId).toBe('candidate-demo-beto');
+  expect(persisted.find(row => row.id === original.id)!.evidence).toEqual(original.evidence);
+  await assertFits(page);
+  await sourcing.getByTestId(`supply-assignment-${original.id}`).screenshot({ path: `test-results/dashboard-visual/${info.project.name}-supply-withdrawn.png` });
+  await sourcing.locator('article[data-testid^="supply-assignment-"]').filter({ has: page.getByRole('heading', { name: 'Asignación interna DEMO registrada', exact: true }) }).screenshot({ path: `test-results/dashboard-visual/${info.project.name}-supply-replacement.png` });
+  console.log('SUPPLY_WITHDRAWAL_EVIDENCE ' + JSON.stringify({ project: info.project.name, original: original.id, withdrawnRevision: 2, activeAssignments: 1, candidate: 'candidate-demo-beto', historyPreserved: true, reloaded: true }));
+});
+
 test('persists source-to-assignment and validated-menu-to-review, with exact DEMO approvals', async ({ page, supplyApi }, testInfo) => {
   test.setTimeout(120_000);
   await boot(page);

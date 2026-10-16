@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { Evidence, OfficeApproval, OfficeCase, OfficeCommand } from './contracts';
 import type {
   SupplyCandidate, SupplyCandidateAnnouncement, SupplyMenuFixture, SupplyOperation,
@@ -178,6 +178,7 @@ export function SupplyWorkflowPanel({ current, functionId, canWrite, busy, submi
   current: OfficeCase; functionId: 'suppliers' | 'logistics'; canWrite: boolean; busy: boolean;
   submit: (input: CommandInput) => Promise<boolean>;
 }) {
+  const [withdrawalReasons, setWithdrawalReasons] = useState<Record<string, string>>({});
   const workflow = current.supplyWorkflow;
   const disabled = !canWrite || busy;
   const sourcing = functionId === 'suppliers' ? workflow?.sourcing : undefined;
@@ -214,13 +215,20 @@ export function SupplyWorkflowPanel({ current, functionId, canWrite, busy, submi
       })}
       {sourcing.selections.map(selection => <article className="result-card" key={selection.id} data-testid={`supply-selection-${selection.id}`}><h4>Selección de {selection.snapshot.candidate.label}</h4><Facts values={[
         ['Selección', selection.id], ['Revisión', selection.revision], ['Decisión', REVIEW[selection.reviewStatus]], ['Fecha de decisión', at(selection.reviewedAt)],
-        ['Revisión humana vinculada', selection.approvalId ?? 'Sin revisión vinculada'], ['Asignación interna', selection.assignedDemo ? 'Asignado DEMO · sin contratar' : 'Pendiente'], ['Ventana del evento', windowText(selection.snapshot.event.window)],
+        ['Revisión humana vinculada', selection.approvalId ?? 'Sin revisión vinculada'], ['Asignación interna', selection.assignedDemo ? 'Asignado DEMO · sin contratar' : sourcing.assignments.some(row => row.selectionId === selection.id && row.status === 'withdrawn_demo') ? 'Retirada DEMO · historial conservado' : 'Pendiente'], ['Ventana del evento', windowText(selection.snapshot.event.window)],
       ]} /><p className="form-hint">La selección se decide en Revisiones y decisiones. La asignación se registra después, sólo si la revisión está aprobada y no hay solapamientos.</p><div className="approval-actions"><button type="button" className="button button-secondary" disabled={disabled || current.saleClosed !== true || selection.reviewStatus !== 'approved_demo' || selection.assignedDemo} onClick={() => void run({ step: 'assign_demo', selectionId: selection.id, revision: selection.revision })}>Registrar asignación DEMO</button></div><SupplyEvidence evidence={selection.evidence} /></article>)}
-      {sourcing.assignments.map(assignment => <article className="result-card" key={assignment.id} data-testid={`supply-assignment-${assignment.id}`}><h4>Asignación interna DEMO registrada</h4><Facts values={[
+      {sourcing.assignments.map(assignment => <article className="result-card" key={assignment.id} data-testid={`supply-assignment-${assignment.id}`}><h4>{assignment.status === 'assigned_demo' ? 'Asignación interna DEMO registrada' : 'Asignación interna DEMO retirada'}</h4><Facts values={[
         ['Asignación', assignment.id], ['Candidato', assignment.candidateId], ['Caso', assignment.caseId], ['Selección', assignment.selectionId], ['Revisión seleccionada', assignment.selectionRevision],
         ['Aprobación vinculada', assignment.approvalId], ['Ventana reservada DEMO', windowText(assignment.window)], ['Fecha de asignación', at(assignment.assignedAt)],
-        ['Contratación externa', 'Sin contratar'],
-      ]} /><p className="form-hint">Este plan interno no confirma al chef ni resuelve una incidencia real de proveedor.</p><SupplyEvidence evidence={assignment.evidence} /></article>)}
+        ['Estado de reserva', assignment.status === 'assigned_demo' ? 'Activa DEMO' : 'Retirada DEMO'], ['Revisión de asignación', assignment.revision ?? 1], ['Contratación externa', 'Sin contratar'],
+      ]} />{assignment.status === 'assigned_demo' ? <>
+        {sourcing.selections.find(row => row.id === assignment.selectionId)?.reviewStatus === 'stale' && <p className="inline-alert" role="status">Requiere revisión. La selección está obsoleta; la reserva sigue activa hasta una retirada explícita.</p>}
+        <label>Motivo de retirada interna DEMO<input maxLength={500} value={withdrawalReasons[assignment.id] ?? ''} disabled={disabled} onChange={event => setWithdrawalReasons(previous => ({ ...previous, [assignment.id]: event.target.value }))} /></label>
+        <div className="approval-actions"><button type="button" className="button button-secondary" disabled={disabled || current.saleClosed !== true || !withdrawalReasons[assignment.id]?.trim()} onClick={() => void run({ step: 'withdraw_assignment', assignmentId: assignment.id, revision: assignment.revision ?? 1, reason: withdrawalReasons[assignment.id] })}>Retirar asignación interna DEMO</button></div>
+      </> : <><Facts values={[
+        ['Motivo de retirada', assignment.withdrawal.reason], ['Fecha de retirada', at(assignment.withdrawal.at)], ['Retirada por', assignment.withdrawal.by],
+      ]} /><SupplyEvidence evidence={assignment.withdrawal.evidence} /></>}
+      <p className="form-hint">Este plan interno no confirma al chef ni resuelve una incidencia real de proveedor. Cambiar disponibilidad no libera la reserva.</p><SupplyEvidence evidence={assignment.evidence} /></article>)}
     </>}
     {procurement && <>
       <h4>Menú y cantidades para revisión humana</h4>{procurement.menuFixtures.map(fixture => <article className="task-card" key={fixture.id} data-testid={`supply-menu-preview-${fixture.id}`}><MenuDetails menu={fixture} /><p className="form-hint">Revisa platos, recetas, porciones, cantidades y unidades antes de validar este menú ficticio.</p><div className="approval-actions"><button type="button" className="button button-primary" disabled={disabled} onClick={() => void run({ step: 'validate_menu', fixtureId: fixture.id })}>Validar menú y cantidades DEMO</button></div></article>)}

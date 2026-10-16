@@ -76,7 +76,7 @@ export function parseOfficeCommand(body: unknown): OfficeCommand {
   if (commercial && (!validId(body.commercialThreadId) || !Number.isSafeInteger(body.commercialThreadRevision) || (body.commercialThreadRevision as number) < 1 || (body.commercialThreadRevision as number) > 1_000_000 || typeof body.commercialThreadDigest !== 'string' || !/^[a-f0-9]{64}$/.test(body.commercialThreadDigest))) throw new OfficeError('INVALID_COMMERCIAL_BINDING');
   if (supply) {
     if (!isSupplyOperation(body.supply)) throw new OfficeError('INVALID_SUPPLY_COMMAND');
-    const sourcing = ['queue_sourcing', 'ingest_digest', 'evaluate_candidate', 'verify_availability', 'approve_terms', 'select_candidate', 'assign_demo'].includes(body.supply.step);
+    const sourcing = ['queue_sourcing', 'ingest_digest', 'evaluate_candidate', 'verify_availability', 'approve_terms', 'select_candidate', 'assign_demo', 'withdraw_assignment'].includes(body.supply.step);
     if (body.functionId !== (sourcing ? 'suppliers' : 'logistics')) throw new OfficeError('INVALID_SUPPLY_FUNCTION', 403);
   }
   return structuredClone(body) as OfficeCommand;

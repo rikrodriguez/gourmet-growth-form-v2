@@ -8,6 +8,7 @@ export type SupplyOperation =
   | { step: 'approve_terms'; candidateId: string; revision: number; termsFixtureId: string }
   | { step: 'select_candidate'; candidateId: string; revision: number }
   | { step: 'assign_demo'; selectionId: string; revision: number }
+  | { step: 'withdraw_assignment'; assignmentId: string; revision: number; reason: string }
   | { step: 'validate_menu'; fixtureId: string }
   | { step: 'build_purchase_list' }
   | { step: 'choose_purchase_option'; optionFixtureId: string; listRevision: number }
@@ -19,6 +20,7 @@ const FIELDS: Record<SupplyOperation['step'], readonly string[]> = {
   verify_availability: ['candidateId', 'revision', 'status'],
   approve_terms: ['candidateId', 'revision', 'termsFixtureId'],
   select_candidate: ['candidateId', 'revision'], assign_demo: ['selectionId', 'revision'],
+  withdraw_assignment: ['assignmentId', 'revision', 'reason'],
   validate_menu: ['fixtureId'], build_purchase_list: [],
   choose_purchase_option: ['optionFixtureId', 'listRevision'], review_purchase: ['optionId', 'revision'],
 };
@@ -42,6 +44,7 @@ export function isSupplyOperation(raw: unknown): raw is SupplyOperation {
   for (const key of ['revision', 'listRevision']) if (Object.hasOwn(values, key) && (!Number.isSafeInteger(values[key]) || (values[key] as number) < 1 || (values[key] as number) > 1_000_000)) return false;
   if (values.step === 'evaluate_candidate' && !['eligible', 'rejected'].includes(values.verdict as string)) return false;
   if (values.step === 'verify_availability' && !['available', 'unavailable'].includes(values.status as string)) return false;
+  if (values.step === 'withdraw_assignment' && (typeof values.reason !== 'string' || !values.reason.trim() || values.reason.length > 500 || /[\u0000-\u001f\u007f]/.test(values.reason))) return false;
   return true;
 }
 
@@ -73,7 +76,11 @@ export type SupplySelection = {
   id: string; caseId: string; candidateId: string; revision: number; digest: string; snapshot: SupplySelectionSnapshot;
   approvalId: string | null; reviewStatus: SupplyReviewStatus; reviewedAt: string | null; assignedDemo: boolean; evidence: Evidence;
 };
-export type SupplyAssignment = { id: string; caseId: string; candidateId: string; selectionId: string; selectionRevision: number; approvalId: string; window: SupplyWindow; assignedAt: string; status: 'assigned_demo'; externalHired: false; evidence: Evidence };
+export type SupplyAssignment = { id: string; caseId: string; candidateId: string; selectionId: string; selectionRevision: number; approvalId: string; window: SupplyWindow; assignedAt: string; externalHired: false; evidence: Evidence } & (
+  // Missing revision is the original payload: active revision 1, never rewritten.
+  | { status: 'assigned_demo'; revision?: 1; withdrawal?: never }
+  | { status: 'withdrawn_demo'; revision: 2; withdrawal: { reason: string; at: string; by: string; evidence: Evidence } }
+);
 
 export type SupplyMenuItem = { id: string; label: string; recipeId: string | null; servings: number | null };
 export type SupplyRecipe = { id: string; label: string; ingredients: Array<{ id: string; label: string; quantityPerServing: number | null; unit: 'g' | 'unit' | null }> };

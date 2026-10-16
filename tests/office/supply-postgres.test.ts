@@ -37,10 +37,10 @@ async function database(t: TestContext) {
   return { stateId, store, connect, disconnect };
 }
 
-async function prepareSelection(store: OfficeStore, prefix: string, caseId: DemoCaseId = 'demo-aurora') {
+async function prepareSelection(store: OfficeStore, prefix: string, caseId: DemoCaseId = 'demo-aurora', candidateIndex = 0) {
   const fixtures = getSupplyFixtures(caseId, AT);
   await run(store, { step: 'ingest_digest', fixtureId: fixtures.digestFixtures[0].id }, `${prefix}-ingest`, caseId);
-  const candidateId = fixtures.digestFixtures[0].entries[0].candidateId;
+  const candidateId = fixtures.digestFixtures[0].entries[candidateIndex].candidateId;
   const current = async () => projectSupplyWorkflow(await store.snapshot(), caseId, AT).sourcing!.candidates.find(row => row.id === candidateId)!;
   await run(store, { step: 'evaluate_candidate', candidateId, revision: (await current()).revision, verdict: 'eligible' }, `${prefix}-evaluate`, caseId);
   await run(store, { step: 'verify_availability', candidateId, revision: (await current()).revision, status: 'available' }, `${prefix}-available`, caseId);
@@ -48,7 +48,7 @@ async function prepareSelection(store: OfficeStore, prefix: string, caseId: Demo
   await run(store, { step: 'approve_terms', candidateId, revision: (await current()).revision, termsFixtureId: terms.id }, `${prefix}-terms`, caseId);
   await run(store, { step: 'select_candidate', candidateId, revision: (await current()).revision }, `${prefix}-select`, caseId);
   const state = await store.snapshot();
-  const selection = projectSupplyWorkflow(state, caseId, AT).sourcing!.selections[0];
+  const selection = projectSupplyWorkflow(state, caseId, AT).sourcing!.selections.find(row => row.candidateId === candidateId && row.snapshot.candidate.revision === state.office.supply!.cases[caseId].candidates[candidateId].revision)!;
   assert(selection.approvalId);
   return { selection, link: state.office.approvals[selection.approvalId] };
 }
@@ -66,6 +66,76 @@ async function preparePurchase(store: OfficeStore, prefix: string) {
   assert(reviewed.approvalId);
   return { option: reviewed, link: state.office.approvals[reviewed.approvalId] };
 }
+
+describe('assignment withdrawal on independent PostgreSQL pools', () => {
+  it('reads the previous assignment payload and persists withdrawal/replacement without rewriting old command digests', async t => {
+    const { store, connect, disconnect, stateId } = await database(t);
+    const first = await prepareSelection(store, 'pg-withdraw-old'); await approve(store, first.link, 'pg-withdraw-old-approved');
+    const assigned = command({ step: 'assign_demo', selectionId: first.selection.id, revision: 1 }, 'pg-withdraw-old-assigned');
+    await executeOfficeCommand(store, assigned, () => AT);
+    const old = await store.snapshot(), assignment = Object.values(old.office.supply!.assignments)[0]; delete assignment.revision;
+    await store.pool.query('UPDATE office_demo.states SET payload=$2::jsonb WHERE id=$1', [stateId, JSON.stringify(old)]);
+    const oldEvents = await store.pool.query('SELECT command_key,digest FROM office_demo.command_events WHERE state_id=$1 ORDER BY command_key', [stateId]);
+    await disconnect(store); const next = await connect();
+    assert.deepEqual((await next.snapshot()).office.commands, old.office.commands);
+    assert.equal(Object.hasOwn((await next.snapshot()).office.supply!.assignments[assignment.id], 'revision'), false);
+    const withdrawal = command({ step: 'withdraw_assignment', assignmentId: assignment.id, revision: 1, reason: 'Replanificación sintética persistida' }, 'pg-withdraw-retire');
+    await executeOfficeCommand(next, withdrawal, () => AT + 1);
+    const replacement = await prepareSelection(next, 'pg-withdraw-next', 'demo-aurora', 1); await approve(next, replacement.link, 'pg-withdraw-next-approved');
+    await run(next, { step: 'assign_demo', selectionId: replacement.selection.id, revision: replacement.selection.revision }, 'pg-withdraw-next-assigned');
+    const expected = await next.snapshot(); await disconnect(next); const recovered = await connect();
+    assert.equal(canonical(await recovered.snapshot()), canonical(expected));
+    for (const replay of [assigned, withdrawal]) assert.equal((await executeOfficeCommand(recovered, replay, () => AT + 2)).replayed, true);
+    assert.equal(canonical(await recovered.snapshot()), canonical(expected));
+    for (const [key, value] of Object.entries(old.office.commands)) assert.deepEqual(expected.office.commands[key], value);
+    for (const [key, value] of Object.entries(old.office.history)) assert.deepEqual(expected.office.history[key], value);
+    const events = await recovered.pool.query('SELECT command_key,digest FROM office_demo.command_events WHERE state_id=$1 AND command_key=ANY($2::text[]) ORDER BY command_key', [stateId, oldEvents.rows.map(row => row.command_key)]);
+    assert.deepEqual(events.rows, oldEvents.rows);
+    const rows = Object.values(expected.office.supply!.assignments); assert.equal(rows.length, 2); assert.equal(rows.filter(row => row.status === 'assigned_demo').length, 1);
+    assert.deepEqual(expected.office.supply!.assignments[assignment.id].evidence, assignment.evidence);
+  });
+  it('serializes exact withdrawal retries and concurrent approved replacements into one active assignment', async t => {
+    const { store, connect, stateId } = await database(t), independent = await connect();
+    const first = await prepareSelection(store, 'pg-withdraw-race-old'); await approve(store, first.link, 'pg-withdraw-race-old-approved');
+    await run(store, { step: 'assign_demo', selectionId: first.selection.id, revision: 1 }, 'pg-withdraw-race-old-assigned');
+    const oldAssignment = Object.values((await store.snapshot()).office.supply!.assignments)[0];
+    const withdrawal = { step: 'withdraw_assignment' as const, assignmentId: oldAssignment.id, revision: 1, reason: 'Sustitución sintética concurrente' };
+    const withdrawn = await Promise.all([run(store, withdrawal, 'pg-withdraw-race-retire'), run(independent, withdrawal, 'pg-withdraw-race-retire')]);
+    assert.equal(withdrawn.filter(row => row.replayed).length, 1);
+    const a = await prepareSelection(store, 'pg-withdraw-race-a'); const b = await prepareSelection(independent, 'pg-withdraw-race-b', 'demo-aurora', 1);
+    await approve(store, a.link, 'pg-withdraw-race-a-approved'); await approve(independent, b.link, 'pg-withdraw-race-b-approved');
+    const results = await Promise.allSettled([
+      run(store, { step: 'assign_demo', selectionId: a.selection.id, revision: a.selection.revision }, 'pg-withdraw-race-a-assigned'),
+      run(independent, { step: 'assign_demo', selectionId: b.selection.id, revision: b.selection.revision }, 'pg-withdraw-race-b-assigned'),
+    ]);
+    assert.equal(results.filter(row => row.status === 'fulfilled').length, 1);
+    const failed = results.find(row => row.status === 'rejected') as PromiseRejectedResult; assert.equal(failed.reason.code, 'SUPPLY_CASE_ALREADY_ASSIGNED');
+    const state = await independent.snapshot(); assert.equal(Object.values(state.office.supply!.assignments).filter(row => row.status === 'assigned_demo').length, 1);
+    assert.equal(state.office.supply!.assignments[oldAssignment.id].status, 'withdrawn_demo');
+    const receipts = await store.pool.query('SELECT count(*)::int AS n FROM office_demo.command_events WHERE state_id=$1 AND command_key=$2', [stateId, 'pg-withdraw-race-retire']); assert.equal(receipts.rows[0].n, 1);
+    await assert.rejects(run(store, withdrawal, 'pg-withdraw-race-late-retire'), (e: unknown) => e instanceof OfficeError && e.code === 'SUPPLY_REVISION_CONFLICT');
+  });
+  it('does not release an overlapping reservation on unavailability; explicit withdrawal allows another case after concurrency/retry', async t => {
+    const { store, connect } = await database(t), independent = await connect();
+    await store.transact(state => { state.office.cases['demo-harbor'].saleClosed = true; });
+    const first = await prepareSelection(store, 'pg-withdraw-overlap-a'); await approve(store, first.link, 'pg-withdraw-overlap-a-approved');
+    await run(store, { step: 'assign_demo', selectionId: first.selection.id, revision: 1 }, 'pg-withdraw-overlap-a-assigned');
+    const current = (await store.snapshot()).office.supply!.cases['demo-aurora'].candidates[first.selection.candidateId];
+    await run(store, { step: 'verify_availability', candidateId: current.id, revision: current.revision, status: 'unavailable' }, 'pg-withdraw-overlap-unavailable');
+    const second = await prepareSelection(independent, 'pg-withdraw-overlap-b', 'demo-harbor'); await approve(independent, second.link, 'pg-withdraw-overlap-b-approved');
+    const replacement = { step: 'assign_demo' as const, selectionId: second.selection.id, revision: second.selection.revision };
+    await assert.rejects(run(independent, replacement, 'pg-withdraw-overlap-blocked', 'demo-harbor'), (e: unknown) => e instanceof OfficeError && e.code === 'SUPPLY_ASSIGNMENT_OVERLAP');
+    const id = Object.values((await store.snapshot()).office.supply!.assignments)[0].id;
+    const result = await Promise.allSettled([
+      run(store, { step: 'withdraw_assignment', assignmentId: id, revision: 1, reason: 'Liberación interna de ventana sintética' }, 'pg-withdraw-overlap-retire'),
+      run(independent, replacement, 'pg-withdraw-overlap-recover', 'demo-harbor'),
+    ]);
+    assert.equal(result[0].status, 'fulfilled');
+    await run(independent, replacement, 'pg-withdraw-overlap-recover', 'demo-harbor');
+    const assignments = Object.values((await store.snapshot()).office.supply!.assignments);
+    assert.equal(assignments.filter(row => row.status === 'assigned_demo').length, 1); assert.equal(assignments.find(row => row.status === 'assigned_demo')!.caseId, 'demo-harbor');
+  });
+});
 
 describe('supply durability on real PostgreSQL (requires office:db start)', () => {
   it('persists separate supplier and purchase reviews across independent pools without executing either', async t => {

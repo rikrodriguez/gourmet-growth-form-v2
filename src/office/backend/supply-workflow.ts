@@ -3,11 +3,11 @@ import { isSupplyOperation } from '../supply-contracts';
 import type { SupplyCandidate, SupplyCaseState, SupplyMenu, SupplyMenuFixture, SupplyOperation, SupplyOperationResult, SupplyPurchaseList, SupplyPurchaseOption, SupplyPurchaseOptionFixture, SupplyPurchaseSnapshot, SupplyReviewContext, SupplyReviewStatus, SupplySelectionSnapshot, SupplyState, SupplyWindow, SupplyWorkflow } from '../supply-contracts';
 import { getSupplyFixtures } from './supply-fixtures';
 import type { DemoCaseId, OfficeState } from './state';
-import { CASE_IDS, DEMO_ACTOR, OfficeError, canonical, currentTime, evidence, sha256 } from './state';
+import { CASE_IDS, DEMO_ACTOR, OfficeError, assertEvidence, canonical, currentTime, evidence, sha256 } from './state';
 
 type SupplyOfficeState = OfficeState & { office: OfficeState['office'] & { supply?: SupplyState } };
 const MAX_REVIEW_RECORDS = 1000;
-const sourcingSteps = new Set<SupplyOperation['step']>(['queue_sourcing', 'ingest_digest', 'evaluate_candidate', 'verify_availability', 'approve_terms', 'select_candidate', 'assign_demo']);
+const sourcingSteps = new Set<SupplyOperation['step']>(['queue_sourcing', 'ingest_digest', 'evaluate_candidate', 'verify_availability', 'approve_terms', 'select_candidate', 'assign_demo', 'withdraw_assignment']);
 const iso = (atMs: number) => new Date(currentTime(() => atMs)).toISOString();
 const displayMoney = (cents: number | null, currency: 'USD' | null) => `${cents === null ? 'desconocido' : (cents / 100).toFixed(2)} ${currency ?? '(moneda desconocida)'}`;
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
@@ -96,7 +96,21 @@ export function assertSupplyState(state: OfficeState): void {
     }
     if (row.selectedOptionId !== null && !Object.hasOwn(row.options, row.selectedOptionId)) return invalid();
   }
-  for (const [id, assignment] of Object.entries(supply.assignments)) if (assignment.id !== id || !(CASE_IDS as readonly string[]).includes(assignment.caseId) || assignment.externalHired !== false || assignment.status !== 'assigned_demo' || !windowValid(assignment.window)) return invalid();
+  const activeCases = new Set<string>();
+  for (const [id, assignment] of Object.entries(supply.assignments)) {
+    if (assignment.id !== id || !(CASE_IDS as readonly string[]).includes(assignment.caseId) || assignment.externalHired !== false || !windowValid(assignment.window) || !date(assignment.assignedAt)) return invalid();
+    if (assignment.status === 'assigned_demo') {
+      if (assignment.revision !== undefined && assignment.revision !== 1 || assignment.withdrawal !== undefined || activeCases.has(assignment.caseId)) return invalid();
+      activeCases.add(assignment.caseId);
+    } else if (assignment.status === 'withdrawn_demo') {
+      const withdrawal = assignment.withdrawal;
+      if (assignment.revision !== 2 || !withdrawal || typeof withdrawal.reason !== 'string' || !withdrawal.reason.trim() || withdrawal.reason !== withdrawal.reason.trim()
+        || withdrawal.reason.length > 500 || /[\u0000-\u001f\u007f]/.test(withdrawal.reason) || !date(withdrawal.at) || Date.parse(withdrawal.at) < Date.parse(assignment.assignedAt) || withdrawal.by !== DEMO_ACTOR) return invalid();
+      assertEvidence(withdrawal.evidence, assignment.caseId as DemoCaseId);
+      const selection = supply.cases[assignment.caseId].selections[assignment.selectionId];
+      if (!selection || selection.assignedDemo || selection.reviewStatus !== 'stale' || withdrawal.evidence.at !== withdrawal.at) return invalid();
+    } else return invalid();
+  }
 }
 
 export function projectSupplyWorkflow(state: OfficeState, caseId: DemoCaseId, atMs: number): SupplyWorkflow {
@@ -260,9 +274,14 @@ export function applySupplyOperation(state: OfficeState, command: OfficeCommand,
     candidateReady(row, candidate, atMs);
     if (row.queue?.status !== 'queued') throw new OfficeError('SUPPLY_SOURCING_NOT_REQUIRED', 409);
     const snapshot: SupplySelectionSnapshot = { candidate: structuredClone(candidate), event: structuredClone(row.event), terms: structuredClone(candidate.terms!) };
-    const id = `supply-selection-${sha256({ caseId, snapshot }).slice(0, 24)}`;
+    // Retired/stale selections remain immutable evidence. A fresh review of
+    // identical facts gets its own ID/revision; it cannot revive the old plan.
+    const latest = Object.values(row.selections).filter(selection => canonical(selection.snapshot) === canonical(snapshot)).sort((a, b) => b.revision - a.revision)[0];
+    const rev = latest ? latest.revision + (latest.reviewStatus === 'stale' ? 1 : 0) : 1;
+    const id = latest && latest.reviewStatus !== 'stale' ? latest.id : `supply-selection-${sha256(rev === 1 ? { caseId, snapshot } : { caseId, snapshot, revision: rev }).slice(0, 24)}`;
+    if (!revision(rev)) throw new OfficeError('SUPPLY_RECORD_LIMIT', 409);
     if (!Object.hasOwn(row.selections, id) && Object.keys(row.selections).length >= MAX_REVIEW_RECORDS) throw new OfficeError('SUPPLY_RECORD_LIMIT', 409);
-    if (!Object.hasOwn(row.selections, id)) row.selections[id] = { id, caseId, candidateId: candidate.id, revision: 1, digest: selectionDigest(caseId, id, 1, snapshot), snapshot, approvalId: null, reviewStatus: 'pending', reviewedAt: null, assignedDemo: false, evidence: evidence(caseId, id, atMs) };
+    if (!Object.hasOwn(row.selections, id)) row.selections[id] = { id, caseId, candidateId: candidate.id, revision: rev, digest: selectionDigest(caseId, id, rev, snapshot), snapshot, approvalId: null, reviewStatus: 'pending', reviewedAt: null, assignedDemo: false, evidence: evidence(caseId, id, atMs) };
     const context = selectionContext(row, id);
     return { ...done('Selección lista para revisión', 'Identidad, revisión, ciudad/cobertura, disponibilidad, ventana y condiciones exactas vinculadas; aprobar no asigna ni contrata.', 'awaiting_approval'), review: { title: 'Selección de chef · revisión interna DEMO', body: `DEMO — Selección de ${candidate.label} (${candidate.id}); caso ${caseId}.\nCiudad/cobertura: ${row.event.city} / ${row.event.coverage}.\nEvento: ${row.event.window.startAt} → ${row.event.window.endAt}.\nRevisión del candidato: ${candidate.revision}. Fuente: ${candidate.source}; ${candidate.sourceLink}; leído ${candidate.readAt}.\nAnunciado: ${displayMoney(candidate.announcedRateCents, candidate.currency)}/${candidate.announcedRateUnit ?? 'unidad desconocida'}.\nCondiciones humanas: ${displayMoney(candidate.terms!.rateCents, candidate.terms!.currency)}/${candidate.terms!.rateUnit}; cantidad ${candidate.terms!.quantity}; total ${displayMoney(candidate.terms!.totalCents, candidate.terms!.currency)}. ${candidate.terms!.conditions}\nAprobar sólo registra la revisión. Asignación DEMO requiere un paso explícito posterior; no hay contratación ni aceptación externa.`, context } };
   }
@@ -275,14 +294,30 @@ export function applySupplyOperation(state: OfficeState, command: OfficeCommand,
     const link = selection.approvalId ? state.office.approvals[selection.approvalId] : undefined;
     if (selection.reviewStatus !== 'approved_demo' || !link || link.status !== 'approved_demo' || canonical((link as typeof link & { supplyContext?: SupplyReviewContext }).supplyContext) !== canonical(context) || !link.coreApprovalId || state.approvals[link.coreApprovalId]?.valid !== true) throw new OfficeError('SUPPLY_REVIEW_NOT_APPROVED', 409);
     const id = `supply-assignment-${sha256(selection.id).slice(0, 24)}`;
-    if (Object.hasOwn(supply.assignments, id)) return done('Asignación DEMO existente', 'La reserva local del mismo candidato/evento ya está registrada; no se duplica.');
-    if (Object.values(supply.assignments).some(assignment => assignment.caseId === caseId)) throw new OfficeError('SUPPLY_CASE_ALREADY_ASSIGNED', 409);
+    if (Object.hasOwn(supply.assignments, id)) {
+      if (supply.assignments[id].status !== 'assigned_demo') throw new OfficeError('SUPPLY_ASSIGNMENT_WITHDRAWN', 409);
+      return done('Asignación DEMO existente', 'La reserva local del mismo candidato/evento ya está registrada; no se duplica.');
+    }
+    if (Object.values(supply.assignments).some(assignment => assignment.caseId === caseId && assignment.status === 'assigned_demo')) throw new OfficeError('SUPPLY_CASE_ALREADY_ASSIGNED', 409);
     const window = row.event.window;
-    const overlap = Object.values(supply.assignments).some(assignment => assignment.candidateId === selection.candidateId && Date.parse(assignment.window.startAt) < Date.parse(window.endAt) && Date.parse(window.startAt) < Date.parse(assignment.window.endAt));
+    const overlap = Object.values(supply.assignments).some(assignment => assignment.status === 'assigned_demo' && assignment.candidateId === selection.candidateId && Date.parse(assignment.window.startAt) < Date.parse(window.endAt) && Date.parse(window.startAt) < Date.parse(assignment.window.endAt));
     if (overlap) throw new OfficeError('SUPPLY_ASSIGNMENT_OVERLAP', 409);
-    supply.assignments[id] = { id, caseId, candidateId: selection.candidateId, selectionId: selection.id, selectionRevision: selection.revision, approvalId: selection.approvalId!, window: structuredClone(window), assignedAt: iso(atMs), status: 'assigned_demo', externalHired: false, evidence: evidence(caseId, id, atMs) };
+    supply.assignments[id] = { id, caseId, candidateId: selection.candidateId, selectionId: selection.id, selectionRevision: selection.revision, approvalId: selection.approvalId!, window: structuredClone(window), assignedAt: iso(atMs), revision: 1, status: 'assigned_demo', externalHired: false, evidence: evidence(caseId, id, atMs) };
     selection.assignedDemo = true;
     return done('Asignación DEMO registrada', 'Reserva local exacta sin solapamientos. La aceptación del proveedor y la incidencia de pago siguen independientes; no se acredita contratación real.');
+  }
+  if (operation.step === 'withdraw_assignment') {
+    const assignment = Object.hasOwn(supply.assignments, operation.assignmentId) ? supply.assignments[operation.assignmentId] : undefined;
+    if (!assignment || assignment.caseId !== caseId) throw new OfficeError('SUPPLY_ASSIGNMENT_NOT_FOUND', 404);
+    if ((assignment.revision ?? 1) !== operation.revision) throw new OfficeError('SUPPLY_REVISION_CONFLICT', 409);
+    if (assignment.status !== 'assigned_demo') throw new OfficeError('SUPPLY_ASSIGNMENT_WITHDRAWN', 409);
+    const selection = row.selections[assignment.selectionId];
+    if (!selection) throw new OfficeError('INVALID_SUPPLY_STATE', 503);
+    const reason = operation.reason.trim();
+    supply.assignments[assignment.id] = { ...assignment, status: 'withdrawn_demo', revision: 2,
+      withdrawal: { reason, at: iso(atMs), by: DEMO_ACTOR, evidence: evidence(caseId, `${assignment.id}-withdrawal-2`, atMs) } };
+    selection.assignedDemo = false; selection.reviewStatus = 'stale';
+    return done('Asignación DEMO retirada', `Reserva interna ${assignment.id} retirada en revisión 2. Motivo: ${reason}. Se conservan selección, aprobación, ventana e historia. Cualquier nueva asignación requiere otra selección aprobada.`);
   }
   if (operation.step === 'validate_menu') {
     const fixture = fixtures.menuFixtures.find(fixture => fixture.id === operation.fixtureId);

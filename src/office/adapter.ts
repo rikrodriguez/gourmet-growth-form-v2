@@ -208,9 +208,18 @@ function supplySelection(value: unknown, caseId: string): Supply.SupplySelection
   return result;
 }
 function supplyAssignment(value: unknown, caseId: string): Supply.SupplyAssignment {
-  const item = record(value); keys(item, ['id', 'caseId', 'candidateId', 'selectionId', 'selectionRevision', 'approvalId', 'window', 'assignedAt', 'status', 'externalHired', 'evidence']);
-  if (item.caseId !== caseId || item.status !== 'assigned_demo') bad();
-  return { id: supplyId(item.id), caseId, candidateId: supplyId(item.candidateId), selectionId: supplyId(item.selectionId), selectionRevision: revision(item.selectionRevision), approvalId: supplyId(item.approvalId), window: supplyWindow(item.window), assignedAt: date(item.assignedAt), status: 'assigned_demo', externalHired: falseFact(item.externalHired), evidence: supplyEvidence(item.evidence, caseId) };
+  const item = record(value); keys(item, ['id', 'caseId', 'candidateId', 'selectionId', 'selectionRevision', 'approvalId', 'window', 'assignedAt', 'status', 'externalHired', 'evidence'], ['revision', 'withdrawal']);
+  if (item.caseId !== caseId) bad();
+  const base = { id: supplyId(item.id), caseId, candidateId: supplyId(item.candidateId), selectionId: supplyId(item.selectionId), selectionRevision: revision(item.selectionRevision), approvalId: supplyId(item.approvalId), window: supplyWindow(item.window), assignedAt: date(item.assignedAt), externalHired: falseFact(item.externalHired), evidence: supplyEvidence(item.evidence, caseId) };
+  if (item.status === 'assigned_demo') {
+    if (item.revision !== undefined && item.revision !== 1 || Object.hasOwn(item, 'withdrawal')) bad();
+    return { ...base, status: 'assigned_demo', revision: 1 };
+  }
+  if (item.status !== 'withdrawn_demo' || item.revision !== 2) bad();
+  const withdrawal = record(item.withdrawal); keys(withdrawal, ['reason', 'at', 'by', 'evidence']);
+  const reason = string(withdrawal.reason, 500), at = date(withdrawal.at), by = supplyId(withdrawal.by);
+  if (!reason.trim() || reason !== reason.trim() || /[\u0000-\u001f\u007f]/.test(reason) || Date.parse(at) < Date.parse(base.assignedAt) || by !== 'OFFICE_DEMO_OPERATOR') bad();
+  return { ...base, status: 'withdrawn_demo', revision: 2, withdrawal: { reason, at, by, evidence: supplyEvidence(withdrawal.evidence, caseId) } };
 }
 function supplyMenuFixture(value: unknown, caseId: string, optional: string[] = []): Supply.SupplyMenuFixture {
   const item = record(value); keys(item, ['id', 'label', 'menuRevision', 'items', 'recipes', 'evidence'], optional);
@@ -292,6 +301,7 @@ function supplyWorkflow(value: unknown, mode: DataMode, caseId: string): Supply.
   if (Object.hasOwn(item, 'sourcing')) {
     const sourcing = record(item.sourcing); keys(sourcing, ['queue', 'digests', 'candidates', 'selections', 'assignments', 'digestFixtures', 'termsFixtures']);
     result.sourcing = { queue: nullable(sourcing.queue, value => supplyQueue(value, caseId)), digests: collection(sourcing.digests, value => supplyDigestRecord(value, caseId)), candidates: collection(sourcing.candidates, value => supplyCandidate(value, caseId)), selections: collection(sourcing.selections, value => supplySelection(value, caseId)), assignments: collection(sourcing.assignments, value => supplyAssignment(value, caseId)), digestFixtures: collection(sourcing.digestFixtures, value => supplyDigestFixture(value, caseId)), termsFixtures: collection(sourcing.termsFixtures, value => supplyTermsFixture(value, caseId)) };
+    if (result.sourcing.assignments.filter(row => row.status === 'assigned_demo').length > 1) bad();
   }
   if (Object.hasOwn(item, 'procurement')) {
     const procurement = record(item.procurement); keys(procurement, ['menu', 'list', 'options', 'selectedOptionId', 'menuFixtures', 'optionFixtures']);
