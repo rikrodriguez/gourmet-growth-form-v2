@@ -1,4 +1,5 @@
 import { LeadLinkHistorySection } from './dashboard/LeadLinkHistorySection';
+import type { TestProposalDashboardIntegration } from './dashboard/test-proposal-integration';
 import type { DashboardLeadLinkAccessSource, LeadLinkClient } from './dashboard/lead-link-access';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { ApprovalQueue, Channel, Conversation, DashboardReadSource, DashboardReviewSource, DashboardSnapshot, Stage } from './dashboard/contracts';
@@ -112,8 +113,8 @@ export function eventModeFromHash(hash: string): DashboardEventMode {
   const [section, tab] = hash.replace(/^#/, '').split('/');
   return EVENT_TABS[section as Section] && ['consulta', 'brief', 'cotizacion', 'revision', 'cobro', 'operaciones', 'tastings'].includes(tab) ? 'demo' : 'saved';
 }
-export type DashboardPageProps = { leadLinkAccessSource?: DashboardLeadLinkAccessSource; leadLinkClient?: LeadLinkClient; quoteAccessSource?: DashboardQuoteAccessSource; quoteClient?: EventQuoteClient; initialEventMode?: DashboardEventMode; source?: DashboardReadSource; reviewSource?: DashboardReviewSource; initialSnapshot?: DashboardSnapshot; initialSection?: Section; initialVisualDemo?: boolean };
-export function DashboardPage({ leadLinkAccessSource, leadLinkClient, quoteAccessSource, quoteClient, initialEventMode = 'saved', source = dashboardFixtureSource, reviewSource = dashboardReviewSource, initialSnapshot, initialSection = 'summary', initialVisualDemo = false }: DashboardPageProps) {
+export type DashboardPageProps = { testProposalIntegration?: TestProposalDashboardIntegration; leadLinkAccessSource?: DashboardLeadLinkAccessSource; leadLinkClient?: LeadLinkClient; quoteAccessSource?: DashboardQuoteAccessSource; quoteClient?: EventQuoteClient; initialEventMode?: DashboardEventMode; source?: DashboardReadSource; reviewSource?: DashboardReviewSource; initialSnapshot?: DashboardSnapshot; initialSection?: Section; initialVisualDemo?: boolean };
+export function DashboardPage({ testProposalIntegration, leadLinkAccessSource, leadLinkClient, quoteAccessSource, quoteClient, initialEventMode = 'saved', source = dashboardFixtureSource, reviewSource = dashboardReviewSource, initialSnapshot, initialSection = 'summary', initialVisualDemo = false }: DashboardPageProps) {
   const [section, setSection] = useState<Section>(initialSection);
   const [eventMode, setEventMode] = useState<DashboardEventMode>(initialEventMode);
   const [hasOpenedDemo, setHasOpenedDemo] = useState(initialEventMode === 'demo');
@@ -196,8 +197,8 @@ export function DashboardPage({ leadLinkAccessSource, leadLinkClient, quoteAcces
       <button type="button" className="gew-button" aria-pressed={eventMode === 'saved'} data-testid="dashboard-quotes-saved" onClick={() => chooseEventMode('saved')}>Guardadas</button>
       <button type="button" className="gew-button" aria-pressed={eventMode === 'demo'} data-testid="dashboard-quotes-demo" onClick={() => chooseEventMode('demo')}>Ejemplo DEMO</button>
     </div></div>}
-    {showSavedQuotes && <PersistedQuoteSection key={`${eventSessionEpoch}-${quoteNavigationEpoch}-${section}`} source={quoteAccessSource} client={quoteClient} />}
-    {showSavedQuotes && <LeadLinkHistorySection key={`history-${eventSessionEpoch}-${quoteNavigationEpoch}-${section}`} source={leadLinkAccessSource} client={leadLinkClient} />}
+    {showSavedQuotes && !testProposalIntegration && <PersistedQuoteSection key={`${eventSessionEpoch}-${quoteNavigationEpoch}-${section}`} source={quoteAccessSource} client={quoteClient} />}
+    {showSavedQuotes && <LeadLinkHistorySection key={`history-${eventSessionEpoch}-${quoteNavigationEpoch}-${section}`} source={testProposalIntegration?.source ?? leadLinkAccessSource} client={testProposalIntegration?.historyClient ?? leadLinkClient} renderForLead={testProposalIntegration?.renderForLead} />}
     {eventTab !== undefined && eventMode === 'saved' && !showSavedQuotes && <div className="gourmet-event-workspace"><p className="gew-notice">Esta operación solo está disponible como ejemplo. Selecciona Ejemplo DEMO para abrir la simulación.</p></div>}
     {snapshot && <>
       {section === 'summary' && <ApprovedDashboardSummary visualDemo={visualDemo} sampleOpportunityCount={snapshot.opportunities.length} onOpenInbox={() => navigateSection('inbox')} />}

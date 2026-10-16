@@ -14,9 +14,9 @@ import { proposalFixture } from './external-proposal-fixtures';
 import { testScope } from './event-quote-fixtures';
 export const durableProposalProof = { sessionToken: 'dashboard_synthetic_session_1234', csrfToken: 'dashboard_synthetic_csrf_1234' };
 export const proposalVault = () => new MondayVault(Buffer.alloc(32, 79)); // Existing synthetic vault fixture, never a production key.
-export async function durableProposalFixture() {
+export async function durableProposalFixture(index: 0 | 1 = 0) {
  let stopped = false;
- const memory = await proposalFixture(), target = memory.targets[0], authority = memory.authorities.get(target.leadId)!;
+ const memory = await proposalFixture(), target = memory.targets[index], authority = memory.authorities.get(target.leadId)!;
  const actorId = authority.quote.actor.actorId, scope = testScope, at = Date.now(); let now = at;
  const schemas = { accessSchema: `quote_access_test_${randomUUID().replaceAll('-', '')}`, quoteSchema: `quote_test_${randomUUID().replaceAll('-', '')}`, bridgeSchema: `bridge_test_${randomUUID().replaceAll('-', '')}`, proposalSchema: `proposal_test_${randomUUID().replaceAll('-', '')}` };
  const pool = new Pool({ connectionString: DEFAULT_OFFICE_DATABASE_URL, connectionTimeoutMillis: 1000, max: 6 });
