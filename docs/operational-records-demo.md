@@ -38,13 +38,15 @@ La transacción existente serializa pasos, revisión y registro durable del idem
 
 La proyección filtra Logística y Calidad por los scopes existentes. El navegador conserva únicamente el intento incierto en su mecanismo existente; recargar y reintentar usa el mismo input. Cambiar de caso no hace que la respuesta pendiente del anterior sustituya el expediente visible.
 
+El lector del contrato también contrasta el estado de cierre con revisión, registro, pendientes, política y resumen del ensayo. Cuando el historial de Calidad está visible, su último cierre debe corresponder al ID, revisión y contexto proyectados. Las vistas filtradas por permisos conservan su validez; no se exige exponer historial de otra función. Una respuesta contradictoria se rechaza como incompatible antes de renderizarla y se conserva únicamente la última lectura confirmada. Esto comprueba coherencia de la respuesta, no autentica un snapshot íntegramente fabricado ni sustituye la autoridad y verificaciones de PostgreSQL/backend.
+
 ## Verificación y demostración
 
 Las suites existentes incorporan el recorrido positivo y los límites, con datos exclusivamente sintéticos:
 
-- `tests/office/supply-workflow.test.ts`: política ausente, completo/parcial/reference-only, identidad, hashes, payload estricto, permisos/revocación/caducidad, cambios de dependencias y borrador sin efecto operativo.
+- `tests/office/supply-workflow.test.ts`: política ausente, completo/parcial/reference-only, identidad, hashes, payload estricto, permisos/revocación/caducidad, cambios de dependencias y borrador sin efecto operativo. Parte además del snapshot inicial real de `projectOfficeSnapshot` y cambia sólo `cases[0].operationalWorkflow.closure.status` de `blocked` a `closed_demo`: contrato y adaptador deben rechazarlo. Los cuatro estados legítimos se verifican con scopes de Logística, Calidad y ambas funciones.
 - `tests/office/supply-postgres.test.ts`: dos procesos Node con PIDs distintos usan los módulos reales y el mismo agregado; el segundo recupera/reintenta el cierre sin duplicarlo. Pools independientes comprueban carrera cierre/incidencia, append-only y actualización tardía de menú.
-- `tests/office-e2e/supply-workflow.spec.ts`: recorrido de UI existente en escritorio/320 px, recarga, aislamiento, recepción no verificable, cierre DEMO, retirada de política y respuesta incierta recuperada tras cambiar de caso.
+- `tests/office-e2e/supply-workflow.spec.ts`: recorrido de UI existente en escritorio/320 px, recarga, aislamiento, recepción no verificable, cierre DEMO, retirada de política y respuesta incierta recuperada tras cambiar de caso. La regresión de respuesta alterada modifica sólo ese estado en la respuesta real de la API del fixture; comprueba error de contrato, conservación del cierre bloqueado, ausencia de comandos/mutación del journal y recuperación legítima tras recarga.
 
 ```
 npm run office:db -- start
@@ -56,7 +58,7 @@ npm run office:build
 npm run test:office:e2e -- tests/office-e2e/supply-workflow.spec.ts
 ```
 
-Capturas: `test-results/dashboard-visual/office-*-operational-{prepared,incident,closed-reloaded,policy-missing}.png`, retenidas por el artifact visual del workflow de verificación existente. Logs: `OPERATIONAL_BROWSER_EVIDENCE` y `OPERATIONAL_RESTART_EVIDENCE`. Los resultados y SHA exactos se publican en el PR draft; este documento no afirma conectores o CI no ejecutados.
+Capturas: `test-results/dashboard-visual/office-*-operational-{prepared,incident,closed-reloaded,policy-missing,response-rejected,response-status}.png`, retenidas por el artifact visual del workflow de verificación existente. Logs: `OPERATIONAL_BROWSER_EVIDENCE`, `OPERATIONAL_RESTART_EVIDENCE` y `OPERATIONAL_RESPONSE_VALIDATION_EVIDENCE`. Los resultados y SHA exactos se publican en el PR draft; este documento no afirma conectores o CI no ejecutados.
 
 ## Decisiones comerciales pendientes — no son configuración implícita del código
 

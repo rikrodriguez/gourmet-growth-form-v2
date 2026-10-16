@@ -80,5 +80,27 @@ export function readOperationalWorkflow(raw: unknown, caseId: string): Operation
     const q = raw.quality;
     if (!object(q) || !exact(q, ['records', 'incidents', 'resolutionFixtureId']) || !records(q.records, 'quality') || !id(q.resolutionFixtureId) || !Array.isArray(q.incidents) || q.incidents.length > 200 || q.incidents.some(v => !object(v) || !exact(v, ['id', 'description', 'owner', 'milestone', 'status', 'current', 'resolutionId']) || !id(v.id) || !note(v.description) || !['coordination_demo', 'quality_demo'].includes(v.owner as string) || v.milestone !== null && !OPERATIONAL_MILESTONES.includes(v.milestone as OperationalMilestone) || !['open', 'acknowledged', 'resolved_demo'].includes(v.status as string) || typeof v.current !== 'boolean' || v.resolutionId !== null && !id(v.resolutionId))) return bad();
   }
-  return structuredClone(raw) as OperationalWorkflow;
+  const view = structuredClone(raw) as OperationalWorkflow;
+  const { closure, summary } = view;
+  const hasClose = closure.recordId !== null;
+  const hasBlockers = view.blockers.length > 0;
+  // These are projection invariants of the existing DEMO contract, not new
+  // business rules. A typed status alone cannot establish a reviewed closure.
+  if (hasClose !== ['closed_demo', 'stale'].includes(closure.status) || hasClose && view.revision === 0 || closure.status === 'blocked' && !hasBlockers) return bad();
+  if (['review_ready', 'closed_demo'].includes(closure.status) && (
+    hasBlockers || view.revision === 0 || view.policy === null || view.policy.id !== view.policyFixtures[0].id
+    || summary.activeAssignmentId === null || summary.selectedOptionId === null || summary.receipt !== 'verified_demo'
+    || summary.milestones.some(m => !m.current || m.recordId === null)
+    || view.quality?.incidents.some(i => i.status !== 'resolved_demo' || !i.current || i.resolutionId === null)
+  )) return bad();
+  // Quality history can be absent in a legitimately scoped Logistics view.
+  // When visible, its latest close must explain the projected status and ID.
+  if (view.quality) {
+    const close = view.quality.records.filter(r => r.operation.step === 'close_demo').sort((a, b) => b.revision - a.revision)[0];
+    if (closure.recordId !== (close?.id ?? null)) return bad();
+    const closed = close && close.revision === view.revision && close.operation.contextDigest === view.contextDigest && !hasBlockers;
+    const expected = closed ? 'closed_demo' : close ? 'stale' : hasBlockers ? 'blocked' : 'review_ready';
+    if (closure.status !== expected) return bad();
+  }
+  return view;
 }

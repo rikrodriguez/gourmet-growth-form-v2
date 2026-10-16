@@ -324,6 +324,50 @@ test('viewer reads supply facts and exact previews without write permission', as
   await assertFits(page);
 });
 
+test('rejects a status-only forged closure response and recovers the persisted initial workflow', async ({ page, context, supplyApi }, info) => {
+  await boot(page); await openFunction(page, 'Calidad');
+  const initialState = await supplyApi.store.snapshot();
+  const initial = projectOfficeSnapshot(initialState, Date.now()).cases[0].operationalWorkflow!;
+  expect(initial).toMatchObject({ revision: 0, policy: null, closure: { status: 'blocked', recordId: null }, summary: { receipt: 'pending' } });
+  expect(initial.summary.milestones.every(m => !m.current && m.recordId === null)).toBe(true);
+  let alter = true, alteredResponses = 0;
+  await context.route('**/office-api/snapshot', async route => {
+    const response = await supplyApi.inject(route);
+    expect(response.status).toBe(200);
+    if (!alter) return route.fulfill(response);
+    const snapshot = JSON.parse(response.body) as OfficeSnapshot;
+    expect(snapshot.cases[0].operationalWorkflow!.closure.status).toBe('blocked');
+    snapshot.cases[0].operationalWorkflow!.closure.status = 'closed_demo';
+    alteredResponses++;
+    await route.fulfill({ ...response, body: JSON.stringify(snapshot) });
+  });
+  const refresh = async () => {
+    await workspace(page).getByRole('button', { name: 'Cerrar espacio de trabajo', exact: true }).click();
+    await page.locator('.office-session-menu > summary').click();
+    await page.getByRole('button', { name: 'Actualizar oficina', exact: true }).click();
+    await page.locator('.office-session-menu > summary').click();
+    await openFunction(page, 'Calidad');
+  };
+  await refresh();
+  await expect(page.getByRole('alert')).toContainText('La respuesta no cumple el contrato de la oficina');
+  const status = workspace(page).getByTestId('operational-status');
+  await expect(status).toContainText('Cierre bloqueado');
+  await expect(status).not.toContainText('Cierre de ensayo registrado');
+  await expect(workspace(page).getByRole('button', { name: 'Confirmar cierre de ensayo', exact: true })).toBeDisabled();
+  await assertFits(page);
+  await workspace(page).screenshot({ path: `test-results/dashboard-visual/${info.project.name}-operational-response-rejected.png` });
+  await status.getByRole('heading', { name: 'Cierre bloqueado', exact: true }).scrollIntoViewIfNeeded();
+  await workspace(page).screenshot({ path: `test-results/dashboard-visual/${info.project.name}-operational-response-status.png` });
+  expect(alteredResponses).toBe(1);
+  expect((await supplyApi.store.snapshot()).office.operational).toEqual(initialState.office.operational);
+  expect(Object.keys((await supplyApi.store.snapshot()).office.commands)).toHaveLength(0);
+  alter = false;
+  await page.reload(); await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible(); await openFunction(page, 'Calidad');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(workspace(page).getByTestId('operational-status')).toContainText('Cierre bloqueado');
+  console.log('OPERATIONAL_RESPONSE_VALIDATION_EVIDENCE=' + JSON.stringify({ project: info.project.name, changedField: 'cases[0].operationalWorkflow.closure.status', rejected: true, persistedOperationalStateUnchanged: true, recoveredAfterReload: true }));
+});
+
 test('an uncertain operational record reloads and retries its exact durable intent once', async ({ page, context, supplyApi }) => {
   const commands: OfficeCommand[] = [];
   await context.route('**/office-api/command*', async route => {

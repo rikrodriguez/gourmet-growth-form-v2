@@ -8,10 +8,11 @@ import type { SupplyOperation, SupplyWorkflow } from '../../src/office/supply-co
 import { executeOfficeCommand } from '../../src/office/backend/commands';
 import { createOfficeFixtureState } from '../../src/office/backend/fixtures';
 import { createOfficeApi } from '../../src/office/backend/http';
-import { validateOfficeSnapshot } from '../../src/office/adapter';
+import { OfficeReadError, validateOfficeSnapshot } from '../../src/office/adapter';
+import { readOperationalWorkflow } from '../../src/office/operational-contracts';
 import { getSupplyFixtures } from '../../src/office/backend/supply-fixtures';
 import { parseSupplyOperation, projectSupplyWorkflow } from '../../src/office/backend/supply-workflow';
-import { SESSION_TTL_MS } from '../../src/office/backend/session';
+import { DevelopmentSessions, scopeSnapshot, SESSION_TTL_MS } from '../../src/office/backend/session';
 import { OfficeError, canonical, projectOfficeSnapshot, sha256 } from '../../src/office/backend/state';
 import type { ApprovalLink, DemoCaseId, OfficeState, OfficeStore } from '../../src/office/backend/state';
 
@@ -58,6 +59,58 @@ async function preparedOperational(store: SerializedStore, prefix: string) {
 }
 
 describe('operational journal in the existing Office aggregate', () => {
+  for (const boundary of ['contract', 'snapshot adapter'] as const) it(`rejects a status-only forged closure on the real initial projection at the ${boundary} boundary`, () => {
+    const snapshot = projectOfficeSnapshot(createOfficeFixtureState(AT), AT);
+    validateOfficeSnapshot(snapshot, 'demo');
+    const view = snapshot.cases[0].operationalWorkflow!;
+    assert.equal(view.closure.status, 'blocked');
+    assert.equal(view.revision, 0);
+    assert.equal(view.closure.recordId, null);
+    assert.equal(view.policy, null);
+    assert.equal(view.summary.receipt, 'pending');
+    assert(view.summary.milestones.every(m => !m.current && m.recordId === null));
+    const altered = structuredClone(snapshot);
+    altered.cases[0].operationalWorkflow!.closure.status = 'closed_demo';
+    if (boundary === 'contract') assert.throws(() => readOperationalWorkflow(altered.cases[0].operationalWorkflow, snapshot.cases[0].id), /INVALID_OPERATIONAL_WORKFLOW/);
+    else assert.throws(() => validateOfficeSnapshot(altered, 'demo'), value => value instanceof OfficeReadError && value.code === 'incompatible');
+  });
+  it('accepts legitimate scoped closure states and rejects contradictions in a closed projection', async () => {
+    const store = new SerializedStore();
+    const validateScopes = () => {
+      const snapshot = projectOfficeSnapshot(store.state, AT);
+      for (const functionIds of [['logistics'], ['quality'], ['logistics', 'quality']] as const) {
+        const { session } = new DevelopmentSessions(() => AT).create({ caseIds: ['demo-aurora'], functionIds: [...functionIds] });
+        validateOfficeSnapshot(scopeSnapshot(snapshot, session), 'demo');
+      }
+      return snapshot;
+    };
+    validateScopes();
+    const { apply } = await preparedOperational(store, 'ops-response');
+    assert.equal(validateScopes().cases[0].operationalWorkflow!.closure.status, 'review_ready');
+    await apply({ step: 'close_demo', reviewDigest: projectOfficeSnapshot(store.state, AT).cases[0].operationalWorkflow!.closure.reviewDigest }, 'close');
+    const closed = validateScopes();
+    assert.equal(closed.cases[0].operationalWorkflow!.closure.status, 'closed_demo');
+    for (const change of ['revision', 'record', 'policy', 'blockers', 'assignment', 'option', 'receipt', 'milestone', 'close_context', 'close_record', 'close_revision', 'incident'] as const) {
+      const altered = structuredClone(closed), v = altered.cases[0].operationalWorkflow!;
+      if (change === 'revision') v.revision = 0;
+      if (change === 'record') v.closure.recordId = null;
+      if (change === 'policy') v.policy = null;
+      if (change === 'blockers') v.blockers.push('Pendiente sintético');
+      if (change === 'assignment') v.summary.activeAssignmentId = null;
+      if (change === 'option') v.summary.selectedOptionId = null;
+      if (change === 'receipt') v.summary.receipt = 'reference_only';
+      if (change === 'milestone') v.summary.milestones[0].current = false;
+      if (change === 'close_context') v.quality!.records.at(-1)!.operation.contextDigest = '0'.repeat(64);
+      if (change === 'close_record') v.closure.recordId = v.logistics!.records[0].id;
+      if (change === 'close_revision') v.revision++;
+      if (change === 'incident') v.quality!.incidents.push({ id: 'ops-unresolved', description: 'Pendiente sintético', owner: 'quality_demo', milestone: null, status: 'open', current: false, resolutionId: null });
+      assert.throws(() => validateOfficeSnapshot(altered, 'demo'), value => value instanceof OfficeReadError && value.code === 'incompatible', change);
+    }
+    await apply({ step: 'confirm_milestone', milestone: 'delivery', fixtureId: 'ops-demo-aurora-delivery' }, 'new-evidence');
+    assert.equal(validateScopes().cases[0].operationalWorkflow!.closure.status, 'stale');
+    await apply({ step: 'set_policy', policyFixtureId: null }, 'remove-policy');
+    assert.equal(validateScopes().cases[0].operationalWorkflow!.closure.status, 'stale');
+  });
   it('shows an explicit missing-policy closure gate before any operational record exists', () => {
     const store = new SerializedStore();
     const view = projectOfficeSnapshot(store.state, AT).cases[0].operationalWorkflow;
