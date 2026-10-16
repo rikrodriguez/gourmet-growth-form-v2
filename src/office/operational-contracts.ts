@@ -8,7 +8,7 @@ export type OperationalOperation = Binding & (
   | { step: 'set_policy'; policyFixtureId: string | null }
   | { step: 'record_receipt'; fixtureId: string }
   | { step: 'confirm_milestone'; milestone: OperationalMilestone; fixtureId: string }
-  | { step: 'open_incident'; description: string; owner: 'coordination_demo' | 'quality_demo' }
+  | { step: 'open_incident'; description: string; owner: 'coordination_demo' | 'quality_demo'; milestone?: OperationalMilestone }
   | { step: 'acknowledge_incident'; incidentId: string }
   | { step: 'resolve_incident'; incidentId: string; resolution: string; fixtureId: string }
   | { step: 'close_demo'; reviewDigest: string }
@@ -29,12 +29,12 @@ function object(v: unknown): v is Record<string, unknown> {
 function exact(v: Record<string, unknown>, fields: string[]) { return Object.keys(v).length === fields.length && fields.every(key => Object.hasOwn(v, key)); }
 export function isOperationalOperation(raw: unknown): raw is OperationalOperation {
   if (!object(raw) || typeof raw.step !== 'string' || !Object.hasOwn(FIELDS, raw.step)) return false;
-  const fields = ['step', 'eventId', 'revision', 'contextDigest', ...FIELDS[raw.step as OperationalOperation['step']]];
+  const fields = ['step', 'eventId', 'revision', 'contextDigest', ...FIELDS[raw.step as OperationalOperation['step']], ...(raw.step === 'open_incident' && Object.hasOwn(raw, 'milestone') ? ['milestone'] : [])];
   if (!exact(raw, fields) || !id(raw.eventId) || !Number.isSafeInteger(raw.revision) || (raw.revision as number) < 0 || (raw.revision as number) > 200 || !digest(raw.contextDigest)) return false;
   if (Object.hasOwn(raw, 'fixtureId') && !id(raw.fixtureId) || Object.hasOwn(raw, 'incidentId') && !id(raw.incidentId)) return false;
   return (raw.step !== 'set_policy' || raw.policyFixtureId === null || id(raw.policyFixtureId))
     && (raw.step !== 'confirm_milestone' || OPERATIONAL_MILESTONES.includes(raw.milestone as OperationalMilestone))
-    && (raw.step !== 'open_incident' || note(raw.description) && ['coordination_demo', 'quality_demo'].includes(raw.owner as string))
+    && (raw.step !== 'open_incident' || note(raw.description) && ['coordination_demo', 'quality_demo'].includes(raw.owner as string) && (!Object.hasOwn(raw, 'milestone') || OPERATIONAL_MILESTONES.includes(raw.milestone as OperationalMilestone)))
     && (raw.step !== 'resolve_incident' || note(raw.resolution)) && (raw.step !== 'close_demo' || digest(raw.reviewDigest));
 }
 export const operationalFunction = (op: OperationalOperation): 'logistics' | 'quality' => ['set_policy', 'record_receipt', 'confirm_milestone'].includes(op.step) ? 'logistics' : 'quality';
@@ -42,7 +42,7 @@ export type OperationalPolicy = { id: string; label: string; scope: 'synthetic_r
 export type OperationalProof = { fixtureId: string; status: 'verified_demo' | 'partial_demo' | 'reference_only'; content: string | null; contentHash: string | null; occurredAt: string; items: Array<{ id: string; label: string; unit: string; expected: number; received: number }> };
 export type OperationalRecord = { id: string; caseId: string; eventId: string; revision: number; actorId: 'OFFICE_DEMO_OPERATOR'; functionId: 'logistics' | 'quality'; operation: OperationalOperation; proof: OperationalProof | null; evidence: Evidence; digest: string };
 export type OperationalState = { schemaVersion: 1; cases: Record<string, { caseId: string; eventId: string; records: OperationalRecord[] }> };
-export type OperationalIncident = { id: string; description: string; owner: 'coordination_demo' | 'quality_demo'; status: 'open' | 'acknowledged' | 'resolved_demo'; current: boolean; resolutionId: string | null };
+export type OperationalIncident = { id: string; description: string; owner: 'coordination_demo' | 'quality_demo'; milestone: OperationalMilestone | null; status: 'open' | 'acknowledged' | 'resolved_demo'; current: boolean; resolutionId: string | null };
 export type OperationalWorkflow = {
   schemaVersion: 1; mode: 'demo'; caseId: string; eventId: string; revision: number; contextDigest: string;
   policy: OperationalPolicy | null; policyFixtures: OperationalPolicy[]; blockers: string[];
@@ -78,7 +78,7 @@ export function readOperationalWorkflow(raw: unknown, caseId: string): Operation
   }
   if (raw.quality !== undefined) {
     const q = raw.quality;
-    if (!object(q) || !exact(q, ['records', 'incidents', 'resolutionFixtureId']) || !records(q.records, 'quality') || !id(q.resolutionFixtureId) || !Array.isArray(q.incidents) || q.incidents.length > 200 || q.incidents.some(v => !object(v) || !exact(v, ['id', 'description', 'owner', 'status', 'current', 'resolutionId']) || !id(v.id) || !note(v.description) || !['coordination_demo', 'quality_demo'].includes(v.owner as string) || !['open', 'acknowledged', 'resolved_demo'].includes(v.status as string) || typeof v.current !== 'boolean' || v.resolutionId !== null && !id(v.resolutionId))) return bad();
+    if (!object(q) || !exact(q, ['records', 'incidents', 'resolutionFixtureId']) || !records(q.records, 'quality') || !id(q.resolutionFixtureId) || !Array.isArray(q.incidents) || q.incidents.length > 200 || q.incidents.some(v => !object(v) || !exact(v, ['id', 'description', 'owner', 'milestone', 'status', 'current', 'resolutionId']) || !id(v.id) || !note(v.description) || !['coordination_demo', 'quality_demo'].includes(v.owner as string) || v.milestone !== null && !OPERATIONAL_MILESTONES.includes(v.milestone as OperationalMilestone) || !['open', 'acknowledged', 'resolved_demo'].includes(v.status as string) || typeof v.current !== 'boolean' || v.resolutionId !== null && !id(v.resolutionId))) return bad();
   }
   return structuredClone(raw) as OperationalWorkflow;
 }

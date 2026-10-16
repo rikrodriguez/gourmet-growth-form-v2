@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { OfficeCase, OfficeCommand } from './contracts';
 import { MILESTONE_LABELS, operationalFunction } from './operational-contracts';
-import type { OperationalOperation, OperationalRecord } from './operational-contracts';
+import type { OperationalMilestone, OperationalOperation, OperationalRecord } from './operational-contracts';
 
 type Detail<T = OperationalOperation> = T extends OperationalOperation ? Omit<T, 'eventId' | 'revision' | 'contextDigest'> : never;
 const LABELS: Record<OperationalOperation['step'], string> = { set_policy: 'Política de ensayo', record_receipt: 'Recepción de ensayo', confirm_milestone: 'Hito de ensayo', open_incident: 'Incidencia DEMO', acknowledge_incident: 'Acuse', resolve_incident: 'Resolución DEMO', close_demo: 'Cierre de ensayo' };
@@ -10,7 +10,7 @@ function RecordDetails({ record, current }: { record: OperationalRecord; current
   return <article className="task-card" data-testid={`operational-record-${record.id}`} style={{ overflowWrap: 'anywhere' }}>
     <h4>{LABELS[record.operation.step]} · revisión {record.revision}</h4>
     <p>{record.actorId} · {record.evidence.at} · {record.operation.contextDigest === current ? 'Dependencias vigentes' : 'Evidencia anterior: requiere revisión'}</p>
-    {record.operation.step === 'open_incident' && <p>{record.operation.description} · responsable: {record.operation.owner}</p>}
+    {record.operation.step === 'open_incident' && <p>{record.operation.description} · responsable: {record.operation.owner} · hito: {record.operation.milestone ? MILESTONE_LABELS[record.operation.milestone] : 'Evento general'}</p>}
     {record.operation.step === 'resolve_incident' && <p>{record.operation.resolution}</p>}
     {record.operation.step === 'set_policy' && <p>{record.operation.policyFixtureId ?? 'Sin política: cierre bloqueado'}</p>}
     {record.operation.step === 'confirm_milestone' && <p>{MILESTONE_LABELS[record.operation.milestone]}</p>}
@@ -27,6 +27,7 @@ export function OperationalWorkflowSection({ current, functionId, canWrite, canC
 }) {
   const [description, setDescription] = useState('');
   const [owner, setOwner] = useState<'coordination_demo' | 'quality_demo'>('coordination_demo');
+  const [milestone, setMilestone] = useState<OperationalMilestone | ''>('');
   const [resolutions, setResolutions] = useState<Record<string, string>>({});
   const view = current.operationalWorkflow;
   if (!view) return null;
@@ -57,12 +58,13 @@ export function OperationalWorkflowSection({ current, functionId, canWrite, canC
     </>}
     {functionId === 'quality' && view.quality && <>
       <h4>Incidencias del ensayo</h4><p>Un mensaje o borrador de Calidad no registra ni resuelve una incidencia. Estos registros son exclusivamente sintéticos.</p>
-      <form onSubmit={event => { event.preventDefault(); void run({ step: 'open_incident', description, owner }).then(ok => { if (ok) setDescription(''); }); }}>
+      <form onSubmit={event => { event.preventDefault(); void run({ step: 'open_incident', description, owner, ...(milestone ? { milestone } : {}) }).then(ok => { if (ok) setDescription(''); }); }}>
         <label>Descripción de incidencia DEMO<textarea maxLength={500} required disabled={disabled} value={description} onChange={e => setDescription(e.target.value)} /></label>
         <label>Responsable del fixture<select disabled={disabled} value={owner} onChange={e => setOwner(e.target.value as typeof owner)}><option value="coordination_demo">Coordinación DEMO</option><option value="quality_demo">Calidad DEMO</option></select></label>
+        <label>Hito afectado del fixture<select disabled={disabled} value={milestone} onChange={e => setMilestone(e.target.value as typeof milestone)}><option value="">Evento general</option>{Object.entries(MILESTONE_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
         <button className="button button-secondary" disabled={disabled || !description.trim()}>Registrar incidencia DEMO</button>
       </form>
-      {view.quality.incidents.map(i => <article className="task-card" key={i.id} data-testid={`operational-incident-${i.id}`}><h4>{i.description}</h4><p>{i.owner} · {i.status} · {i.status === 'resolved_demo' && !i.current ? 'Resolución desactualizada' : 'Registro del ensayo'}</p>
+      {view.quality.incidents.map(i => <article className="task-card" key={i.id} data-testid={`operational-incident-${i.id}`}><h4>{i.description}</h4><p>{i.owner} · {i.status} · {i.status === 'resolved_demo' && !i.current ? 'Resolución desactualizada' : 'Registro del ensayo'}</p><p>Hito afectado: {i.milestone ? MILESTONE_LABELS[i.milestone] : 'Evento general'}</p>
         {i.status === 'open' && <button type="button" className="button button-secondary" disabled={disabled} onClick={() => void run({ step: 'acknowledge_incident', incidentId: i.id })}>Registrar acuse DEMO</button>}
         {(i.status !== 'resolved_demo' || !i.current) && <><label>Resolución de ensayo<textarea maxLength={500} disabled={disabled} value={resolutions[i.id] ?? ''} onChange={e => setResolutions(previous => ({ ...previous, [i.id]: e.target.value }))} /></label><button type="button" className="button button-secondary" disabled={disabled || !resolutions[i.id]?.trim()} onClick={() => void run({ step: 'resolve_incident', incidentId: i.id, resolution: resolutions[i.id], fixtureId: view.quality!.resolutionFixtureId })}>Registrar resolución con fixture DEMO</button></>}
       </article>)}

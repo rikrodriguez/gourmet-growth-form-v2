@@ -88,8 +88,9 @@ describe('operational journal in the existing Office aggregate', () => {
     assert.equal(view().summary.receipt, 'partial_demo');
     await apply({ step: 'record_receipt', fixtureId: 'ops-demo-aurora-receipt-complete' });
     for (const milestone of ['preparation', 'assembly', 'service', 'delivery']) await apply({ step: 'confirm_milestone', milestone, fixtureId: `ops-demo-aurora-${milestone}` });
-    await apply({ step: 'open_incident', description: 'Falta material sintético de montaje', owner: 'coordination_demo' });
+    await apply({ step: 'open_incident', description: 'Falta material sintético de montaje', owner: 'coordination_demo', milestone: 'assembly' });
     const incident = view().quality!.incidents[0];
+    assert.equal(incident.milestone, 'assembly');
     await assert.rejects(apply({ step: 'close_demo', reviewDigest: view().closure.reviewDigest }), error('OPERATIONAL_CLOSE_BLOCKED'));
     await apply({ step: 'acknowledge_incident', incidentId: incident.id });
     await apply({ step: 'resolve_incident', incidentId: incident.id, resolution: 'Material de fixture comprobado', fixtureId: 'ops-demo-aurora-resolution' });
@@ -117,6 +118,7 @@ describe('operational journal in the existing Office aggregate', () => {
       { ...valid, operational: { ...valid.operational, step: 'close_real' } },
       { ...valid, text: 'DEMO' }, { ...valid, supply: { step: 'queue_sourcing' } },
       { ...valid, operational: { ...valid.operational, description: 'unexpected' } },
+      { ...valid, functionId: 'quality', operational: { eventId: valid.operational.eventId, revision: 0, contextDigest: valid.operational.contextDigest, step: 'open_incident', description: 'Fixture', owner: 'quality_demo', milestone: 'unknown-real-step' } },
     ]) await assert.rejects(executeOfficeCommand(store, raw, () => AT), error('INVALID_OPERATIONAL_COMMAND'));
     await assert.rejects(executeOfficeCommand(store, { ...valid, operational: { ...valid.operational, eventId: 'supply-event-demo-cedar' } }, () => AT), error('OPERATIONAL_EVENT_MISMATCH'));
     await assert.rejects(executeOfficeCommand(store, { ...valid, caseId: 'demo-cedar' }, () => AT), error('OPERATIONAL_EVENT_MISMATCH'));

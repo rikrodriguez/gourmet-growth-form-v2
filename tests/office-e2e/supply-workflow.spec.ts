@@ -260,9 +260,11 @@ test('persists source-to-assignment and validated-menu-to-review, with exact DEM
   await openFunction(page, 'Calidad');
   operational = workspace(page).getByTestId('operational-workflow');
   await operational.getByLabel('Descripción de incidencia DEMO').fill('Falta material de montaje · sólo fixture');
+  await operational.getByLabel('Hito afectado del fixture').selectOption('assembly');
   await clickCommand(page, operational.getByRole('button', { name: 'Registrar incidencia DEMO', exact: true }));
   const incidentId = Object.values((await supplyApi.store.snapshot()).office.operational!.cases['demo-aurora'].records).find(r => r.operation.step === 'open_incident')!.id;
   const incident = operational.getByTestId(`operational-incident-${incidentId}`);
+  await expect(incident).toContainText('Hito afectado: Montaje');
   await expect(operational.getByRole('button', { name: 'Confirmar cierre de ensayo', exact: true })).toBeDisabled();
   await expect(operational.getByTestId('operational-status')).toContainText('Hay incidencias abiertas');
   await incident.screenshot({ path: `test-results/dashboard-visual/${testInfo.project.name}-operational-incident.png` });
@@ -279,6 +281,7 @@ test('persists source-to-assignment and validated-menu-to-review, with exact DEM
   operational = workspace(page).getByTestId('operational-workflow');
   await expect(operational.getByTestId('operational-status')).toContainText('Cierre de ensayo registrado');
   await expect(operational.getByTestId(`operational-incident-${incidentId}`)).toContainText('resolved_demo');
+  await expect(operational.getByTestId(`operational-incident-${incidentId}`)).toContainText('Hito afectado: Montaje');
   await operational.getByTestId('operational-status').screenshot({ path: `test-results/dashboard-visual/${testInfo.project.name}-operational-closed-reloaded.png` });
   await assertFits(page);
   await workspace(page).getByRole('button', { name: 'Cerrar espacio de trabajo', exact: true }).click();

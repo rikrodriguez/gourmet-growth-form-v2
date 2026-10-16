@@ -70,7 +70,7 @@ export function projectOperationalWorkflow(state: OfficeState, caseId: DemoCaseI
     const open = r.operation as Extract<OperationalOperation, { step: 'open_incident' }>;
     const resolution = newest.find(x => x.operation.step === 'resolve_incident' && x.operation.incidentId === r.id);
     const acknowledged = records.some(x => x.operation.step === 'acknowledge_incident' && x.operation.incidentId === r.id);
-    return { id: r.id, description: open.description, owner: open.owner, status: resolution ? 'resolved_demo' : acknowledged ? 'acknowledged' : 'open', current: current(resolution), resolutionId: resolution?.id ?? null };
+    return { id: r.id, description: open.description, owner: open.owner, milestone: open.milestone ?? null, status: resolution ? 'resolved_demo' : acknowledged ? 'acknowledged' : 'open', current: current(resolution), resolutionId: resolution?.id ?? null };
   });
   const blockers: string[] = [];
   if (!policy) blockers.push('Falta política operativa; no se infieren mínimos ni firmante.');
