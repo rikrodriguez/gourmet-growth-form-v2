@@ -38,6 +38,7 @@ function BoundWorkspace({ client, eventId, externalProposal }: PersistedQuoteWor
   const [busy, setBusy] = useState<string | null>('Cargando expediente');
   const [error, setError] = useState<string | null>(null);
   const [needsReload, setNeedsReload] = useState(true);
+  const [recoveredDraft, setRecoveredDraft] = useState(false);
   const [reviewed, setReviewed] = useState<string | null>(null);
   const [verified, setVerified] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
@@ -52,19 +53,24 @@ function BoundWorkspace({ client, eventId, externalProposal }: PersistedQuoteWor
 
   function clearPrivateState() {
     setStatus(null); setView(null); setBrief(latestBriefInput(null)); setQuantities({});
-    setReviewed(null); setVerified(null); setNeedsReload(true); setExpired(true);
+    setReviewed(null); setVerified(null); setNeedsReload(true); setExpired(true); setRecoveredDraft(false);
   }
   async function reload() {
     if (locked.current) return;
+    const draft = needsReload && dirty ? { ...brief } : null;
+    const previousBriefDigest = savedBrief?.digest ?? null;
     locked.current = true; request.current?.abort(); const controller = new AbortController(); request.current = controller;
-    setBusy('Cargando expediente'); setError(null); setReviewed(null); setVerified(null); setNeedsReload(true);
+    setBusy('Cargando expediente'); setError(null); setReviewed(null); setVerified(null); setNeedsReload(true); setRecoveredDraft(false);
     try {
       const nextStatus = await client.status(controller.signal);
       let nextView: EventQuoteView | null;
       try { nextView = await client.read(eventId, controller.signal); }
       catch (error) { if (error instanceof EventQuoteClientError && error.status === 404) nextView = null; else throw error; }
       if (controller.signal.aborted) return;
-      setStatus(nextStatus); setView(nextView); setBrief(latestBriefInput(nextView)); setQuantities({}); setNeedsReload(false);
+      // A failed save must not erase local work when the authoritative brief is
+      // unchanged. A committed or concurrent newer brief always wins instead.
+      const restoreDraft = draft !== null && (nextView?.record.briefs.at(-1)?.digest ?? null) === previousBriefDigest;
+      setStatus(nextStatus); setView(nextView); setBrief(restoreDraft ? draft : latestBriefInput(nextView)); setQuantities({}); setNeedsReload(false); setRecoveredDraft(restoreDraft);
     } catch (error) {
       if (!controller.signal.aborted) { clearPrivateState(); setError(failureMessage(error)); }
     } finally { if (request.current === controller) { locked.current = false; setBusy(null); } }
@@ -93,7 +99,7 @@ function BoundWorkspace({ client, eventId, externalProposal }: PersistedQuoteWor
   async function execute(command: QuoteCommand) {
     if (locked.current || !writable || !status) return;
     locked.current = true; const controller = new AbortController(); request.current = controller;
-    setBusy('Guardando'); setError(null); setReviewed(null); setVerified(null);
+    setBusy('Guardando'); setError(null); setReviewed(null); setVerified(null); setRecoveredDraft(false);
     try {
       const nextView = await client.execute(eventId, command, status.session.csrfToken, controller.signal);
       if (controller.signal.aborted) return;
@@ -130,6 +136,7 @@ function BoundWorkspace({ client, eventId, externalProposal }: PersistedQuoteWor
     <div className="gew-safety"><span>No envío ni cobro · aprobación exclusivamente interna</span><span>Fecha y lugar propuestos · reserva sin confirmar</span></div>
     <div className="gew-live" role="status" aria-live="polite">{busy ?? (view ? `Revisión guardada ${view.record.revision}. ${labels[view.currentQuoteStatus]}.` : status ? 'Completa la consulta manual para crear el expediente.' : 'Acceso pendiente de verificar.')}</div>
     {error && <p className="gew-notice gew-notice-danger" role="alert">{error}</p>}
+    {recoveredDraft && dirty && <p className="gew-notice gew-notice-warning" role="status">Borrador local recuperado, todavía sin guardar. Revisa los datos y guarda para continuar; la propuesta requiere una nueva revisión.</p>}
     {readOnly && !busy && <p className="gew-notice">Solo lectura. Puedes revisar el expediente guardado; guardar, generar y aprobar permanecen bloqueados.</p>}
     {(!status?.enabled || expired) && !readOnly && !busy && <div className="gew-notice gew-notice-warning">Operación bloqueada. Se requiere identidad existente, permisos y catálogo vigente autorizado en el servidor. Recarga después de resolverlo.</div>}
     {status?.session.mode === 'test' && <p className="gew-notice">Ámbito de prueba aislado. Los datos y precios de prueba no autorizan una operación comercial.</p>}

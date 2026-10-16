@@ -26,11 +26,19 @@ Cambiar de sección, seleccionar otro evento, cerrar, ocultar, salir, Back/Forwa
 
 Guardar/aprobar una cotización no actualiza métricas financieras, no equivale a una venta, pago ni aceptación del cliente y no autoriza Comunicaciones. Los valores del resumen permanecen desconocidos; la vista visual DEMO conserva selección independiente.
 
+## Recuperar un borrador después de un guardado fallido
+
+Si el guardado no se confirma, las siguientes escrituras siguen bloqueadas hasta recargar. Al recuperarse la lectura, el componente conserva los campos locales únicamente si el digest del brief guardado continúa siendo el anterior. Muestra «Borrador local recuperado, todavía sin guardar»; el usuario debe revisar y guardar explícitamente. El aviso desaparece si deshace todos los cambios. La propuesta externa permanece oculta mientras el brief está modificado y guardar el destinatario nuevo invalida la aprobación documental anterior.
+
+Si el servidor ya guardó la operación cuya respuesta se perdió, se carga esa versión sin repetir el comando. Si otro guardado cambió el brief, prevalece esa versión autoritativa y no se superpone el borrador anterior. La recuperación no amplía permisos ni continúa después de retirar la identidad. El borrador vive sólo en memoria del workspace: cerrar, cambiar de caso/identidad o recargar la página no crea un autosave ni conserva datos privados fuera de ese ciclo.
+
+Regresión en `tests/external-proposal-browser/proposal.spec.ts`, con los fixtures existentes y Chromium escritorio/móvil: error antes de guardar → recarga conservando borrador → guardado explícito → aprobación antigua obsoleta → nueva asociación pendiente → reabrir y revisar; también respuesta perdida después del commit, guardado concurrente y aislamiento al cambiar de lead. No se añade servidor/harness, editor, cuenta aprobadora o almacenamiento. Los SHA, CI y capturas `*-proposal-draft-{notice,recovered,reopened}.png` se registran en el PR en borrador. La demo sigue sin identidad comercial ni proveedor real configurados; ver [dependencias del host/proveedor](proposal-host-provider-integration.md).
+
 ## Catálogo comercial pendiente
 
 Fuente única: [catalogue-contract.md](catalogue-contract.md) y [esquema](catalogue-authority.schema.json). No contienen tarifas ni reglas comerciales inferidas. El catálogo sintético y la identidad temporal inyectada existen únicamente en pruebas.
 
-## Verificación de este cambio
+## Verificación de la composición inicial (histórico)
 
 Pruebas de contrato/SSR cubren cierre inicial, navegación, IDs, permisos, contexto, copias aisladas, caducidad, cancelación y respuestas tardías. El harness de navegador monta DashboardPage real con React → HTTP → PostgreSQL temporal; conserva creación, generación HTML, aprobación interna, recuperación y obsolescencia. Agrega selección explícita, retiro/restablecimiento de identidad, Back, métricas desconocidas y capturas dentro del shell aprobado.
 
