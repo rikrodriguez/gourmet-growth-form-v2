@@ -7,6 +7,7 @@ import { ExternalProposalPanel } from '../../src/office/dashboard/ExternalPropos
 import { ExternalProposalError, MemoryExternalProposalStore, proposalBridgeScope } from '../../src/office/backend/external-proposal';
 import { proposalFixture } from './external-proposal-fixtures';
 import type { ExternalProposalCommand } from '../../src/office/external-proposal-contracts';
+import { linkCanonicalDocument } from './external-proposal-canonical-fixtures';
 const code = (value: string) => (e: unknown) => e instanceof ExternalProposalError && e.code === value;
 async function associated() {
   const f = await proposalFixture();
@@ -14,6 +15,33 @@ async function associated() {
   return { ...f, view };
 }
 const approval = (f: Awaited<ReturnType<typeof associated>>): ExternalProposalCommand => ({ action: 'approve', key: 'approve-1', expectedRevision: f.view.revision, reviewKey: f.view.snapshot!.reviewKey });
+
+for (const mismatch of ['proposal', 'version', 'hash'] as const) test(`base service rejects a contradictory canonical quote ${mismatch} before association`, async () => {
+  const f = await proposalFixture(), target = f.targets[0], a = f.authorities.get(target.leadId)!;
+  const document = f.documents.get(target.proposalId)!;
+  await linkCanonicalDocument(f.bridge, proposalBridgeScope(a), a.bindingId, document,
+    mismatch === 'proposal' ? { proposalId: f.targets[1].proposalId } : mismatch === 'version' ? { sourceVersion: 'v2' } : { contentDigest: 'f'.repeat(64) });
+  await assert.rejects(f.service.execute(target, { action: 'associate', key: 'canonical-contradiction', expectedRevision: 0 }),
+    code(mismatch === 'proposal' ? 'BINDING_MISMATCH' : mismatch === 'version' ? 'CANONICAL_VERSION_MISMATCH' : 'CANONICAL_CONTENT_MISMATCH'));
+  assert.equal((await f.service.read(target)).revision, 0);
+});
+
+test('base service reviews matching canonical quote bytes without requiring a provider adapter', async () => {
+  const f = await proposalFixture(), target = f.targets[0], a = f.authorities.get(target.leadId)!;
+  await linkCanonicalDocument(f.bridge, proposalBridgeScope(a), a.bindingId, f.documents.get(target.proposalId)!);
+  const view = await f.service.execute(target, { action: 'associate', key: 'canonical-exact', expectedRevision: 0 });
+  const approved = await f.service.execute(target, { action: 'approve', key: 'canonical-approved', expectedRevision: 1, reviewKey: view.snapshot!.reviewKey });
+  assert.equal(approved.status, 'approved_internal_unsent'); assert.equal(approved.externalEffectsEnabled, false);
+});
+
+test('canonical quote metadata does not turn a missing document into documentary approval', async () => {
+  const f = await proposalFixture(), target = f.targets[0], a = f.authorities.get(target.leadId)!;
+  const document = f.documents.get(target.proposalId)!;
+  await linkCanonicalDocument(f.bridge, proposalBridgeScope(a), a.bindingId, document); document.content = null;
+  const view = await f.service.execute(target, { action: 'associate', key: 'canonical-reference', expectedRevision: 0 });
+  assert.equal(view.status, 'reference_only'); assert.equal(view.snapshot!.sha256, null);
+  await assert.rejects(f.service.execute(target, { action: 'approve', key: 'canonical-no-content', expectedRevision: 1, reviewKey: view.snapshot!.reviewKey }), code('REVIEW_OBSOLETE'));
+});
 
 test('exact existing lead/event association preserves provenance and hashes trusted UTF-8 content; no calculated quote is generated', async () => {
   const f = await associated(), s = f.view.snapshot!;

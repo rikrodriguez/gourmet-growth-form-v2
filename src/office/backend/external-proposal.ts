@@ -84,7 +84,7 @@ export class ExternalProposalService {
     // Scope includes workspace and test mode; actor separation matches the canonical bridge.
     return digest([a.quote.scope, a.quote.actor.actorId, target.leadId, target.eventId]);
   }
-  private async binding(a: ProposalAuthority, target: ProposalTarget) {
+  private async binding(a: ProposalAuthority, target: ProposalTarget, document?: Pick<ExternalProposalSnapshot, 'sourceVersion' | 'sha256'>) {
     const scope = proposalBridgeScope(a), state = await this.options.bridge.snapshot(scope);
     const binding = state.bindings.filter(b => b.bindingId === a.bindingId).at(-1);
     const lead = state.sourceVersions.find(v => v.id === a.leadVersionId);
@@ -93,12 +93,20 @@ export class ExternalProposalService {
       || !lead || lead.kind !== 'lead' || !event || event.kind !== 'event'
       || lead.reference.boardId !== a.source.boardId || lead.reference.itemId !== a.source.itemId
       || event.reference.itemId !== target.eventId) fail('BINDING_MISMATCH');
+    if (binding.refs.quote !== null) {
+      const quote = state.sourceVersions.find(v => v.id === binding.refs!.quote);
+      if (!quote || quote.kind !== 'quote' || quote.reference.itemId !== target.proposalId) fail('BINDING_MISMATCH');
+      if (document) {
+        if (quote.sourceVersion !== document.sourceVersion) fail('CANONICAL_VERSION_MISMATCH');
+        if (document.sha256 !== null && quote.contentDigest !== document.sha256) fail('CANONICAL_CONTENT_MISMATCH');
+      }
+    }
     return binding;
   }
   private async evidence(a: ProposalAuthority, target: ProposalTarget, associationRevision = 0): Promise<ExternalProposalSnapshot> {
     const { document, sha256 } = await readProposalDocument(this.options.provider, { target, scope: a.quote.scope, source: a.source });
     const history = document.historicalLink;
-    const binding = await this.binding(a, target);
+    const binding = await this.binding(a, target, { sourceVersion: document.sourceVersion, sha256 });
     const snapshot = { ...target, provider: 'synthetic' as const, sourceVersion: document.sourceVersion,
       content: document.content, sha256,
       provenance: { ...a.source, observedAt: history.provenance.observedAt, evidenceRef: document.evidenceRef },

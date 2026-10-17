@@ -28,6 +28,8 @@ Después de leer el proveedor vuelve a leer la selección y el vínculo. Retirad
 
 El contrato selecciona evidencia y **no concede acceso**. La autorización SQL, sus locks, retirada/caducidad y permisos siguen en el servicio llamador. El owner debe ser código confiable del servidor; no se acepta una selección desde headers/body del navegador. No se suministra implementación del owner real ni transporte remoto.
 
+El servicio base de propuestas también corrobora una `quote` que ya figure en el vínculo activo: ID documental, versión y digest deben coincidir con el documento verificado antes de asociarlo, leer su revisión o aprobarla. Una contradicción devuelve `BINDING_MISMATCH`, `CANONICAL_VERSION_MISMATCH` o `CANONICAL_CONTENT_MISMATCH` y revierte la operación. Así, las composiciones existentes tampoco pueden revisar bytes contradictorios por omitir el adaptador. Un vínculo sin `quote` conserva su comportamiento anterior; metadata canónica sin contenido sigue siendo `reference_only` y no permite aprobación. No se crea ni completa automáticamente ese vínculo.
+
 ## Pruebas y límites
 
 Las pruebas sintéticas componen el adaptador con el servicio de propuestas, ledger y proveedor existentes. Incluyen IDs/procedencia/namespace/revisión contradictorios, hash y versión obsoletos, referencia sin contenido, getters/campos de autoridad, cambios durante I/O y permisos de lectura. La integración PostgreSQL importa por `publishFromProvider`, recupera el historial cifrado al recrear el servicio, comprueba replay idempotente, rechazo de bytes alterados y retirada de sesión antes de consultar el proveedor.

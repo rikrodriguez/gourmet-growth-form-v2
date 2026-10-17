@@ -14,8 +14,50 @@ import { createEventQuoteService } from '../../src/office/backend/event-quote-wo
 import { testBrief, testCatalog } from './event-quote-fixtures';
 import { durableProposalFixture } from './external-proposal-durable-fixtures';
 import type { ExternalProposalCommand } from '../../src/office/external-proposal-contracts';
+import { linkCanonicalDocument } from './external-proposal-canonical-fixtures';
+import { EventQuoteError } from '../../src/office/backend/event-quote-contracts';
 const exec = promisify(execFile);
 const associate: ExternalProposalCommand = { action: 'associate', key: 'durable-associate', expectedRevision: 0 };
+for (const mismatch of ['version', 'hash'] as const) test(`durable service rejects canonical ${mismatch} disagreement without a proposal write or receipt`, async () => {
+ const f = await durableProposalFixture();
+ try {
+  await linkCanonicalDocument(f.bridge, f.bridgeScope, f.mapping.bindingId, f.document,
+   mismatch === 'version' ? { sourceVersion: 'v2' } : { contentDigest: 'f'.repeat(64) });
+  const before = await f.service.history(f.proof);
+  const audit = (await f.pool.query(`SELECT count(*)::int AS n FROM ${f.proposalSchema}.audit_events`)).rows[0].n;
+  await assert.rejects(f.service.execute(f.proof, associate), (e: unknown) => e instanceof EventQuoteError
+   && e.code === (mismatch === 'version' ? 'CANONICAL_VERSION_MISMATCH' : 'CANONICAL_CONTENT_MISMATCH'));
+  assert.deepEqual(await f.service.history(f.proof), before);
+  assert.equal((await f.pool.query(`SELECT count(*)::int AS n FROM ${f.proposalSchema}.audit_events`)).rows[0].n, audit);
+ } finally { await f.close(); }
+});
+
+test('durable approval requires the current document and canonical version to agree after recovery', async () => {
+ const f = await durableProposalFixture();
+ try {
+  await linkCanonicalDocument(f.bridge, f.bridgeScope, f.mapping.bindingId, f.document);
+  const first = await f.service.execute(f.proof, associate);
+  await f.service.execute(f.proof, { action: 'approve', key: 'canonical-v1-approved', expectedRevision: 1, reviewKey: first.snapshot!.reviewKey });
+  const document = { ...f.document, sourceVersion: 'v2', content: f.document.content + '\nSYNTHETIC V2' };
+  await f.service.publish(f.proof, document);
+  const restarted = createDurableTestProposalService(f), before = await restarted.history(f.proof);
+  const mismatch = (e: unknown) => e instanceof EventQuoteError && e.code === 'CANONICAL_VERSION_MISMATCH';
+  await assert.rejects(restarted.read(f.proof), mismatch);
+  await assert.rejects(restarted.execute(f.proof, { action: 'approve', key: 'canonical-stale-approved', expectedRevision: 2, reviewKey: first.snapshot!.reviewKey }), mismatch);
+  assert.deepEqual(await restarted.history(f.proof), before);
+  await linkCanonicalDocument(f.bridge, f.bridgeScope, f.mapping.bindingId, document);
+  const reviewed = await restarted.execute(f.proof, { ...associate, key: 'canonical-v2-associate', expectedRevision: 2 });
+  const command: ExternalProposalCommand = { action: 'approve', key: 'canonical-v2-approved', expectedRevision: 3, reviewKey: reviewed.snapshot!.reviewKey };
+  const approved = await restarted.execute(f.proof, command);
+  assert.equal(approved.status, 'approved_internal_unsent'); assert.equal(approved.snapshot!.sourceVersion, 'v2');
+  assert.notEqual(approved.snapshot!.sha256, first.snapshot!.sha256);
+  const saved = await restarted.history(f.proof), recovered = createDurableTestProposalService(f);
+  const replay = await recovered.execute(f.proof, command);
+  assert.equal(replay.status, approved.status); assert.equal(replay.revision, approved.revision);
+  assert.deepEqual(replay.snapshot, approved.snapshot); assert.deepEqual(replay.approval, approved.approval);
+  assert.deepEqual(await recovered.history(f.proof), saved);
+ } finally { await f.close(); }
+});
 const v2 = (f: Awaited<ReturnType<typeof durableProposalFixture>>) => ({ ...structuredClone(f.document), sourceVersion: 'v2', content: f.document.content + '\nSynthetic v2' });
 const approve = (view: Awaited<ReturnType<ReturnType<typeof createDurableTestProposalService>['read']>>): ExternalProposalCommand => ({ action: 'approve', key: 'durable-approve', expectedRevision: view.revision, reviewKey: view.snapshot!.reviewKey });
 const sources = [{ sourceSystem: 'fixture:proposal', partition: 'demo' }] as const;
