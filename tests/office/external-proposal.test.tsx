@@ -145,6 +145,37 @@ test('concurrent exact retries commit once; service restart recovers association
   assert.equal((await f.restart().read(f.targets[0])).status, 'approved_internal_unsent');
   await assert.rejects(restarted.execute(f.targets[0], { ...command, expectedRevision: 2 }), code('IDEMPOTENCY_CONFLICT'));
 });
+test('receipt 200 commits, full history permits exact replay after restart and rejects new or conflicting commands without mutation', async () => {
+  const memory = new MemoryExternalProposalStore(); let recordKey = '';
+  const f = await proposalFixture({ read: key => memory.read(key), transact: (key, change) => {
+    recordKey = key; return memory.transact(key, change);
+  } });
+  const target = f.targets[0], first: ExternalProposalCommand = { action: 'associate', key: 'limit-associate', expectedRevision: 0 };
+  const associated = await f.service.execute(target, first);
+  for (let revision = 1; revision < 199; revision++) {
+    await f.service.execute(target, { action: 'approve', key: `limit-approve-${revision}`, expectedRevision: revision, reviewKey: associated.snapshot!.reviewKey });
+  }
+  const before = (await memory.read(recordKey))!;
+  assert.equal(before.revision, 199); assert.equal(before.receipts.length, 199);
+  assert.equal(before.snapshots.length, 1); assert.equal(before.approvals.length, 1);
+  const last: ExternalProposalCommand = { action: 'associate', key: 'limit-receipt-200', expectedRevision: 199 };
+  const committed = await f.service.execute(target, last), full = (await memory.read(recordKey))!;
+  assert.equal(committed.revision, 200); assert.equal(committed.status, 'pending_internal_review');
+  assert.equal(full.receipts.length, 200); assert.equal(full.receipts.at(-1)!.key, last.key);
+  assert.equal(full.snapshots.length, 2); assert.deepEqual(full.approvals, before.approvals);
+  const retries: ExternalProposalCommand[] = [last, first];
+  for (const service of [f.service, f.restart()]) {
+    assert.deepEqual(await service.read(target), committed);
+    for (const retry of retries) {
+      assert.deepEqual(await service.execute(target, retry), committed);
+      assert.deepEqual(await memory.read(recordKey), full);
+    }
+    await assert.rejects(service.execute(target, { ...last, expectedRevision: 200 }), code('IDEMPOTENCY_CONFLICT'));
+    assert.deepEqual(await memory.read(recordKey), full);
+    await assert.rejects(service.execute(target, { action: 'associate', key: 'limit-receipt-201', expectedRevision: 200 }), code('LIMIT'));
+    assert.deepEqual(await memory.read(recordKey), full);
+  }
+});
 test('lost post-commit response recovers by explicit read and exact-key retry', async () => {
   const memory = new MemoryExternalProposalStore(); let drop = false;
   const f = await proposalFixture({ read: async key => { if (drop) { drop = false; throw new Error('Lost response'); } return memory.read(key); }, transact: async (key, change) => { await memory.transact(key, change); drop = true; } });

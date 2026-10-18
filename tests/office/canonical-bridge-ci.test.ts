@@ -19,6 +19,7 @@ const verificationBranches = [
   'fix/proposal-draft-recovery-20261016',
   'fix/proposal-existing-session-proof-20261016',
   'fix/supply-assignment-withdrawal-20261016',
+  'test/proposal-receipt-boundaries-20261018',
 ];
 
 // Read the actual checked-in policy, without evaluating workflow expressions or
