@@ -58,6 +58,58 @@ test('durable approval requires the current document and canonical version to ag
   assert.deepEqual(await recovered.history(f.proof), saved);
  } finally { await f.close(); }
 });
+test('a recovered fixed case rejects another proposal under the same lead and event without rewriting its document, receipts or audit', async () => {
+ const f = await durableProposalFixture(), pool = new Pool({ connectionString: DEFAULT_OFFICE_DATABASE_URL, connectionTimeoutMillis: 1000 });
+ try {
+  await linkCanonicalDocument(f.bridge, f.bridgeScope, f.mapping.bindingId, f.document);
+  const first = await f.service.execute(f.proof, associate);
+  const approvedInput: ExternalProposalCommand = { action: 'approve', key: 'fixed-proposal-approved', expectedRevision: 1, reviewKey: first.snapshot!.reviewKey };
+  await f.service.execute(f.proof, approvedInput);
+  const before = await f.service.history(f.proof);
+  const sqlState = async () => ({
+   events: (await f.pool.query(`SELECT * FROM ${f.proposalSchema}.events ORDER BY key`)).rows,
+   audit: (await f.pool.query(`SELECT * FROM ${f.proposalSchema}.audit_events ORDER BY event_key,revision`)).rows,
+  });
+  const savedSql = await sqlState(), recovered = createDurableTestProposalService({ ...f, pool });
+  assert.deepEqual(await recovered.history(f.proof), before);
+  assert.deepEqual(await sqlState(), savedSql, 'reading an existing payload must not rewrite it');
+
+  // The quote ledger legitimately points at P2, with the same opaque version
+  // label, while the encrypted fixed-case record still belongs to P1.
+  const target = { ...f.target, proposalId: `${f.target.proposalId}-other` };
+  const document = { ...structuredClone(f.document), ...target, content: f.document.content + '\nOther synthetic proposal.' };
+  assert.equal(document.sourceVersion, f.document.sourceVersion);
+  await linkCanonicalDocument(f.bridge, f.bridgeScope, f.mapping.bindingId, document);
+  const conflicting = createDurableTestProposalService({ ...f, pool, target });
+  let providerReads = 0;
+  const denied = (e: unknown) => e instanceof EventQuoteError && e.code === 'PROPOSAL_STORE_INVALID';
+  for (const invoke of [
+   () => conflicting.read(f.proof),
+   () => conflicting.publishFromProvider(f.proof, { async read() { providerReads++; return document; } }),
+   () => conflicting.execute(f.proof, associate),
+   () => conflicting.execute(f.proof, approvedInput),
+   () => conflicting.execute(f.proof, { ...associate, key: 'fixed-other-associate', expectedRevision: 2 }),
+  ]) {
+   await assert.rejects(invoke(), denied);
+   assert.deepEqual(await sqlState(), savedSql);
+   assert.deepEqual(await recovered.history(f.proof), before);
+  }
+  assert.equal(providerReads, 0, 'a conflicting fixed target must fail before provider I/O');
+
+  await linkCanonicalDocument(f.bridge, f.bridgeScope, f.mapping.bindingId, f.document);
+  // Restoring refs creates a new canonical binding digest. The historical
+  // approval stays obsolete; exact retries cannot resurrect it or append data.
+  for (const input of [associate, approvedInput]) {
+   const replay = await recovered.execute(f.proof, input);
+   assert.equal(replay.proposalId, f.target.proposalId); assert.equal(replay.snapshot!.proposalId, f.target.proposalId);
+   assert.equal(replay.status, 'obsolete'); assert.equal(replay.approval, null);
+   assert.equal(replay.revision, before!.record!.revision);
+   assert.deepEqual(await recovered.history(f.proof), before); assert.deepEqual(await sqlState(), savedSql);
+  }
+  assert.equal(before!.record!.approvals.length, 1); assert.equal(before!.record!.receipts.length, 2);
+  console.log('FIXED_PROPOSAL_RECOVERY_EVIDENCE=' + JSON.stringify({ target: f.target, conflictingTarget: target, sameSourceVersion: document.sourceVersion, providerReads, preservedReceipts: before!.record!.receipts.length, preservedAudit: savedSql.audit.length, recovered: true }));
+ } finally { await pool.end(); await f.close(); }
+});
 const v2 = (f: Awaited<ReturnType<typeof durableProposalFixture>>) => ({ ...structuredClone(f.document), sourceVersion: 'v2', content: f.document.content + '\nSynthetic v2' });
 const approve = (view: Awaited<ReturnType<ReturnType<typeof createDurableTestProposalService>['read']>>): ExternalProposalCommand => ({ action: 'approve', key: 'durable-approve', expectedRevision: view.revision, reviewKey: view.snapshot!.reviewKey });
 const sources = [{ sourceSystem: 'fixture:proposal', partition: 'demo' }] as const;

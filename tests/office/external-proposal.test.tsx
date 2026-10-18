@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ExternalProposalPanel } from '../../src/office/dashboard/ExternalProposalPanel';
 import { ExternalProposalError, MemoryExternalProposalStore, proposalBridgeScope } from '../../src/office/backend/external-proposal';
 import { proposalFixture } from './external-proposal-fixtures';
-import type { ExternalProposalCommand } from '../../src/office/external-proposal-contracts';
+import { serializeExternalProposalReview, type ExternalProposalCommand } from '../../src/office/external-proposal-contracts';
 import { linkCanonicalDocument } from './external-proposal-canonical-fixtures';
 const code = (value: string) => (e: unknown) => e instanceof ExternalProposalError && e.code === value;
 async function associated() {
@@ -15,6 +15,81 @@ async function associated() {
   return { ...f, view };
 }
 const approval = (f: Awaited<ReturnType<typeof associated>>): ExternalProposalCommand => ({ action: 'approve', key: 'approve-1', expectedRevision: f.view.revision, reviewKey: f.view.snapshot!.reviewKey });
+
+async function fixedDocumentCase() {
+  const memory = new MemoryExternalProposalStore(); let recordKey = '';
+  const f = await proposalFixture({ read: key => memory.read(key), transact: (key, change) => {
+    recordKey = key; return memory.transact(key, change);
+  } });
+  const target = f.targets[0], authority = f.authorities.get(target.leadId)!;
+  const scope = proposalBridgeScope(authority), document = f.documents.get(target.proposalId)!;
+  await linkCanonicalDocument(f.bridge, scope, authority.bindingId, document);
+  const associate: ExternalProposalCommand = { action: 'associate', key: 'fixed-case-associate', expectedRevision: 0 };
+  const associated = await f.service.execute(target, associate);
+  const approve: ExternalProposalCommand = { action: 'approve', key: 'fixed-case-approve', expectedRevision: 1, reviewKey: associated.snapshot!.reviewKey };
+  const approved = await f.service.execute(target, approve);
+  const other = { ...target, proposalId: 'SYNTHETIC-PROPOSAL-SECOND' };
+  // Both documents use the same opaque version. Their explicit proposal IDs,
+  // rather than a version or shared lead/event, determine case ownership.
+  const otherDocument = { ...structuredClone(document), ...other, content: 'SECOND SYNTHETIC DOCUMENT FOR THE SAME LEAD AND EVENT' };
+  f.documents.set(other.proposalId, otherDocument);
+  return { ...f, memory, target, other, approved, associate, approve, recordKey: () => recordKey,
+    linkOther: () => linkCanonicalDocument(f.bridge, scope, authority.bindingId, otherDocument),
+    restoreLink: () => linkCanonicalDocument(f.bridge, scope, authority.bindingId, document),
+  };
+}
+
+for (const operation of ['read', 'associate', 'replay-associate', 'replay-approve'] as const) test(`fixed-case document target rejects ${operation} for another canonically valid proposal without changing history`, async () => {
+  const f = await fixedDocumentCase(), before = await f.memory.read(f.recordKey());
+  await f.linkOther();
+  const attempt = operation === 'read' ? f.service.read(f.other) : f.service.execute(f.other,
+    operation === 'associate' ? { action: 'associate', key: 'fixed-case-retarget', expectedRevision: 2 }
+      : operation === 'replay-associate' ? f.associate : f.approve);
+  await assert.rejects(attempt, code('BINDING_MISMATCH'));
+  assert.deepEqual(await f.memory.read(f.recordKey()), before, 'rejected targets must preserve snapshots, approvals and receipts');
+
+  await f.restoreLink();
+  const restarted = f.restart(), recovered = await restarted.read(f.target);
+  assert.equal(recovered.revision, 2); assert.equal(recovered.status, 'obsolete');
+  assert.deepEqual(recovered.snapshot, f.approved.snapshot, 'the original persisted snapshot remains readable after an explicit link revision');
+  for (const command of [f.associate, f.approve]) assert.deepEqual(await restarted.execute(f.target, command), recovered);
+  assert.deepEqual(await f.memory.read(f.recordKey()), before);
+});
+
+test('fixed-case document target serializes concurrent foreign association and receipt retry without contaminating the aggregate', async () => {
+  const f = await fixedDocumentCase(), before = await f.memory.read(f.recordKey());
+  await f.linkOther();
+  const results = await Promise.allSettled([
+    f.service.execute(f.other, { action: 'associate', key: 'fixed-case-concurrent-retarget', expectedRevision: 2 }),
+    f.restart().execute(f.other, f.associate),
+  ]);
+  for (const result of results) {
+    assert.equal(result.status, 'rejected');
+    if (result.status === 'rejected') assert(code('BINDING_MISMATCH')(result.reason));
+  }
+  assert.deepEqual(await f.memory.read(f.recordKey()), before);
+});
+
+for (const field of ['leadId', 'eventId', 'proposalId'] as const) test(`fixed-case document target rejects historical ${field} contamination even when the latest snapshot matches`, async () => {
+  const f = await fixedDocumentCase();
+  await f.service.execute(f.target, { action: 'associate', key: 'fixed-case-second-association', expectedRevision: 2 });
+  // Model an already persisted mixed-target history from the previous service.
+  // Keep its latest snapshot valid and the historical review/approval internally
+  // consistent, so checking only the latest record or review hash is insufficient.
+  await f.memory.transact(f.recordKey(), async current => {
+    const record = structuredClone(current)!, snapshot = record.snapshots[0], previousKey = snapshot.reviewKey;
+    snapshot[field] = `OTHER-${field}`;
+    snapshot.reviewKey = createHash('sha256').update(serializeExternalProposalReview(snapshot)).digest('hex');
+    record.approvals.find(item => item.reviewKey === previousKey)!.reviewKey = snapshot.reviewKey;
+    assert.equal(record.snapshots.at(-1)![field], f.target[field]);
+    return record;
+  });
+  const before = await f.memory.read(f.recordKey()), restarted = f.restart();
+  await assert.rejects(restarted.read(f.target), code('BINDING_MISMATCH'));
+  await assert.rejects(restarted.execute(f.target, f.associate), code('BINDING_MISMATCH'));
+  await assert.rejects(restarted.execute(f.target, { action: 'associate', key: 'fixed-case-history-append', expectedRevision: 3 }), code('BINDING_MISMATCH'));
+  assert.deepEqual(await f.memory.read(f.recordKey()), before);
+});
 
 for (const mismatch of ['proposal', 'version', 'hash'] as const) test(`base service rejects a contradictory canonical quote ${mismatch} before association`, async () => {
   const f = await proposalFixture(), target = f.targets[0], a = f.authorities.get(target.leadId)!;
