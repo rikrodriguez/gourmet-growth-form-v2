@@ -717,6 +717,52 @@ describe('persistent synthetic procurement workflow', () => {
     assert.equal(reviewed.externalOrdered, false); assert.equal(reviewed.externalPaid, false); assert.equal(reviewed.externalReceived, false);
   });
 
+  for (const action of ['reject', 'cancel'] as const) for (const timing of ['current', 'historical'] as const) it(`requires a fresh purchase review after ${action} of a ${timing} choice`, async () => {
+    const store = new SerializedStore(), prefix = `supply-terminal-${action}-${timing}`;
+    const fixtures = getSupplyFixtures('demo-aurora', AT);
+    const { option, link } = await preparePurchase(store, prefix);
+    const priorContext = structuredClone(link.supplyContext), priorSnapshot = structuredClone(option.snapshot), priorDigest = option.digest;
+    if (timing === 'historical') {
+      await run(store, { step: 'choose_purchase_option', optionFixtureId: fixtures.optionFixtures[1].id, listRevision: option.listRevision }, `${prefix}-alternate`);
+      assert.equal(workflow(store).procurement!.options.find(row => row.id === option.id)!.reviewStatus, 'stale');
+    }
+    const terminalInput = decision(link, action, `${prefix}-terminal`);
+    await executeOfficeCommand(store, terminalInput, () => AT);
+    const terminalStatus = action === 'reject' ? 'rejected_demo' : 'cancelled_demo';
+    assert.equal(store.state.office.approvals[link.id].status, terminalStatus);
+    await run(store, { step: 'choose_purchase_option', optionFixtureId: fixtures.optionFixtures[0].id, listRevision: option.listRevision }, `${prefix}-choose-again`);
+    let procurement = workflow(store).procurement!;
+    const fresh = procurement.options.find(row => row.id === procurement.selectedOptionId)!;
+    assert.notEqual(fresh.id, option.id, 'an explicit new choice must not reuse a terminal review');
+    assert(fresh.revision > option.revision);
+    assert.equal(fresh.reviewStatus, 'pending'); assert.equal(fresh.approvalId, null);
+    const historical = procurement.options.find(row => row.id === option.id)!;
+    assert.deepEqual(historical.snapshot, priorSnapshot); assert.equal(historical.digest, priorDigest);
+    assert.deepEqual(store.state.office.approvals[link.id].supplyContext, priorContext);
+    assert.equal(store.state.office.approvals[link.id].digest, link.digest);
+
+    for (const old of [terminalInput, supplyCommand({ step: 'review_purchase', optionId: option.id, revision: option.revision }, `${prefix}-review`)]) {
+      const replay = await executeOfficeCommand(store, old, () => AT + 1);
+      assert.equal(replay.replayed, true);
+      assert.equal(replay.snapshot.cases[0].supplyWorkflow!.procurement!.selectedOptionId, fresh.id);
+    }
+    await assert.rejects(executeOfficeCommand(store, decision(link, 'approve', `${prefix}-old-approval`), () => AT + 1), error('APPROVAL_TERMINAL'));
+    procurement = workflow(store).procurement!;
+    assert.equal(procurement.options.find(row => row.id === fresh.id)!.reviewStatus, 'pending');
+    assert.equal(procurement.options.find(row => row.id === fresh.id)!.approvalId, null);
+
+    await run(store, { step: 'review_purchase', optionId: fresh.id, revision: fresh.revision }, `${prefix}-fresh-review`);
+    const reviewed = workflow(store).procurement!.options.find(row => row.id === fresh.id)!;
+    assert(reviewed.approvalId); assert.notEqual(reviewed.approvalId, link.id);
+    assert.equal(reviewed.reviewStatus, 'pending');
+    await executeOfficeCommand(store, decision(store.state.office.approvals[reviewed.approvalId], 'approve', `${prefix}-fresh-approved`), () => AT + 2);
+    assert.equal(workflow(store).procurement!.options.find(row => row.id === fresh.id)!.reviewStatus, 'approved_demo');
+    assert.equal(store.state.office.approvals[link.id].status, terminalStatus);
+    assert.deepEqual(store.state.office.approvals[link.id].supplyContext, priorContext);
+    assertNoEffects(projectOfficeSnapshot(store.state, AT + 2));
+    validateOfficeSnapshot(projectOfficeSnapshot(store.state, AT + 2), 'demo');
+  });
+
   it('blocks expired delivery windows before creating or approving a purchase review', async () => {
     const reviewed = new SerializedStore();
     const { option, link } = await preparePurchase(reviewed, 'supply-expiry-reviewed');

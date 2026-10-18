@@ -19,6 +19,7 @@ const verificationBranches = [
   'fix/proposal-draft-recovery-20261016',
   'fix/proposal-existing-session-proof-20261016',
   'fix/supply-assignment-withdrawal-20261016',
+  'fix/supply-current-candidate-20261018',
   'test/proposal-receipt-boundaries-20261018',
 ];
 

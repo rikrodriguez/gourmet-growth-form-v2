@@ -360,11 +360,12 @@ export function applySupplyOperation(state: OfficeState, command: OfficeCommand,
     const fixture = fixtures.optionFixtures.find(fixture => fixture.id === operation.optionFixtureId);
     if (!fixture) throw new OfficeError('SUPPLY_FIXTURE_NOT_FOUND', 404);
     const selected = row.selectedOptionId ? row.options[row.selectedOptionId] : undefined;
-    if (selected && selected.fixtureId === fixture.id && selected.listRevision === row.list.revision && selected.menuRevision === row.menu.revision && selected.reviewStatus !== 'stale') return selected.missingFacts.length ? done('Opción de compra incompleta', `Faltan ${selected.missingFacts.join(', ')}. No puede abrirse una aprobación.`, 'blocked') : done('Opción de compra existente', 'Se conserva la opción y su revisión humana vigente; no se duplica el borrador.');
+    const reusable = (option: SupplyPurchaseOption) => option.reviewStatus === 'pending' || option.reviewStatus === 'approved_demo';
+    if (selected && selected.fixtureId === fixture.id && selected.listRevision === row.list.revision && selected.menuRevision === row.menu.revision && reusable(selected)) return selected.missingFacts.length ? done('Opción de compra incompleta', `Faltan ${selected.missingFacts.join(', ')}. No puede abrirse una aprobación.`, 'blocked') : done('Opción de compra existente', 'Se conserva la opción y su revisión humana vigente; no se duplica el borrador.');
     const candidate = createOption(row, fixture, caseId, atMs);
-    if (row.options[candidate.id]?.reviewStatus === 'stale') {
+    if (row.options[candidate.id] && !reusable(row.options[candidate.id])) {
       // Keep prior records intact for historical rejection/cancellation. A new
-      // human choice gets a new record, never restores an obsolete approval.
+      // human choice gets a new record, never reuses a terminal or stale review.
       candidate.revision = Math.max(...Object.values(row.options).filter(option => option.fixtureId === fixture.id && option.menuRevision === row.menu!.revision && option.listRevision === row.list!.revision).map(option => option.revision)) + 1;
       candidate.id = `supply-option-${sha256({ caseId, fixtureId: fixture.id, listDigest: row.list.digest, revision: candidate.revision }).slice(0, 24)}`;
       candidate.evidence = evidence(caseId, `${candidate.id}-revision-${candidate.revision}`, atMs);
