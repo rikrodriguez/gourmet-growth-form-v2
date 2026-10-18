@@ -20,6 +20,7 @@ on:
       - fix/supply-assignment-withdrawal-20261016
       - feat/canonical-proposal-link-20261017
       - fix/proposal-canonical-version-20261017
+      - test/proposal-receipt-boundaries-20261018
 
 permissions:
   contents: read
@@ -30,7 +31,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.repository == 'rikrodriguez/gourmet-growth-form-v2' && (github.ref == 'refs/heads/codex/gourmet-office-demo-recovery-20261010' || github.ref == 'refs/heads/codex/canonical-reference-bridge-20261012' || github.ref == 'refs/heads/feat/office-communications-review-20261013' || github.ref == 'refs/heads/feat/gourmet-dashboard-reference-20261013' || github.ref == 'refs/heads/feat/external-proposal-fixtures-20261015' || github.ref == 'refs/heads/feat/external-proposal-durable-test-20261015' || github.ref == 'refs/heads/feat/external-proposal-http-test-20261016' || github.ref == 'refs/heads/feat/external-proposal-dashboard-test-20261016' || github.ref == 'refs/heads/feat/proposal-host-provider-contract-20261016' || github.ref == 'refs/heads/fix/supply-assignment-withdrawal-20261016' || github.ref == 'refs/heads/feat/operational-records-demo-20261016' || github.ref == 'refs/heads/fix/proposal-draft-recovery-20261016' || github.ref == 'refs/heads/fix/proposal-existing-session-proof-20261016' || github.ref == 'refs/heads/feat/canonical-proposal-link-20261017' || github.ref == 'refs/heads/fix/proposal-canonical-version-20261017')
+    if: github.repository == 'rikrodriguez/gourmet-growth-form-v2' && (github.ref == 'refs/heads/codex/gourmet-office-demo-recovery-20261010' || github.ref == 'refs/heads/codex/canonical-reference-bridge-20261012' || github.ref == 'refs/heads/feat/office-communications-review-20261013' || github.ref == 'refs/heads/feat/gourmet-dashboard-reference-20261013' || github.ref == 'refs/heads/feat/external-proposal-fixtures-20261015' || github.ref == 'refs/heads/feat/external-proposal-durable-test-20261015' || github.ref == 'refs/heads/feat/external-proposal-http-test-20261016' || github.ref == 'refs/heads/feat/external-proposal-dashboard-test-20261016' || github.ref == 'refs/heads/feat/proposal-host-provider-contract-20261016' || github.ref == 'refs/heads/fix/supply-assignment-withdrawal-20261016' || github.ref == 'refs/heads/feat/operational-records-demo-20261016' || github.ref == 'refs/heads/fix/proposal-draft-recovery-20261016' || github.ref == 'refs/heads/fix/proposal-existing-session-proof-20261016' || github.ref == 'refs/heads/feat/canonical-proposal-link-20261017' || github.ref == 'refs/heads/fix/proposal-canonical-version-20261017' || github.ref == 'refs/heads/test/proposal-receipt-boundaries-20261018')
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:

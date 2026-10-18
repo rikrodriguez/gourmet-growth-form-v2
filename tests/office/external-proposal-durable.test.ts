@@ -90,6 +90,46 @@ test('encrypted documents, history and receipts recover in a new OS process with
   assert.ok(!raw.rows[0].payload.includes('client@example.test')); assert.ok(!raw.rows[0].payload.includes('PROPUESTA'));
  } finally { await f.close(); }
 });
+test('the documented SQL generation cap preserves receipts, exact retries and immutable audit after process recovery', async () => {
+ const f = await durableProposalFixture();
+ try {
+  const view = await f.service.execute(f.proof, associate);
+  // Publication consumes generation 1. The separate SQL cap of 100 therefore
+  // admits 99 receipts, before the core service's 200-receipt cap is reachable.
+  let last: ExternalProposalCommand = associate;
+  for (let revision = 1; revision < 99; revision++) {
+   last = { action: 'approve', key: `sql-limit-approve-${revision}`, expectedRevision: revision, reviewKey: view.snapshot!.reviewKey };
+   await f.service.execute(f.proof, last);
+  }
+  const history = (await f.service.history(f.proof))!;
+  assert.equal(history.revision, 100); assert.equal(history.record!.revision, 99);
+  assert.equal(history.record!.receipts.length, 99); assert.equal(history.record!.approvals.length, 1);
+  const sqlState = async () => ({
+   events: (await f.pool.query(`SELECT * FROM ${f.proposalSchema}.events ORDER BY key`)).rows,
+   audit: (await f.pool.query(`SELECT * FROM ${f.proposalSchema}.audit_events ORDER BY event_key,revision`)).rows,
+  });
+  const full = await sqlState(); assert.equal(full.audit.length, 100);
+  const config = { target: f.target, at: f.at, accessSchema: f.accessSchema, quoteSchema: f.quoteSchema, bridgeSchema: f.bridgeSchema, proposalSchema: f.proposalSchema, command: last };
+  const child = await exec(process.execPath, ['--import', 'tsx', 'tests/office/external-proposal-recovery-child.ts', JSON.stringify(config)], { maxBuffer: 1024 * 1024 });
+  const recovered = JSON.parse(child.stdout);
+  assert.deepEqual(recovered.history, history); assert.equal(recovered.replay.revision, 99);
+  assert.equal(recovered.replay.status, 'approved_internal_unsent');
+  assert.deepEqual(recovered.replay.snapshot, recovered.view.snapshot);
+  assert.deepEqual(recovered.replay.approval, recovered.view.approval);
+  assert.deepEqual(await sqlState(), full);
+  const restarted = createDurableTestProposalService(f);
+  for (const service of [f.service, restarted]) {
+   for (const retry of [last, associate]) {
+    assert.equal((await service.execute(f.proof, retry)).revision, 99);
+    assert.deepEqual(await service.history(f.proof), history); assert.deepEqual(await sqlState(), full);
+   }
+   await assert.rejects(service.execute(f.proof, { ...last, expectedRevision: 99 }), (e: unknown) => e instanceof EventQuoteError && e.code === 'IDEMPOTENCY_CONFLICT');
+   assert.deepEqual(await service.history(f.proof), history); assert.deepEqual(await sqlState(), full);
+   await assert.rejects(service.execute(f.proof, { action: 'associate', key: 'sql-limit-next', expectedRevision: 99 }), (e: unknown) => e instanceof EventQuoteError && e.code === 'PROPOSAL_STORE_INVALID');
+   assert.deepEqual(await service.history(f.proof), history); assert.deepEqual(await sqlState(), full);
+  }
+ } finally { await f.close(); }
+});
 test('independent pools serialize concurrent exact retries and conflicting revisions', async () => {
  const f = await durableProposalFixture(), pool = new Pool({ connectionString: DEFAULT_OFFICE_DATABASE_URL, connectionTimeoutMillis: 1000 });
  try {
