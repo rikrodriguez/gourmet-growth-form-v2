@@ -219,6 +219,85 @@ describe('assignment withdrawal on independent PostgreSQL pools', () => {
   });
 });
 
+describe('terminal purchase recovery on independent PostgreSQL pools', () => {
+  for (const action of ['reject', 'cancel'] as const) for (const timing of ['current', 'historical'] as const) it(`opens one fresh review after ${action} of a ${timing} option without rewriting earlier payload or events`, async t => {
+    const { store, connect, disconnect, stateId } = await database(t);
+    const prefix = `pg-purchase-terminal-${action}-${timing}`, fixtures = getSupplyFixtures('demo-aurora', AT);
+    const { option, link } = await preparePurchase(store, prefix);
+    if (timing === 'historical') await run(store, { step: 'choose_purchase_option', optionFixtureId: fixtures.optionFixtures[1].id, listRevision: option.listRevision }, `${prefix}-alternate`);
+    const terminal = { idempotencyKey: `${prefix}-terminal`, caseId: link.caseId, functionId: link.functionId, action, approvalId: link.id, revision: link.revision, digest: link.digest };
+    await executeOfficeCommand(store, terminal, () => AT);
+    // These records use the unchanged payload schema and revision-1 option
+    // shape written before recovery was supported. Reopening must not migrate
+    // terminal decisions, digests, contexts or command/history records.
+    const previous = await store.snapshot();
+    const previousEvents = await store.pool.query('SELECT command_key,digest FROM office_demo.command_events WHERE state_id=$1 ORDER BY command_key', [stateId]);
+    const previousHistory = await store.pool.query('SELECT history_id,record FROM office_demo.history_events WHERE state_id=$1 ORDER BY history_id', [stateId]);
+    await disconnect(store);
+    const restarted = await connect(), independent = await connect();
+    assert.equal(canonical(await restarted.snapshot()), canonical(previous));
+
+    const choose = { step: 'choose_purchase_option' as const, optionFixtureId: fixtures.optionFixtures[0].id, listRevision: option.listRevision };
+    const chosen = await Promise.all([run(restarted, choose, `${prefix}-choose-a`), run(independent, choose, `${prefix}-choose-b`)]);
+    const selectedIds = chosen.map(result => result.snapshot.cases[0].supplyWorkflow!.procurement!.selectedOptionId);
+    assert.equal(selectedIds[0], selectedIds[1], 'independent choices must share one fresh record');
+    const selected = (await restarted.snapshot()).office.supply!.cases['demo-aurora'];
+    const fresh = selected.options[selected.selectedOptionId!];
+    assert.notEqual(fresh.id, option.id, 'a terminal review must never be reselected');
+    assert.equal(fresh.revision, option.revision + 1);
+    assert.equal(Object.keys(selected.options).length, Object.keys(previous.office.supply!.cases['demo-aurora'].options).length + 1);
+    assert.equal(fresh.reviewStatus, 'pending'); assert.equal(fresh.approvalId, null); assert.equal(fresh.snapshot, null);
+    assert.deepEqual(selected.options[option.id].snapshot, option.snapshot);
+    assert.equal(selected.options[option.id].digest, option.digest);
+    assert.deepEqual(selected.options[option.id].evidence, option.evidence);
+    assert.deepEqual((await restarted.snapshot()).office.approvals[link.id], previous.office.approvals[link.id]);
+
+    const review = { step: 'review_purchase' as const, optionId: fresh.id, revision: fresh.revision };
+    const reviews = await Promise.all([run(restarted, review, `${prefix}-review-a`), run(independent, review, `${prefix}-review-b`)]);
+    assert.equal(reviews.filter(result => result.replayed).length, 1, 'concurrent reviews must bind one approval');
+    const reviewed = await independent.snapshot(), current = reviewed.office.supply!.cases['demo-aurora'].options[fresh.id];
+    assert(current.approvalId); assert.notEqual(current.approvalId, link.id);
+    const approval = reviewed.office.approvals[current.approvalId];
+    assert.equal(Object.keys(reviewed.office.approvals).length, Object.keys(previous.office.approvals).length + 1);
+    assert.equal(current.reviewStatus, 'pending'); assert.equal(approval.status, 'pending'); assert.equal(approval.coreApprovalId, undefined);
+    assert.equal(Object.values(reviewed.office.approvals).filter(row => row.supplyContext?.kind === 'purchase' && row.supplyContext.optionId === fresh.id).length, 1);
+
+    // Replay each original input, including menu/list/choice/review/terminal
+    // commands, through both pools. Receipts return current state and cannot
+    // restore a historical choice or alter the fresh pending approval.
+    const beforeReplay = canonical(reviewed);
+    const oldInputs = Object.values(previous.office.commands).map(record => record.input);
+    for (let index = 0; index < oldInputs.length; index++) {
+      const replay = await executeOfficeCommand(index % 2 ? independent : restarted, oldInputs[index], () => AT + 1);
+      assert.equal(replay.replayed, true);
+      assert.equal(replay.snapshot.cases[0].supplyWorkflow!.procurement!.selectedOptionId, fresh.id);
+    }
+    assert.equal(canonical(await restarted.snapshot()), beforeReplay);
+    await assert.rejects(approve(independent, link, `${prefix}-old-approval`), error => error instanceof OfficeError && error.code === 'APPROVAL_TERMINAL');
+    await assert.rejects(run(restarted, { step: 'review_purchase', optionId: option.id, revision: option.revision }, `${prefix}-old-review`), error => error instanceof OfficeError && error.code === 'SUPPLY_REVIEW_STALE');
+    assert.equal(canonical(await independent.snapshot()), beforeReplay);
+
+    await approve(independent, approval, `${prefix}-fresh-approved`);
+    const expected = await independent.snapshot();
+    assert.equal(expected.office.supply!.cases['demo-aurora'].options[fresh.id].reviewStatus, 'approved_demo');
+    assert.equal(expected.office.approvals[link.id].status, action === 'reject' ? 'rejected_demo' : 'cancelled_demo');
+    assert.deepEqual(expected.office.approvals[link.id], previous.office.approvals[link.id]);
+    for (const [key, record] of Object.entries(previous.office.commands)) assert.deepEqual(expected.office.commands[key], record);
+    for (const [id, record] of Object.entries(previous.office.history)) assert.deepEqual(expected.office.history[id], record);
+    const events = await restarted.pool.query('SELECT command_key,digest FROM office_demo.command_events WHERE state_id=$1 AND command_key=ANY($2::text[]) ORDER BY command_key', [stateId, previousEvents.rows.map(row => row.command_key)]);
+    assert.deepEqual(events.rows, previousEvents.rows);
+    const history = await restarted.pool.query('SELECT history_id,record FROM office_demo.history_events WHERE state_id=$1 AND history_id=ANY($2::text[]) ORDER BY history_id', [stateId, previousHistory.rows.map(row => row.history_id)]);
+    assert.deepEqual(history.rows, previousHistory.rows);
+    await disconnect(restarted); await disconnect(independent);
+    const recovered = await connect();
+    assert.equal(canonical(await recovered.snapshot()), canonical(expected));
+    const snapshot = projectOfficeSnapshot(await recovered.snapshot(), AT);
+    assert.equal(snapshot.outboundEffects, 0); assert.equal(snapshot.mondayWrites, 0);
+    assert.equal(current.externalOrdered, false); assert.equal(current.externalPaid, false); assert.equal(current.externalReceived, false);
+    console.log('PURCHASE_RECOVERY_EVIDENCE=' + JSON.stringify({ action, timing, independentPools: true, oldOptionId: option.id, freshOptionId: fresh.id, revision: fresh.revision, oldApprovalId: link.id, freshApprovalId: approval.id, preservedCommands: previousEvents.rows.length, persisted: true }));
+  });
+});
+
 describe('supply durability on real PostgreSQL (requires office:db start)', () => {
   it('persists separate supplier and purchase reviews across independent pools without executing either', async t => {
     const { store, connect, disconnect, stateId } = await database(t);

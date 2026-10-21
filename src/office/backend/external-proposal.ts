@@ -13,6 +13,12 @@ const digest = (value: unknown) => hash(JSON.stringify(value));
 const copy = <T,>(value: T): T => structuredClone(value);
 const id = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/.test(value) && !['constructor', 'prototype', '__proto__'].includes(value);
 function fail(code: string): never { throw new ExternalProposalError(code); }
+function assertRecordTarget(target: ProposalTarget, record: ProposalRecord | null): void {
+  // The existing key addresses one fixed case. Check its complete history;
+  // sharing a lead/event or version never retargets a registered proposal.
+  if (record?.snapshots.some(snapshot => snapshot.leadId !== target.leadId
+    || snapshot.eventId !== target.eventId || snapshot.proposalId !== target.proposalId)) fail('BINDING_MISMATCH');
+}
 function targetInput(target: ProposalTarget): ProposalTarget {
   if (!target || Object.keys(target).sort().join() !== 'eventId,leadId,proposalId' || !Object.values(target).every(id)) fail('INVALID_TARGET');
   return copy(target);
@@ -124,6 +130,7 @@ export class ExternalProposalService {
   async read(rawTarget: ProposalTarget): Promise<ExternalProposalView> {
     const target = targetInput(rawTarget), a = await this.authority(target);
     const record = await this.options.store.read(this.key(a, target));
+    assertRecordTarget(target, record);
     const live = record ? await this.evidence(a, target, record.snapshots.at(-1)?.associationRevision) : null;
     this.continuity(a, await this.authority(target));
     return copy(this.view(a, target, record, live));
@@ -140,6 +147,7 @@ export class ExternalProposalService {
     await this.options.store.transact(this.key(a, target), async current => {
       const record = current ?? { revision: 0, snapshots: [], approvals: [], receipts: [] };
       this.continuity(a, await this.authority(target, true, command.action === 'approve'));
+      assertRecordTarget(target, record);
       const prior = record.receipts.find(r => r.key === command.key);
       if (prior) { if (prior.inputDigest !== inputDigest) fail('IDEMPOTENCY_CONFLICT'); return record; }
       if (record.revision !== command.expectedRevision) fail('REVISION_CONFLICT');

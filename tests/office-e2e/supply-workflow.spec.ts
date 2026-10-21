@@ -135,6 +135,104 @@ test('withdraws an unavailable internal reservation explicitly, preserves eviden
   console.log('SUPPLY_WITHDRAWAL_EVIDENCE ' + JSON.stringify({ project: info.project.name, original: original.id, withdrawnRevision: 2, activeAssignments: 1, candidate: 'candidate-demo-beto', historyPreserved: true, reloaded: true }));
 });
 
+test('recovers a cancelled purchase review with a fresh option and exact internal approval after reload', async ({ page, supplyApi }, info) => {
+  test.setTimeout(120_000);
+  const commands: OfficeCommand[] = [];
+  page.on('request', request => {
+    if (request.method() === 'POST' && /\/office-api\/commands?$/.test(request.url())) commands.push(request.postDataJSON() as OfficeCommand);
+  });
+  await boot(page); await openFunction(page, 'Logística');
+  const procurement = workspace(page).getByTestId('supply-procurement');
+  await clickCommand(page, procurement.getByTestId('supply-menu-preview-supply-menu-demo-aurora-complete').getByRole('button', { name: 'Validar menú y cantidades DEMO', exact: true }));
+  await clickCommand(page, procurement.getByRole('button', { name: 'Preparar lista desde menú validado', exact: true }));
+  const choose = procurement.getByTestId('supply-option-preview-supply-option-demo-aurora-complete').getByRole('button', { name: 'Preparar opción con coste total', exact: true });
+  await clickCommand(page, choose);
+  let state = await supplyApi.store.snapshot();
+  const originalId = state.office.supply!.cases['demo-aurora'].selectedOptionId!;
+  await clickCommand(page, procurement.getByTestId(`supply-option-${originalId}`).getByRole('button', { name: 'Preparar revisión de abastecimiento', exact: true }));
+  state = await supplyApi.store.snapshot();
+  const original = state.office.supply!.cases['demo-aurora'].options[originalId];
+  const cancelledReview = workspace(page).getByTestId(`office-approval-${original.approvalId}`);
+  await expect(cancelledReview.getByTestId('approval-supply-context')).toContainText('49.00 USD');
+  await clickCommand(page, cancelledReview.getByRole('button', { name: /^Cancelar revisión/ }));
+  await expect(cancelledReview).toContainText('Cancelado DEMO');
+  const cancelled = (await supplyApi.store.snapshot()).office.approvals[original.approvalId!];
+  const oldReviewCommand = commands.find(command => command.supply?.step === 'review_purchase' && command.supply.optionId === original.id)!;
+  const oldCancelCommand = commands.find(command => command.action === 'cancel' && command.approvalId === cancelled.id)!;
+  expect(oldReviewCommand).toBeDefined(); expect(oldCancelCommand).toBeDefined();
+
+  await page.reload(); await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible(); await openFunction(page, 'Logística');
+  await expect(procurement.getByTestId(`supply-option-${original.id}`)).toContainText('Cancelado DEMO');
+  await expect(procurement.getByTestId(`supply-option-${original.id}`).getByRole('button', { name: 'Preparar revisión de abastecimiento', exact: true })).toBeDisabled();
+  await clickCommand(page, choose);
+  state = await supplyApi.store.snapshot();
+  const freshId = state.office.supply!.cases['demo-aurora'].selectedOptionId!;
+  const fresh = state.office.supply!.cases['demo-aurora'].options[freshId];
+  expect(fresh.id, 'choosing again must recover from the cancelled review').not.toBe(original.id);
+  expect(fresh.revision).toBeGreaterThan(original.revision);
+  expect(fresh).toMatchObject({ reviewStatus: 'pending', approvalId: null, totalCents: 4900, externalOrdered: false, externalPaid: false, externalReceived: false });
+  const freshOption = procurement.getByTestId(`supply-option-${fresh.id}`);
+  await expect(freshOption).toContainText('Pendiente de aprobación');
+  await expect(freshOption).toContainText('Sin revisión vinculada');
+  await expect(freshOption.getByRole('button', { name: 'Preparar revisión de abastecimiento', exact: true })).toBeEnabled();
+  // Repeated pending choices and exact replays retain the new recovery intent.
+  await clickCommand(page, choose);
+  for (const command of [oldReviewCommand, oldCancelCommand]) {
+    const replay = await executeOfficeCommand(supplyApi.store, command);
+    expect(replay.replayed).toBe(true);
+    expect(replay.snapshot.cases[0].supplyWorkflow!.procurement!.selectedOptionId).toBe(fresh.id);
+  }
+  await expect(executeOfficeCommand(supplyApi.store, { ...oldCancelCommand, idempotencyKey: `qa-old-purchase-approval-${randomUUID()}`, action: 'approve' })).rejects.toMatchObject({ code: 'APPROVAL_TERMINAL' });
+  state = await supplyApi.store.snapshot();
+  expect(Object.keys(state.office.supply!.cases['demo-aurora'].options)).toHaveLength(2);
+  expect(state.office.supply!.cases['demo-aurora'].options[fresh.id]).toEqual(fresh);
+  expect(state.office.approvals[cancelled.id]).toEqual(cancelled);
+  expect(Object.values(state.office.approvals).filter(review => review.supplyContext?.kind === 'purchase' && review.status === 'approved_demo')).toHaveLength(0);
+  await clickCommand(page, freshOption.getByRole('button', { name: 'Preparar revisión de abastecimiento', exact: true }));
+  const reviewed = (await supplyApi.store.snapshot()).office.supply!.cases['demo-aurora'].options[fresh.id];
+  expect(reviewed.approvalId).not.toBe(cancelled.id); expect(reviewed.approvalId).not.toBeNull();
+  expect(reviewed.reviewStatus).toBe('pending');
+  await page.reload(); await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible(); await openFunction(page, 'Logística');
+  const freshReview = workspace(page).getByTestId(`office-approval-${reviewed.approvalId}`);
+  await expect(freshReview).toContainText('Por aprobar');
+  await expect(freshReview.getByTestId('approval-supply-context')).toContainText('49.00 USD');
+  await expect(freshReview.getByRole('button', { name: /^Aprobar revisión/ })).toBeEnabled();
+  await expect(cancelledReview).toContainText('Cancelado DEMO');
+  await expect(cancelledReview.getByRole('button', { name: /^Aprobar revisión/ })).toHaveCount(0);
+  await assertFits(page);
+  const freshStatus = freshOption.locator('dl').filter({ hasText: 'Estado de revisión' });
+  await expect(freshStatus).toContainText(reviewed.approvalId!);
+  await freshStatus.scrollIntoViewIfNeeded();
+  await freshStatus.screenshot({ path: `test-results/dashboard-visual/${info.project.name}-procurement-recovery-pending.png` });
+  await freshReview.locator('.card-title-row').scrollIntoViewIfNeeded();
+  await freshReview.locator('.card-title-row').screenshot({ path: `test-results/dashboard-visual/${info.project.name}-procurement-recovery-pending-review.png` });
+  await clickCommand(page, freshReview.getByRole('button', { name: /^Aprobar revisión/ }));
+  await page.reload(); await expect(page.getByText('Operador · DEMO', { exact: true })).toBeVisible(); await openFunction(page, 'Logística');
+  await expect(freshReview).toContainText('Aprobado DEMO');
+  await expect(freshOption).toContainText('Aprobado DEMO');
+  await expect(cancelledReview).toContainText('Cancelado DEMO');
+  await expect(procurement.getByTestId(`supply-option-${original.id}`).getByRole('button', { name: 'Preparar revisión de abastecimiento', exact: true })).toBeDisabled();
+  // An approved current option remains reusable without another approval.
+  await clickCommand(page, choose);
+  state = await supplyApi.store.snapshot();
+  const persisted = state.office.supply!.cases['demo-aurora'];
+  expect(persisted.selectedOptionId).toBe(fresh.id);
+  expect(persisted.options[fresh.id]).toMatchObject({ revision: fresh.revision, reviewStatus: 'approved_demo', approvalId: reviewed.approvalId });
+  expect(Object.keys(persisted.options)).toHaveLength(2);
+  expect(Object.values(state.office.approvals).filter(review => review.supplyContext?.kind === 'purchase')).toHaveLength(2);
+  expect(state.office.approvals[cancelled.id]).toEqual(cancelled);
+  expect(persisted.options[original.id].snapshot).toEqual(original.snapshot);
+  expect(persisted.options[original.id].digest).toBe(original.digest);
+  expect(persisted.options[original.id].evidence).toEqual(original.evidence);
+  expect(Object.values(persisted.options).every(option => !option.externalOrdered && !option.externalPaid && !option.externalReceived)).toBe(true);
+  await assertFits(page);
+  await freshStatus.scrollIntoViewIfNeeded();
+  await freshStatus.screenshot({ path: `test-results/dashboard-visual/${info.project.name}-procurement-recovery-approved.png` });
+  await freshReview.locator('.card-title-row').scrollIntoViewIfNeeded();
+  await freshReview.locator('.card-title-row').screenshot({ path: `test-results/dashboard-visual/${info.project.name}-procurement-recovery-approved-review.png` });
+  console.log('PROCUREMENT_REVIEW_RECOVERY_EVIDENCE=' + JSON.stringify({ project: info.project.name, originalOption: original.id, originalRevision: original.revision, cancelledApproval: cancelled.id, freshOption: fresh.id, freshRevision: fresh.revision, newApproval: reviewed.approvalId, exactReplays: 2, historicalApprovalPreserved: true, freshApprovalRequired: true, pendingAndApprovedChoicesDeduplicated: true, reloaded: true, externalEffects: false }));
+});
+
 test('persists source-to-assignment and validated-menu-to-review, with exact DEMO approvals', async ({ page, supplyApi }, testInfo) => {
   test.setTimeout(120_000);
   await boot(page);
