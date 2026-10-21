@@ -4,6 +4,7 @@ import test from 'node:test';
 import { ExternalProposalError, MemoryExternalProposalStore, proposalBridgeScope, type SyntheticProposalDocument } from '../../src/office/backend/external-proposal';
 import { readProposalDocument } from '../../src/office/backend/external-proposal-provider';
 import { EventQuoteError } from '../../src/office/backend/event-quote-contracts';
+import { createDurableTestProposalService } from '../../src/office/backend/external-proposal-durable';
 import { serializeExternalProposalReview } from '../../src/office/external-proposal-contracts';
 import { verifyExternalProposalResponse } from '../../src/office/external-proposal-response';
 import { proposalFixture } from './external-proposal-fixtures';
@@ -143,5 +144,53 @@ test('durable imports reject raw loads and oversized proposed content without ch
     console.log('QUOTE_STUDIO_CHARACTERIZATION_EVIDENCE=' + JSON.stringify({ reportedSizeVectorBytes: REPORTED_QUOTE_STUDIO_PAYLOAD_BYTES,
       documentaryLimitBytes: DOCUMENT_LIMIT, rejectedImports: attempts.length, preservedReceipts: before!.record!.receipts.length,
       preservedApprovals: before!.record!.approvals.length, preservedAudit: saved.audit.length, syntheticOnly: true }));
+  } finally { await f.close(); }
+});
+
+test('an imported 262144-byte document cannot append a review beyond the 524288-byte durable aggregate cap', async () => {
+  const f = await durableProposalFixture();
+  try {
+    const associated = await f.service.execute(f.proof, { action: 'associate', key: 'studio-cap-small-associate', expectedRevision: 0 });
+    const oldApproval = { action: 'approve' as const, key: 'studio-cap-small-approved', expectedRevision: 1, reviewKey: associated.snapshot!.reviewKey };
+    await f.service.execute(f.proof, oldApproval);
+    const historical = (await f.service.history(f.proof))!;
+    const document = { ...f.document, sourceVersion: 'synthetic-studio-cap-vector', content: syntheticStudioStateText(DOCUMENT_LIMIT) };
+    assert.equal(Buffer.byteLength(document.content, 'utf8'), DOCUMENT_LIMIT);
+    // This is synthetic text, not a producer export. It passes the document
+    // limit; durable association must also fit the separate aggregate limit.
+    const context = { target: f.target, scope: f.scope, source: f.mapping.source };
+    assert.equal((await readProposalDocument({ async read() { return document; } }, context)).sha256, hash(document.content));
+    await f.service.publishFromProvider(f.proof, { async read() { return document; } });
+    const imported = (await f.service.history(f.proof))!;
+    assert.equal(imported.revision, historical.revision + 1);
+    assert.equal(imported.documents.length, historical.documents.length + 1);
+    assert.deepEqual(imported.documents.at(-1), document); assert.deepEqual(imported.record, historical.record);
+    const aggregateLimit = 524_288, importedBytes = Buffer.byteLength(JSON.stringify(imported), 'utf8');
+    assert(importedBytes < aggregateLimit);
+    assert(importedBytes + DOCUMENT_LIMIT > aggregateLimit, 'duplicating the content alone already exceeds the aggregate cap');
+    const sqlState = async () => ({
+      events: (await f.pool.query(`SELECT * FROM ${f.proposalSchema}.events ORDER BY key`)).rows,
+      audit: (await f.pool.query(`SELECT * FROM ${f.proposalSchema}.audit_events ORDER BY event_key,revision`)).rows,
+    });
+    const saved = await sqlState(), ledger = await f.bridge.snapshot(f.bridgeScope);
+    const command = { action: 'associate' as const, key: 'studio-cap-large-associate', expectedRevision: imported.record!.revision };
+    const full = (error: unknown) => error instanceof EventQuoteError && error.code === 'PROPOSAL_STORE_INVALID' && error.status === 409;
+    await assert.rejects(f.service.execute(f.proof, command), full);
+    const recovered = createDurableTestProposalService(f);
+    const unchanged = async () => {
+      assert.deepEqual(await recovered.history(f.proof), imported); assert.deepEqual(await sqlState(), saved);
+      assert.deepEqual(await f.bridge.snapshot(f.bridgeScope), ledger);
+    };
+    await unchanged();
+    await assert.rejects(recovered.execute(f.proof, command), full); await unchanged();
+    const replay = await recovered.execute(f.proof, oldApproval);
+    assert.equal(replay.status, 'obsolete'); assert.equal(replay.approval, null);
+    assert.deepEqual(replay.snapshot, associated.snapshot); await unchanged();
+    await recovered.publishFromProvider(f.proof, { async read() { return document; } }); await unchanged();
+    assert.equal(imported.record!.approvals.length, 1); assert.equal(imported.record!.receipts.length, 2);
+    assert.equal(imported.record!.receipts.some(receipt => receipt.key === command.key), false);
+    console.log('QUOTE_STUDIO_AGGREGATE_CAP_EVIDENCE=' + JSON.stringify({ contentBytes: DOCUMENT_LIMIT, importedAggregateBytes: importedBytes,
+      aggregateLimitBytes: aggregateLimit, error: 'PROPOSAL_STORE_INVALID', statusCode: 409,
+      preservedReceipts: imported.record!.receipts.length, preservedApprovals: imported.record!.approvals.length, preservedAudit: saved.audit.length, recovered: true, syntheticOnly: true }));
   } finally { await f.close(); }
 });
