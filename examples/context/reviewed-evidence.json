@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "operatorConfirmed": true,
+  "identityConfirmed": true,
+  "confirmedAt": "2026-10-28T03:00:00.000Z",
+  "captureSha256": "6289dcfa7b859858cdc2963fe3d162604e0febc6b361810d90cc24692e8e4563",
+  "fields": {
+    "customerName": {
+      "value": "Cliente ficticio Vault",
+      "start": 53,
+      "end": 95,
+      "quote": "Nombre del cliente: Cliente ficticio Vault",
+      "confirmed": true,
+      "agreementEvidence": {
+        "start": 324,
+        "end": 441,
+        "quote": "Cliente ficticio: Acepto la última propuesta: total 1200.00 USD y depósito 300.00 USD para la cena y fecha indicadas."
+      }
+    },
+    "eventDate": {
+      "value": "2026-12-15",
+      "start": 128,
+      "end": 156,
+      "quote": "Fecha del evento: 2026-12-15",
+      "confirmed": true,
+      "agreementEvidence": {
+        "start": 324,
+        "end": 441,
+        "quote": "Cliente ficticio: Acepto la última propuesta: total 1200.00 USD y depósito 300.00 USD para la cena y fecha indicadas."
+      }
+    },
+    "reservationSummary": {
+      "value": "Cena ficticia de prueba",
+      "start": 96,
+      "end": 127,
+      "quote": "Evento: Cena ficticia de prueba",
+      "confirmed": true,
+      "agreementEvidence": {
+        "start": 324,
+        "end": 441,
+        "quote": "Cliente ficticio: Acepto la última propuesta: total 1200.00 USD y depósito 300.00 USD para la cena y fecha indicadas."
+      }
+    },
+    "currency": {
+      "value": "USD",
+      "start": 303,
+      "end": 323,
+      "quote": "Depósito: 300.00 USD",
+      "confirmed": true,
+      "agreementEvidence": {
+        "start": 324,
+        "end": 441,
+        "quote": "Cliente ficticio: Acepto la última propuesta: total 1200.00 USD y depósito 300.00 USD para la cena y fecha indicadas."
+      }
+    },
+    "agreedTotal": {
+      "value": "1200.00",
+      "start": 275,
+      "end": 302,
+      "quote": "Total acordado: 1200.00 USD",
+      "confirmed": true,
+      "agreementEvidence": {
+        "start": 324,
+        "end": 441,
+        "quote": "Cliente ficticio: Acepto la última propuesta: total 1200.00 USD y depósito 300.00 USD para la cena y fecha indicadas."
+      },
+      "resolution": "El cliente aceptó explícitamente la última propuesta de este extracto.",
+      "mondayResolution": "Monday conserva la propuesta anterior; uso el acuerdo posterior citado."
+    },
+    "depositAmount": {
+      "value": "300.00",
+      "start": 303,
+      "end": 323,
+      "quote": "Depósito: 300.00 USD",
+      "confirmed": true,
+      "agreementEvidence": {
+        "start": 324,
+        "end": 441,
+        "quote": "Cliente ficticio: Acepto la última propuesta: total 1200.00 USD y depósito 300.00 USD para la cena y fecha indicadas."
+      },
+      "resolution": "El cliente aceptó explícitamente la última propuesta de este extracto.",
+      "mondayResolution": "Monday conserva la propuesta anterior; uso el acuerdo posterior citado."
+    }
+  },
+  "priorPaymentCheck": {
+    "status": "unpaid",
+    "source": "fixture-ledger",
+    "checkedAt": "2026-10-28T03:00:00.000Z",
+    "reference": "fixture-ledger-record-not-real"
+  }
+}

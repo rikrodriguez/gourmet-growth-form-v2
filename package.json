@@ -11,9 +11,12 @@
     "build": "vite build",
     "start": "node server.mjs",
     "context:prepare": "node scripts/prepare-reservation-context.mjs",
+    "context:fixture": "node scripts/generate-reviewed-fixture.mjs",
     "test:context": "node --test tests/context/*.test.mjs",
     "test:voice": "node extensions/voice-context/test.mjs",
-    "test:prototype": "npm run test:context && npm run test:voice",
+    "test:evidence": "node --test extensions/voice-context/evidence.test.mjs",
+    "test:prototype": "npm run test:context && npm run test:evidence && npm run test:voice",
+    "test:generator:external": "node scripts/test-external-generator-fixture.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {

@@ -1,0 +1,14 @@
+{
+  "source": "monday",
+  "fetchedAt": "2026-10-28T02:00:00.000Z",
+  "itemId": "fixture-item-not-real",
+  "identityConfirmed": true,
+  "fields": {
+    "customerName": "Cliente ficticio Vault",
+    "eventDate": "2026-12-15",
+    "reservationSummary": "Cena ficticia de prueba",
+    "currency": "USD",
+    "agreedTotal": "1000.00",
+    "depositAmount": "250.00"
+  }
+}

@@ -26,6 +26,12 @@
         <ul id="warnings"></ul>
         <label for="context">Texto capturado (puedes corregirlo o quitar datos)</label>
         <textarea id="context" rows="9" maxlength="100000" spellcheck="false"></textarea>
+        <h2>Sugerencias sin confirmar</h2>
+        <p>Solo se detectan frases etiquetadas explícitas. Revisa la evidencia de cada campo y las ausencias o conflictos. La última aparición en este extracto no demuestra el último acuerdo de la conversación.</p>
+        <table id="evidence" aria-label="Evidencia por campo, siempre sin confirmar">
+          <thead><tr><th>Campo</th><th>Estado</th><th>Valor propuesto y cita</th></tr></thead>
+          <tbody id="evidence-rows"></tbody>
+        </table>
         <label class="check"><input id="reviewed" type="checkbox" /> Revisé este texto y quiero exportarlo como contexto incompleto.</label>
         <button id="export" type="button" disabled>Descargar contexto JSON</button>
         <button id="clear" class="secondary" type="button">Borrar captura</button>

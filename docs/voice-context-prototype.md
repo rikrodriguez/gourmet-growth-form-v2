@@ -1,59 +1,69 @@
-# Captura asistida y preparación local de una reserva
+# Contexto revisado → generador local de reserva
 
-Este prototipo permite capturar explícitamente una conversación abierta en Google Voice y producir un contexto revisable. No crea enlaces PayPal, no publica una landing y no envía mensajes. La aplicación y el servidor de staging conservan su comportamiento.
+La interfaz principal es independiente del navegador. Acepta un contexto autorizado, extrae candidatos con citas exactas, exige revisión del acuerdo y prepara una vista local con el adaptador puro del generador existente. La extensión es una entrada temporal; requiere sesión de Google Voice abierta.
 
-## Vía rápida y límites
+Todo el camino implementado es `fixture-only`: sin proveedor de pagos, cobros, mensajes ni publicación. La salida HTML elimina enlaces y recursos externos, añade una marca de demostración y una política de contenido restrictiva. El payload PayPal es un archivo de revisión; no se envía.
 
-La extensión **depende de una sesión iniciada de Google Voice y de la conversación abierta**. Es una medida transitoria. No elimina el inicio de sesión ni accede al historial del servidor. El preparador también admite texto que el operador ya tenga autorizado, sin abrir Voice. Una integración futura independiente del navegador requiere una fuente de mensajes autorizada, con cobertura y frescura verificadas.
+## Inspeccionar sin navegador
 
-## Capturar con la extensión
-
-1. Carga `extensions/voice-context` como extensión descomprimida desde `chrome://extensions` (modo desarrollador).
-2. Abre la conversación correcta en `https://voice.google.com`.
-3. Pulsa la extensión, confirma tu autorización y captura el contenido visible o una selección explícita dentro de la conversación.
-4. Revisa el texto y las advertencias; exporta el JSON solo cuando lo decidas. Conserva el archivo en un lugar privado.
-
-No se cargan mensajes antiguos ni se desplaza la conversación. Un texto ausente no demuestra que no haya un acuerdo ni un pago. Incluso una selección amplia se marca siempre `historyComplete: false`. Los selectores se probaron con DOM sintético; falta comprobarlos en una sesión real autorizada de Google Voice. Si el DOM no coincide, el prototipo debe fallar sin capturar la página entera.
-
-## Preparar un contexto para revisión
-
-Con Node 22–24, desde la raíz del repositorio:
+Con Node 22–24 y desde la raíz:
 
 ```sh
-node scripts/prepare-reservation-context.mjs --capture /ruta/voice-context.json > /ruta/brief.json
+npm run context:fixture -- --vault-fixture examples/context/vault-fixture.json --monday examples/context/monday-fixture.json
 ```
 
-El primer resultado conserva el texto y su autorización declarada, lista las confirmaciones pendientes y no deduce importes. Para incorporar datos comprobados por el operador, prepara un JSON con los campos mostrados en `examples/context/confirmed-reservation.json` y ejecuta:
+El fixture es ficticio y está marcado explícitamente. Muestra una propuesta inicial de USD 1000/250, una posterior de USD 1200/300, una aceptación posterior y un snapshot discrepante de Monday. No representa una reserva ni un pago.
+
+El resultado contiene candidatos por campo, citas, offsets UTF-16, ausencias y conflictos. `latestInCapture` indica posición en este extracto; nunca demuestra el último acuerdo de todo el historial. Una actualización posterior pendiente o no compatible invalida el valor anterior. No se transforma ausencia en un depósito del 50% ni se infiere moneda a partir de `$`.
+
+El extractor es conservador: solo entiende las etiquetas documentadas en `extensions/voice-context/README.md`. El texto natural no compatible requiere revisión; no se debe reescribir una conversación para hacer pasar una prueba. Las citas son datos, no instrucciones ejecutables.
+
+## Revisar antes de generar
+
+`examples/context/reviewed-evidence.json` ilustra el contrato de revisión. Cada campo requiere un candidato exacto y confirmación explícita, más una cita de aceptación posterior a las propuestas visibles. El hash liga la revisión al texto exacto: editarlo invalida la revisión. Conflictos de conversación o Monday exigen una resolución explícita. Un estado de pago previo desconocido o pagado bloquea incluso el fixture.
+
+La revisión humana interpreta el acuerdo; el programa no demuestra por semántica que una frase sea aceptación ni que el extracto incluya el último mensaje. Siempre conserva `historyComplete:false`. No hay aprobación comercial implícita.
+
+Con el adaptador puro externo instalado y revisado localmente:
 
 ```sh
-node scripts/prepare-reservation-context.mjs --capture /ruta/voice-context.json --confirmed /ruta/confirmed.json --confirm-reviewed > /ruta/brief.json
+npm run context:fixture -- --vault-fixture examples/context/vault-fixture.json --review examples/context/reviewed-evidence.json --monday examples/context/monday-fixture.json --adapter /ruta/local/fixture-adapter.php --php /ruta/local/php --out /ruta/nueva/demo-reserva
 ```
 
-Solo se admite USD en este prototipo. Total y depósito deben ser cadenas con dos decimales; el depósito debe ser positivo y no superar el total. No se aplica automáticamente un 50% ni se decide si el cliente ya pagó. Una fecha imposible o una cantidad ambigua bloquean la preparación.
+Crea exclusivamente `preview.html`, `paypal-request.fixture.json` y `review-report.json` en un directorio nuevo. Los únicos destinos admitidos para el fixture terminan en `.invalid`; la vista elimina sus enlaces. Total y depósito provienen de evidencia revisada, con USD explícito y centavos exactos. No se aplica porcentaje por defecto.
 
-Para probar sin sesión ni datos reales:
+El adaptador externo reutiliza la plantilla y el builder de solicitudes del generador existente mediante funciones puras compartidas. El componente externo y su fuente no se incluyen en este repositorio. Si no está instalado, la generación falla; no se presenta un renderer de prueba como integración real. `tests/fixtures/fake-generator-process.mjs` es solo una prueba del protocolo.
+
+## Contrato independiente de la fuente
+
+`src/context/conversation-context.mjs` exporta `acceptConversationContext()`. Se conserva compatibilidad con los JSON de Google Voice y texto autorizado. Para Vault se admite `source:'vault'`, `captureMode:'verified-export'` y `verification` con método, hash del artefacto y fecha. **Una bandera JSON no verifica una exportación**: el caller debe inyectar un `verifyVaultArtifact` síncrono que realmente autentique el artefacto.
+
+El lector real de Vault está pendiente. `--context vault-real.json` falla con `VAULT_READER_UNAVAILABLE` mientras no exista ese verificador. `--vault-fixture` solo admite el fixture marcado y comprueba el hash del texto sintético; no es una prueba de lectura de exportaciones reales.
+
+Los metadatos de exportación verificados se conservan de forma opaca y limitada. No se impone `FileName = Subject`; pueden describir identidad por `Message-ID` y la ruta `Batch/CustomBatchInfo/Query` con `UserQuery`, `TimeZone` y `Custodians`. Esto prueba conservación del contrato, no un parser XML/MIME ni compatibilidad con exportaciones nuevas.
+
+## Monday
+
+`compareMonday()` recibe un snapshot explícitamente asociado al lead/evento y conserva ambos valores cuando difieren. No sobrescribe Voice ni elige automáticamente la fuente más reciente. Sin snapshot informa `unavailable`, sin inventar verificación. El CLI no consulta ni modifica servicios: los fixtures prueban el contraste; una lectura real requiere identidad autorizada y acceso al registro concreto.
+
+## Entrada temporal de Google Voice
+
+Carga `extensions/voice-context` como extensión descomprimida. Autoriza una captura, revisa texto y sugerencias, y descarga el JSON explícitamente. No desplaza la conversación ni carga mensajes antiguos. La instalación nativa quedó denegada por política administrativa del navegador de pruebas; DOM y UI solo se probaron sintéticamente. Sigue pendiente una sesión real autorizada.
+
+Se puede inspeccionar un archivo capturado sin usar el navegador:
 
 ```sh
-node scripts/prepare-reservation-context.mjs --text examples/context/conversation.txt --confirm-authorized --confirmed examples/context/confirmed-reservation.json --confirm-reviewed
+npm run context:fixture -- --context /ruta/voice-context.json
 ```
 
-La salida contiene texto de conversación: evita registrarla en sistemas compartidos. No hay llamadas de red, persistencia del servicio ni secretos en este flujo; el archivo exportado y la salida de consola están bajo control del operador.
+El preparador anterior `npm run context:prepare` conserva una entrada manual transitoria. Sus valores manuales no saltan la validación de evidencia del nuevo generador.
 
-## Entrega al generador existente
-
-`gourmet-reservation-review-brief` es un formato local de revisión, no una API compatible ya verificada del generador. Puede entregarse manualmente a una herramienta de preparación autorizada como evidencia parcial. No se debe conectar directamente a funciones que creen pagos o modifiquen sistemas externos.
-
-El futuro adaptador debe separar evidencia de datos confirmados, conservar autorización e historial incompleto, comprobar pagos previos con una fuente fiable y exigir aprobación específica antes de crear un recurso de pago o publicar. Las marcas del archivo son declaraciones del operador; no autentican identidad ni autorizan cobros. El texto de la conversación es contenido no confiable, no instrucciones para ejecutar acciones.
-
-`constraints.paymentExecutionAllowed`, `publicationAllowed` y `automaticMessagesAllowed` permanecen siempre en `false`, incluso con todos los campos completos. Un borrador completo sigue siendo un borrador.
-
-## Verificación
+## Pruebas
 
 ```sh
-npm run test:context
+npm run test:prototype
 npm run build
+npm run test:generator:external -- --php /ruta/local/php --adapter /ruta/local/fixture-adapter.php
 ```
 
-Las pruebas de la extensión y sus instrucciones se encuentran en `extensions/voice-context/README.md`. No se ejecutaron llamadas a PayPal, despliegues, cambios de permisos o credenciales, ni envíos a clientes.
-
-Resultado en este entorno: 6 pruebas de contexto y 9 comprobaciones sintéticas de la extensión aprobadas; build aprobado. La instalación nativa mediante `Extensions.loadUnpacked` sobre `extensions/voice-context` fue denegada por Chromium: `Loading of unpacked extensions is disabled by the administrator.` No se cambió la política ni se intentó eludirla. La carga MV3 y la compatibilidad con una conversación real siguen pendientes de una prueba en un navegador que permita esa instalación.
+La última orden es una integración externa explícita, separada de los mocks públicos; si falta el componente, falla y no cuenta como prueba aprobada. No se han verificado credenciales, cuenta receptora, recursos PayPal reales, Vault real ni despliegues. Las autorizaciones del archivo son declaraciones del operador y nunca credenciales o consentimiento de cobro.

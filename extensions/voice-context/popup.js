@@ -1,4 +1,5 @@
 import { captureVisibleVoice } from './capture.js';
+import { extractEvidenceCandidates } from './evidence.js';
 
 const element = (id) => document.getElementById(id);
 const authorize = element('authorize');
@@ -9,6 +10,55 @@ const exportButton = element('export');
 let snapshot = null;
 let requestNumber = 0;
 let busy = false;
+
+function updateEvidence() {
+  const labels = {
+    customerName: 'Cliente', eventDate: 'Fecha del evento', reservationSummary: 'Evento / servicio',
+    currency: 'Moneda', agreedTotal: 'Total acordado', depositAmount: 'Depósito'
+  };
+  const states = { missing: 'Falta evidencia', candidate: 'Candidato sin confirmar', conflict: 'Conflicto sin resolver' };
+  const { fields } = extractEvidenceCandidates(context.value);
+  const rows = Object.entries(fields).map(([name, field]) => {
+    const row = document.createElement('tr');
+    row.dataset.field = name;
+    row.dataset.status = field.status;
+    const label = document.createElement('th');
+    label.scope = 'row';
+    label.textContent = labels[name];
+    const state = document.createElement('td');
+    state.textContent = states[field.status];
+    const evidence = document.createElement('td');
+    if (!field.candidates.length) evidence.textContent = 'Sin frase etiquetada compatible. Revisar manualmente.';
+    if (field.hasUnresolvedUpdate) {
+      row.dataset.unresolvedUpdate = 'true';
+      const unresolved = document.createElement('div');
+      unresolved.className = 'unresolved-update';
+      const warning = document.createElement('strong');
+      warning.textContent = 'Última observación no resuelta. Los valores anteriores no se consideran vigentes.';
+      const quote = document.createElement('blockquote');
+      quote.textContent = field.latestObservation.quote;
+      const provenance = document.createElement('small');
+      provenance.textContent = `Texto ${field.latestObservation.start}–${field.latestObservation.end} · Requiere aclaración manual.`;
+      unresolved.append(warning, quote, provenance);
+      evidence.append(unresolved);
+    }
+    for (const candidate of field.candidates) {
+      const item = document.createElement('div');
+      item.className = 'candidate';
+      const value = document.createElement('strong');
+      value.textContent = candidate.value;
+      const quote = document.createElement('blockquote');
+      quote.textContent = candidate.quote;
+      const provenance = document.createElement('small');
+      provenance.textContent = `Texto ${candidate.start}–${candidate.end}${candidate.latestInCapture ? ' · Última aparición en este extracto; no prueba el último acuerdo.' : ''}`;
+      item.append(value, quote, provenance);
+      evidence.append(item);
+    }
+    row.append(label, state, evidence);
+    return row;
+  });
+  element('evidence-rows').replaceChildren(...rows);
+}
 
 function update() {
   capture.disabled = !authorize.checked || busy;
@@ -22,6 +72,7 @@ function clear(message = 'Captura descartada. No se ha leído otra conversación
   element('preview').hidden = true;
   element('metadata').textContent = '';
   element('warnings').replaceChildren();
+  element('evidence-rows').replaceChildren();
   element('status').textContent = message;
   update();
 }
@@ -32,7 +83,7 @@ authorize.addEventListener('change', () => {
 element('mode').addEventListener('change', () => clear('Modo cambiado. Vuelve a capturar con tu autorización.'));
 element('clear').addEventListener('click', () => clear());
 reviewed.addEventListener('change', update);
-context.addEventListener('input', () => { reviewed.checked = false; update(); });
+context.addEventListener('input', () => { reviewed.checked = false; updateEvidence(); update(); });
 
 capture.addEventListener('click', async () => {
   if (!authorize.checked || busy) return;
@@ -58,6 +109,7 @@ capture.addEventListener('click', async () => {
     }
     snapshot = results[0].result.context;
     context.value = snapshot.text;
+    updateEvidence();
     element('metadata').textContent = `Google Voice · ${snapshot.capturedAt} · ${snapshot.captureMode} · historial incompleto`;
     element('warnings').replaceChildren(...snapshot.warnings.map((warning) => {
       const item = document.createElement('li');

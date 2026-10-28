@@ -1,4 +1,4 @@
-const MAX_TEXT = 100_000;
+import { acceptConversationContext } from './conversation-context.mjs';
 const REQUIRED = ['customerName', 'eventDate', 'reservationSummary', 'currency', 'agreedTotal', 'depositAmount'];
 const FIELDS = new Set(REQUIRED);
 
@@ -6,30 +6,8 @@ function validTimestamp(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
 }
 
-export function validateCapture(input) {
-  if (!input || input.schemaVersion !== 1 || !['google-voice', 'user-provided'].includes(input.source)) {
-    throw new Error('Formato de captura desconocido.');
-  }
-  const modes = input.source === 'google-voice' ? ['visible-dom', 'selection'] : ['manual-text'];
-  if (!modes.includes(input.captureMode) || input.historyComplete !== false) {
-    throw new Error('La captura debe declarar un historial incompleto y un modo de captura válido.');
-  }
-  if (!validTimestamp(input.capturedAt) || input.authorization?.captureConfirmed !== true || !validTimestamp(input.authorization.confirmedAt)) {
-    throw new Error('Faltan la autorización explícita de captura o sus fechas.');
-  }
-  if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > MAX_TEXT) {
-    throw new Error('El texto debe contener entre 1 y 100000 caracteres.');
-  }
-  if (!Array.isArray(input.warnings) || input.warnings.some(value => typeof value !== 'string' || value.length > 1000) || input.warnings.length > 20) {
-    throw new Error('Las advertencias de captura no son válidas.');
-  }
-  // Only copy the contract fields; imported JSON cannot enable execution flags.
-  return {
-    schemaVersion: 1, source: input.source, capturedAt: input.capturedAt,
-    captureMode: input.captureMode, historyComplete: false,
-    authorization: { captureConfirmed: true, confirmedAt: input.authorization.confirmedAt },
-    text: input.text.trim(), warnings: [...input.warnings],
-  };
+export function validateCapture(input, options) {
+  return acceptConversationContext(input, options);
 }
 
 export function manualCapture(text, confirmed, now = new Date().toISOString()) {
@@ -48,8 +26,8 @@ function cents(value, field) {
   return BigInt(value.replace('.', ''));
 }
 
-export function buildReservationBrief(input, confirmed = {}, reviewedAt = null) {
-  const capture = validateCapture(input);
+export function buildReservationBrief(input, confirmed = {}, reviewedAt = null, options) {
+  const capture = validateCapture(input, options);
   if (reviewedAt !== null && !validTimestamp(reviewedAt)) throw new Error('La fecha de revisión no es válida.');
   if (!confirmed || typeof confirmed !== 'object' || Array.isArray(confirmed)) throw new Error('Los datos confirmados deben ser un objeto.');
   for (const field of Object.keys(confirmed)) {
@@ -92,7 +70,7 @@ export function buildReservationBrief(input, confirmed = {}, reviewedAt = null) 
     warnings: [
       'La conversación es parcial. No deducir acuerdos, total, depósito ni pagos anteriores de ausencias en el texto.',
       'Las autorizaciones del archivo son declaraciones del operador; no son credenciales ni autorización de cobro.',
-      'Formato de revisión local: el generador y la fábrica PayPal todavía no tienen un adaptador verificado para este archivo.',
+      'Solo se permite un adaptador local de generación ficticia; no hay emisión comercial ni conexión al proveedor de pagos.',
       'Revisar fuera de esta captura si el cliente ya pagó antes de autorizar cualquier operación futura.',
     ],
   };

@@ -18,4 +18,14 @@ button:disabled { opacity: .45; cursor: default; }
 #status { min-height: 20px; }
 #metadata, .footnote { color: #526156; font-size: 11px; }
 ul { padding-left: 18px; }
+table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 11px; line-height: 1.4; }
+th, td { padding: 7px 5px; text-align: left; vertical-align: top; border: 1px solid #c7cec8; overflow-wrap: anywhere; }
+th:first-child { width: 23%; }
+th:nth-child(2) { width: 22%; }
+tr[data-status=conflict] { background: #fff0d0; }
+.candidate + .candidate { margin-top: 12px; border-top: 1px solid #c7cec8; padding-top: 8px; }
+.unresolved-update { padding: 6px; margin: 6px 0; background: #fff0d0; border: 1px solid #d9bb64; }
+tr[data-unresolved-update=true] .candidate { opacity: .65; margin-top: 10px; }
+blockquote { margin: 5px 0; white-space: pre-wrap; }
+small { color: #526156; }
 [hidden] { display: none !important; }

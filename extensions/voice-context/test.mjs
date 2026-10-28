@@ -189,6 +189,40 @@ try {
     assert.equal(await page.locator('#export').isDisabled(), true);
     await page.close();
   });
+  await check('evidence UI updates edits safely and keeps missing fields and conflicts unconfirmed', async () => {
+    const page = await popup();
+    await page.locator('#authorize').check();
+    await page.locator('#capture').click();
+    await page.locator('#preview').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#evidence-rows tr[data-status="missing"]').count(), 6);
+    const text = 'Nombre del cliente: <img src=x onerror=alert(1)>\nTotal acordado: USD 1000.00\nTotal acordado: $1200 USD\nFecha: 12/10';
+    await page.locator('#context').fill(text);
+    const total = page.locator('#evidence-rows tr[data-field="agreedTotal"]');
+    assert.equal(await total.getAttribute('data-status'), 'conflict');
+    assert.equal(await total.locator('blockquote').count(), 2);
+    assert.match(await total.innerText(), /Última aparición en este extracto; no prueba el último acuerdo/);
+    assert.equal(await page.locator('#evidence-rows tr[data-field="eventDate"]').getAttribute('data-status'), 'missing');
+    assert.equal(await page.locator('#evidence img').count(), 0);
+    assert.equal(await page.locator('#evidence-rows tr[data-field="customerName"] strong').textContent(), '<img src=x onerror=alert(1)>');
+    assert.equal(await page.locator('#export').isDisabled(), true);
+    await page.locator('#context').fill('Total acordado: USD 900');
+    assert.equal(await total.getAttribute('data-status'), 'candidate');
+    assert.equal(await total.locator('strong').textContent(), '900.00');
+    await page.locator('#context').fill('Total acordado: USD 900\nTotal acordado: por confirmar\nDepósito: 250 USD\nDepósito: por confirmar\nMoneda: EUR');
+    for (const name of ['agreedTotal', 'depositAmount', 'currency']) {
+      const row = page.locator(`#evidence-rows tr[data-field="${name}"]`);
+      assert.equal(await row.getAttribute('data-status'), 'conflict');
+      assert.equal(await row.getAttribute('data-unresolved-update'), 'true');
+      assert.match(await row.locator('.unresolved-update').innerText(), /Los valores anteriores no se consideran vigentes/);
+      assert.doesNotMatch((await row.locator('.candidate').allInnerTexts()).join('\n'), /Última aparición/);
+    }
+    assert.equal(await total.locator('.unresolved-update blockquote').textContent(), 'Total acordado: por confirmar');
+    await page.locator('#context').fill('Total acordado: USD 900\nTotal acordado: por confirmar\nTotal acordado: USD 1000');
+    assert.equal(await total.getAttribute('data-status'), 'conflict');
+    assert.equal(await total.getAttribute('data-unresolved-update'), null);
+    assert.equal(await total.locator('.unresolved-update').count(), 0);
+    await page.close();
+  });
   console.log(`Passed ${count} extension checks; synthetic DOM only, no live Voice access.`);
 } finally {
   await browser.close();
