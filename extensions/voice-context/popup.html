@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Contexto de Google Voice</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">GOURMET · PROTOTIPO LOCAL</p>
+      <h1>Preparar contexto</h1>
+      <p>Requiere Google Voice abierto con tu sesión iniciada. Es una medida transitoria, no una solución sin sesión.</p>
+      <p class="notice">Historial siempre incompleto. Solo se leerá el texto completamente visible de la conversación actual. No se envían mensajes ni se crean pagos.</p>
+      <label class="check"><input id="authorize" type="checkbox" /> Autorizo leer esta conversación para preparar su contexto local.</label>
+      <label for="mode">Qué capturar</label>
+      <select id="mode">
+        <option value="visible-dom">Mensajes visibles de la conversación</option>
+        <option value="selection">Solo el texto que seleccioné en Voice</option>
+      </select>
+      <button id="capture" type="button" disabled>Capturar ahora</button>
+      <p id="status" role="status" aria-live="polite">No se ha leído ninguna conversación.</p>
+      <section id="preview" hidden>
+        <h2>Revisar antes de exportar</h2>
+        <p id="metadata"></p>
+        <ul id="warnings"></ul>
+        <label for="context">Texto capturado (puedes corregirlo o quitar datos)</label>
+        <textarea id="context" rows="9" maxlength="100000" spellcheck="false"></textarea>
+        <h2>Sugerencias sin confirmar</h2>
+        <p>Solo se detectan frases etiquetadas explícitas. Revisa la evidencia de cada campo y las ausencias o conflictos. La última aparición en este extracto no demuestra el último acuerdo de la conversación.</p>
+        <table id="evidence" aria-label="Evidencia por campo, siempre sin confirmar">
+          <thead><tr><th>Campo</th><th>Estado</th><th>Valor propuesto y cita</th></tr></thead>
+          <tbody id="evidence-rows"></tbody>
+        </table>
+        <label class="check"><input id="reviewed" type="checkbox" /> Revisé este texto y quiero exportarlo como contexto incompleto.</label>
+        <button id="export" type="button" disabled>Descargar contexto JSON</button>
+        <button id="clear" class="secondary" type="button">Borrar captura</button>
+        <p>La descarga solo ocurre al pulsar el botón. Usa el preparador local y entrega el borrador manualmente al generador autorizado. Confirma los datos de la reserva antes de continuar.</p>
+      </section>
+      <p class="footnote">Sin servidores ni almacenamiento de la extensión. Al cerrar el popup se descarta la captura; un archivo descargado queda en tu equipo.</p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,4 @@
+EJEMPLO FICTICIO PARA PRUEBAS. No usar para cobros.
+Cliente: Quiero una cena el 15 de diciembre de 2026.
+Operador: El total de prueba es $1000 y el depósito de prueba es $250, en USD.
+Cliente: De acuerdo. Falta revisar si ya se recibió un pago.
