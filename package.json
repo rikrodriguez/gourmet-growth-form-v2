@@ -10,6 +10,10 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "start": "node server.mjs",
+    "context:prepare": "node scripts/prepare-reservation-context.mjs",
+    "test:context": "node --test tests/context/*.test.mjs",
+    "test:voice": "node extensions/voice-context/test.mjs",
+    "test:prototype": "npm run test:context && npm run test:voice",
     "test:e2e": "playwright test"
   },
   "dependencies": {
