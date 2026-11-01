@@ -1,10 +1,6 @@
-import { acceptConversationContext } from './conversation-context.mjs';
+import { acceptConversationContext, realTimestamp } from './conversation-context.mjs';
 const REQUIRED = ['customerName', 'eventDate', 'reservationSummary', 'currency', 'agreedTotal', 'depositAmount'];
 const FIELDS = new Set(REQUIRED);
-
-function validTimestamp(value) {
-  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
-}
 
 export function validateCapture(input, options) {
   return acceptConversationContext(input, options);
@@ -28,7 +24,7 @@ function cents(value, field) {
 
 export function buildReservationBrief(input, confirmed = {}, reviewedAt = null, options) {
   const capture = validateCapture(input, options);
-  if (reviewedAt !== null && !validTimestamp(reviewedAt)) throw new Error('La fecha de revisión no es válida.');
+  if (reviewedAt !== null && !realTimestamp(reviewedAt)) throw new Error('La fecha de revisión no es válida.');
   if (!confirmed || typeof confirmed !== 'object' || Array.isArray(confirmed)) throw new Error('Los datos confirmados deben ser un objeto.');
   for (const field of Object.keys(confirmed)) {
     if (!FIELDS.has(field)) throw new Error(`Campo confirmado desconocido: ${field}.`);
@@ -75,3 +71,4 @@ export function buildReservationBrief(input, confirmed = {}, reviewedAt = null, 
     ],
   };
 }
+

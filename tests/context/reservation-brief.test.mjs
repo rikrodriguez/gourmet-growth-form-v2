@@ -48,3 +48,25 @@ test('untrusted input cannot set execution flags or pass unknown confirmed field
   assert.equal(brief.constraints.publicationAllowed, false);
   assert.throws(() => buildReservationBrief(capture(), { ...confirmed(), paypalUrl: 'https://example.test' }, now), /desconocido/);
 });
+
+
+test('review timestamps reject impossible calendar dates, absent UTC and noncanonical offsets', () => {
+  for (const reviewedAt of [
+    '2026-02-30T02:00:00Z',
+    '2026-02-29T02:00:00Z',
+    '2026-04-31T02:00:00Z',
+    '2026-10-28T02:00:00',
+    '2026-10-28T02:00:00+05:00',
+    '2026-10-28T02:00:00.0001Z',
+  ]) {
+    assert.throws(() => buildReservationBrief(capture(), confirmed(), reviewedAt), /fecha de revisión/, reviewedAt);
+  }
+});
+
+test('review timestamps preserve valid UTC instants and keep execution disallowed', () => {
+  for (const reviewedAt of ['2024-02-29T23:59:59Z', '2026-10-28T02:00:00.1Z', '2026-10-28T02:00:00.12Z', now]) {
+    const brief = buildReservationBrief(capture(), confirmed(), reviewedAt);
+    assert.deepEqual(brief.review, { operatorConfirmed: true, confirmedAt: reviewedAt });
+    assert.deepEqual(brief.constraints, { paymentExecutionAllowed: false, publicationAllowed: false, automaticMessagesAllowed: false });
+  }
+});
