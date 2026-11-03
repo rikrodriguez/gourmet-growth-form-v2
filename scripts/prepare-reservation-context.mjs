@@ -1,7 +1,7 @@
-import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildReservationBrief, manualCapture } from '../src/context/reservation-brief.mjs';
+import { readJsonInput, readTextInput } from '../src/context/read-input-file.mjs';
 
 export async function main(args) {
   const options = {};
@@ -19,9 +19,9 @@ export async function main(args) {
   }
   const now = new Date().toISOString();
   const capture = options['--capture']
-    ? JSON.parse(await readFile(options['--capture'], 'utf8'))
-    : manualCapture(await readFile(options['--text'], 'utf8'), options['--confirm-authorized'], now);
-  const confirmed = options['--confirmed'] ? JSON.parse(await readFile(options['--confirmed'], 'utf8')) : {};
+    ? await readJsonInput(options['--capture'], 'CONTEXT')
+    : manualCapture(await readTextInput(options['--text'], 'CONTEXT'), options['--confirm-authorized'], now);
+  const confirmed = options['--confirmed'] ? await readJsonInput(options['--confirmed'], 'CONFIRMED') : {};
   return buildReservationBrief(capture, confirmed, options['--confirm-reviewed'] ? now : null);
 }
 

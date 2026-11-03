@@ -1,9 +1,10 @@
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { conversationDigest } from '../src/context/conversation-context.mjs';
 import { inspectConversation, prepareFixtureGeneration } from '../src/context/reviewed-generation.mjs';
 import { runFixtureAdapter } from '../src/context/generator-adapter.mjs';
+import { readJsonInput } from '../src/context/read-input-file.mjs';
 
 export async function main(args) {
   const options = {};
@@ -14,9 +15,9 @@ export async function main(args) {
     options[key] = args[++i];
   }
   if (Boolean(options['--context']) === Boolean(options['--vault-fixture'])) throw new Error('Usa --context archivo.json o --vault-fixture fixture.json.');
-  const input = JSON.parse(await readFile(options['--context'] || options['--vault-fixture'], 'utf8'));
+  const input = await readJsonInput(options['--context'] || options['--vault-fixture'], 'CONTEXT');
   const settings = {
-    monday: options['--monday'] ? JSON.parse(await readFile(options['--monday'], 'utf8')) : null,
+    monday: options['--monday'] ? await readJsonInput(options['--monday'], 'MONDAY') : null,
     ...(options['--vault-fixture'] ? {
       verifyVaultArtifact: value => value.fixture === true && value.verification?.method === 'fixture' &&
         value.verification.artifactSha256 === conversationDigest(value.text),
@@ -27,7 +28,7 @@ export async function main(args) {
     return inspectConversation(input, settings);
   }
   if (!options['--out'] || !options['--adapter']) throw new Error('Configura --adapter y un directorio --out nuevo.');
-  const review = JSON.parse(await readFile(options['--review'], 'utf8'));
+  const review = await readJsonInput(options['--review'], 'REVIEW');
   const prepared = prepareFixtureGeneration(input, review, settings);
   const output = runFixtureAdapter(prepared.request, {
     command: options['--php'] || 'php',
