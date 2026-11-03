@@ -31,23 +31,33 @@ export function validateFixtureResult(request, result) {
       !Array.isArray(paypal.body?.line_items) || paypal.body.line_items.length !== 1 ||
       item?.unit_amount?.value !== request.reservation.depositAmount ||
       item?.unit_amount?.currency_code !== request.reservation.currency ||
+      (Object.hasOwn(item, 'quantity') && item.quantity !== 1 && item.quantity !== '1') ||
       !Array.isArray(paypal.headers) || paypal.headers.some(value => typeof value !== 'string' || /authorization|bearer/i.test(value))) {
     throw new Error('GENERATOR_PROTOCOL_INVALID: el payload no coincide con el importe y moneda revisados.');
   }
   let returnUrl;
   try { returnUrl = new URL(paypal.body.return_url); } catch { throw new Error('FIXTURE_URL_REQUIRED'); }
   if (returnUrl.protocol !== 'https:' || !returnUrl.hostname.endsWith('.invalid') || returnUrl.username || returnUrl.password) throw new Error('FIXTURE_URL_REQUIRED');
-  if (typeof result.landingHtml !== 'string' || result.landingHtml.length > 1_000_000 ||
-      /<(?:script|iframe|form|base|object|embed|svg|math)\b|\bon\w+\s*=|<meta\b[^>]*http-equiv/i.test(result.landingHtml)) {
+  const activeHtml = /<(?:script|iframe|form|base|object|embed|svg|math)\b|\bon\w+\s*=|<meta\b[^>]*http-equiv/i;
+  if (typeof result.landingHtml !== 'string' || result.landingHtml.length > 1_000_000 || activeHtml.test(result.landingHtml)) {
     throw new Error('GENERATOR_PROTOCOL_INVALID: HTML de revisión no permitido.');
   }
   // The external template stays private. The public adapter returns only a local,
   // noninteractive preview with no scripts, forms, remote assets or payable link.
-  let html = result.landingHtml.replace(/\s(?:href|src|action)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  // HTML also accepts slash-delimited attributes (for example <a/href=...>).
+  // Strip every duplicate and responsive/action target, not just whitespace forms.
+  // Preserve a separator: deleting bytes outright could join formerly separate
+  // tokens into a new attribute or element after the original validation.
+  const html = result.landingHtml.replace(/[\s/](?:href|src|srcset|action|formaction)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, ' ');
+  if (activeHtml.test(html)) throw new Error('GENERATOR_PROTOCOL_INVALID: HTML de revisión no permitido.');
   const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; form-action \'none\'; base-uri \'none\'">';
   const banner = '<aside role="note" style="padding:16px;background:#fff3cf;color:#17231d">DEMO LOCAL · SIN PAGO · Historial incompleto. No es una reserva ni un enlace comercial.</aside>';
-  html = html.replace(/<head(?:\s[^>]*)?>/i, match => `${match}${csp}`);
-  html = html.replace(/<body(?:\s[^>]*)?>/i, match => `${match}${banner}`);
-  if (!html.includes(csp) || !html.includes(banner)) throw new Error('GENERATOR_PROTOCOL_INVALID: falta estructura de página.');
-  return { ...result, landingHtml: html };
+  if (!/<head(?:\s[^>]*)?>/i.test(html) || !/<body(?:\s[^>]*)?>/i.test(html)) {
+    throw new Error('GENERATOR_PROTOCOL_INVALID: falta estructura de página.');
+  }
+  // Never insert the policy by finding a template marker: a marker can be inside
+  // a comment or inert element. A trusted outer document applies the policy and
+  // warning before the browser parses any bytes from the external template.
+  const preview = `<!doctype html><html><head><meta charset="utf-8">${csp}</head><body>${banner}${html}</body></html>`;
+  return { ...result, landingHtml: preview };
 }

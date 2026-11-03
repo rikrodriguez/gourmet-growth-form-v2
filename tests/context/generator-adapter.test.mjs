@@ -7,6 +7,56 @@ import { fakeGeneratorOutput } from '../fixtures/fake-generator-process.mjs';
 const input = () => ({ schemaVersion: 1, mode: 'fixture-only', reservation: { depositAmount: '300.00', currency: 'USD' }, provenance: { historyComplete: false } });
 const command = { command: process.execPath, args: [resolve('tests/fixtures/fake-generator-process.mjs')] };
 
+test('fixture quantity cannot change the reviewed deposit', () => {
+  for (const quantity of [2, '2', 0, -1, '0.5', null, true, {}, []]) {
+    const output = fakeGeneratorOutput(input());
+    output.paypalRequest.body.line_items[0].quantity = quantity;
+    assert.throws(() => validateFixtureResult(input(), output), /GENERATOR_PROTOCOL_INVALID/, JSON.stringify(quantity));
+  }
+  for (const quantity of [1, '1']) {
+    const output = fakeGeneratorOutput(input());
+    output.paypalRequest.body.line_items[0].quantity = quantity;
+    assert.equal(validateFixtureResult(input(), output).paypalRequest.body.line_items[0].quantity, quantity);
+  }
+  assert.doesNotThrow(() => validateFixtureResult(input(), fakeGeneratorOutput(input())));
+});
+
+test('preview policy and warning precede even comment-disguised template markers', () => {
+  const output = fakeGeneratorOutput(input());
+  output.landingHtml = '<!-- <head></head><body></body> --><html><head><title>Fixture</title></head><body>Local review</body></html>';
+  const html = validateFixtureResult(input(), output).landingHtml;
+  assert.match(html, /^<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy"/);
+  assert.ok(html.indexOf('Content-Security-Policy') < html.indexOf('<!--'));
+  assert.ok(html.indexOf('DEMO LOCAL') < html.indexOf('<!--'));
+  assert.match(html, /Local review/);
+});
+
+test('preview links and assets are stripped with HTML slash separators and duplicates', () => {
+  const variants = [
+    '<a/href="https://one.invalid">Go</a>',
+    '<a////href="https://one.invalid">Go</a>',
+    '<a href="https://one.invalid"/href="https://two.invalid">Go</a>',
+    '<area/href=https://one.invalid>',
+    '<img/src="https://one.invalid" srcset="https://two.invalid 1x, https://three.invalid 2x">',
+    '<button/formaction="https://one.invalid">Review</button>',
+  ];
+  for (const content of variants) {
+    const output = fakeGeneratorOutput(input());
+    output.landingHtml = `<html><head></head><body>${content}</body></html>`;
+    const html = validateFixtureResult(input(), output).landingHtml;
+    assert.doesNotMatch(html, /(?:href|src|srcset|formaction)\s*=/i, content);
+    assert.doesNotMatch(html, /https:\/\//, content);
+  }
+});
+
+test('removing a target preserves token boundaries instead of creating a new link', () => {
+  const output = fakeGeneratorOutput(input());
+  output.landingHtml = '<html><head></head><body><a h href="https://one.invalid"ref="https://two.invalid">Review</a></body></html>';
+  const html = validateFixtureResult(input(), output).landingHtml;
+  assert.doesNotMatch(html, /[\s/]href\s*=/i);
+  assert.match(html, /<a h\s+ref=/);
+});
+
 test('local process protocol preserves provenance and exact money without inheriting secrets', () => {
   const old = process.env.CONTEXT_TEST_SECRET;
   process.env.CONTEXT_TEST_SECRET = 'fixture-never-forward';
