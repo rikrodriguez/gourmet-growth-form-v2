@@ -1,0 +1,8 @@
+{
+  "customerName": "Cliente ficticio de demostración",
+  "eventDate": "2026-12-15",
+  "reservationSummary": "Cena ficticia; no es una reserva real",
+  "currency": "USD",
+  "agreedTotal": "1000.00",
+  "depositAmount": "250.00"
+}

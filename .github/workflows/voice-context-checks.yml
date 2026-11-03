@@ -1,0 +1,31 @@
+name: Voice Context Read-only Checks
+
+on:
+  push:
+    branches:
+      - codex/voice-context-prototype
+
+permissions:
+  contents: read
+
+jobs:
+  offline-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact revision without retained credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Set up Node 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Check module syntax
+        run: |
+          node --check src/context/reservation-brief.mjs
+          node --check tests/context/reservation-brief.test.mjs
+      - name: Run offline conversation contracts
+        run: node --test tests/context/*.test.mjs
+      - name: Run offline evidence contracts
+        run: node --test extensions/voice-context/evidence.test.mjs

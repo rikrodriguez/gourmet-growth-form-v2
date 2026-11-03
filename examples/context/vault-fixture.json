@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "source": "vault",
+  "capturedAt": "2026-10-28T03:00:00.000Z",
+  "captureMode": "verified-export",
+  "fixture": true,
+  "historyComplete": false,
+  "authorization": {
+    "captureConfirmed": true,
+    "confirmedAt": "2026-10-28T03:00:00.000Z"
+  },
+  "text": "EJEMPLO FICTICIO. No es una reserva ni un pago real.\nNombre del cliente: Cliente ficticio Vault\nEvento: Cena ficticia de prueba\nFecha del evento: 2026-12-15\nMoneda: USD\nTotal acordado: 1000.00 USD\nDepósito: 250.00 USD\nCliente ficticio: Acepto la primera propuesta de prueba.\nTotal acordado: 1200.00 USD\nDepósito: 300.00 USD\nCliente ficticio: Acepto la última propuesta: total 1200.00 USD y depósito 300.00 USD para la cena y fecha indicadas.",
+  "warnings": [
+    "Fixture sintético para pruebas; no representa datos ni acuerdos comerciales."
+  ],
+  "verification": {
+    "method": "fixture",
+    "artifactSha256": "6289dcfa7b859858cdc2963fe3d162604e0febc6b361810d90cc24692e8e4563",
+    "verifiedAt": "2026-10-28T03:00:00.000Z",
+    "exportMetadata": {
+      "fileNameIdentifierKind": "message-id",
+      "query": {
+        "UserQuery": "fixture only",
+        "TimeZone": "Etc/UTC",
+        "Custodians": [
+          "fixture@example.invalid"
+        ]
+      },
+      "queryPath": "Batch/CustomBatchInfo/Query"
+    }
+  }
+}
