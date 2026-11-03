@@ -18,7 +18,13 @@ export function extractEvidenceCandidates(text) {
     const match = /^(?:USD\s+\$?\s*([0-9]+(?:\.[0-9]{1,2})?)|\$?\s*([0-9]+(?:\.[0-9]{1,2})?)\s+USD)$/i.exec(raw);
     if (!match) return null;
     const [whole, fraction = ''] = (match[1] || match[2]).split('.');
-    return `${whole.replace(/^0+(?=\d)/, '')}.${fraction.padEnd(2, '0')}`;
+    const normalizedWhole = whole.replace(/^0+(?=\d)/, '');
+    const normalizedFraction = fraction.padEnd(2, '0');
+    // Suggestions must satisfy the same bounded, positive decimal contract as
+    // reviewed fields. Unsupported input remains an observation, never a value
+    // that makes the entire inspection fail later in the comparison stage.
+    if (normalizedWhole.length > 9 || (normalizedWhole === '0' && normalizedFraction === '00')) return null;
+    return `${normalizedWhole}.${normalizedFraction}`;
   };
   const validDate = (raw) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false;
@@ -36,7 +42,7 @@ export function extractEvidenceCandidates(text) {
     if (!match) continue;
     const label = match[1].trim().toLowerCase();
     const raw = match[2].trim();
-    const unresolved = !raw || placeholders.test(raw);
+    const unresolved = !raw || placeholders.test(raw) || raw.length > 2000;
     if (['nombre del cliente', 'customer name'].includes(label)) {
       observe('customerName', unresolved ? null : raw, quote, line.index);
     } else if (['evento', 'servicio', 'event'].includes(label)) {

@@ -81,6 +81,34 @@ test('invalid input type fails explicitly', () => {
   assert.throws(() => extractEvidenceCandidates(null), TypeError);
 });
 
+test('out-of-contract amounts and oversized text stay unresolved with exact evidence', () => {
+  for (const [fieldName, initial, update] of [
+    ['agreedTotal', 'Total acordado: 1200 USD', 'Total acordado: 1000000000 USD'],
+    ['agreedTotal', 'Total acordado: 1200 USD', 'Total acordado: 0 USD'],
+    ['depositAmount', 'Depósito: 300 USD', 'Depósito: 0.00 USD'],
+    ['customerName', 'Customer name: Fixture', `Customer name: ${'x'.repeat(2001)}`],
+    ['reservationSummary', 'Evento: Fixture', `Evento: ${'x'.repeat(2001)}`],
+  ]) {
+    const text = `${initial}\n${update}`;
+    const field = extractEvidenceCandidates(text).fields[fieldName];
+    assert.equal(field.status, 'conflict', fieldName);
+    assert.equal(field.hasUnresolvedUpdate, true, fieldName);
+    assert.equal(field.candidates.length, 1, fieldName);
+    assert.equal(field.candidates[0].latestInCapture, false, fieldName);
+    assert.equal(field.latestObservation.value, null, fieldName);
+    assert.equal(text.slice(field.latestObservation.start, field.latestObservation.end), update);
+  }
+});
+
+test('supported field boundaries remain usable without monetary rounding', () => {
+  const text = `Customer name: ${'x'.repeat(2000)}\nEvento: ${'y'.repeat(2000)}\nTotal acordado: USD 999999999.99\nDepósito: USD 0.01`;
+  const fields = extractEvidenceCandidates(text).fields;
+  assert.equal(fields.customerName.candidates[0].value.length, 2000);
+  assert.equal(fields.reservationSummary.candidates[0].value.length, 2000);
+  assert.equal(fields.agreedTotal.candidates[0].value, '999999999.99');
+  assert.equal(fields.depositAmount.candidates[0].value, '0.01');
+});
+
 test('later unsupported or pending known labels invalidate earlier candidates', () => {
   for (const [fieldName, initial, update] of [
     ['agreedTotal', 'Total acordado: 1000 USD', 'Total acordado: por confirmar'],

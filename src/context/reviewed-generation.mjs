@@ -19,13 +19,27 @@ export function inspectConversation(input, { monday = null, ...options } = {}) {
     const last = evidence.fields[field].candidates.at(-1);
     return last ? [[field, last.value]] : [];
   }));
+  const issues = [];
+  if (suggestions.agreedTotal && suggestions.depositAmount &&
+      BigInt(suggestions.depositAmount.replace('.', '')) > BigInt(suggestions.agreedTotal.replace('.', ''))) {
+    issues.push({ code: 'DEPOSIT_EXCEEDS_TOTAL', fields: ['agreedTotal', 'depositAmount'] });
+    // These are unreviewed candidates, not a coherent agreement. Retain their
+    // exact source evidence below, but do not compare an invalid monetary pair
+    // as if it were a reviewed reservation. The generation guard stays strict.
+    delete suggestions.agreedTotal;
+    delete suggestions.depositAmount;
+  }
   return {
     schemaVersion: 1, status: 'requires-explicit-review', source: context.source,
     historyComplete: false, captureSha256: conversationDigest(context.text), evidence,
     missing: FIELDS.filter(field => evidence.fields[field].status === 'missing' || evidence.fields[field].hasUnresolvedUpdate),
-    conflicts: FIELDS.filter(field => evidence.fields[field].status === 'conflict'),
+    conflicts: FIELDS.filter(field => evidence.fields[field].status === 'conflict' || issues.some(issue => issue.fields.includes(field))),
+    issues,
     monday: compareMonday(suggestions, monday),
-    warnings: ['Los candidatos más recientes del extracto no son acuerdos confirmados. El historial sigue incompleto.'],
+    warnings: [
+      'Los candidatos más recientes del extracto no son acuerdos confirmados. El historial sigue incompleto.',
+      ...(issues.length ? ['El depósito candidato supera el total candidato. Ambos importes requieren aclaración; sus citas se conservan y no se comparan como un acuerdo válido.'] : []),
+    ],
   };
 }
 

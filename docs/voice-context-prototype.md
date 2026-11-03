@@ -18,6 +18,8 @@ El resultado contiene candidatos por campo, citas, offsets UTF-16, ausencias y c
 
 El extractor es conservador: solo entiende las etiquetas documentadas en `extensions/voice-context/README.md`. El texto natural no compatible requiere revisión; no se debe reescribir una conversación para hacer pasar una prueba. Las citas son datos, no instrucciones ejecutables.
 
+La inspección conserva el resto del informe cuando una etiqueta contiene un importe o texto fuera de los límites admitidos. Ese campo queda pendiente con su cita exacta; nunca se recupera silenciosamente un valor anterior. Si el depósito candidato supera el total candidato, `issues` incluye `DEPOSIT_EXCEEDS_TOTAL`: ambos valores permanecen en la evidencia, pero no se comparan con Monday como un acuerdo válido. La generación sigue rechazando esa combinación aunque el informe de inspección se haya podido mostrar.
+
 ## Revisar antes de generar
 
 `examples/context/reviewed-evidence.json` ilustra el contrato de revisión. Cada campo requiere un candidato exacto y confirmación explícita, más una cita de aceptación posterior a las propuestas visibles. El hash liga la revisión al texto exacto: editarlo invalida la revisión. Conflictos de conversación o Monday exigen una resolución explícita. Un estado de pago previo desconocido o pagado bloquea incluso el fixture.

@@ -15,6 +15,8 @@ Para preparar la landing con lo último acordado, el usuario debe localizar y ve
 
 La autorización se pide en cada apertura. Desmarcarla borra la captura pendiente. Cambiar de modo o borrar descarta el texto. Cerrar el popup lo descarta de memoria. Los archivos que el usuario decide descargar permanecen en su equipo hasta que los elimine.
 
+Cada espera de la API de Chrome tiene un límite de 15 segundos. Si no responde, se descarta el intento y se permite volver a capturar mediante otro clic. Retirar autorización o cambiar de modo cancela la espera de inmediato. No se reintenta automáticamente ni se aplica un resultado tardío a una captura nueva. Cancelar no puede deshacer una lectura que Chrome ya haya iniciado.
+
 ## Alcance y límites verificados
 
 - Solo usa `activeTab` y `scripting`, en respuesta a un clic autorizado. Sin permisos de hosts, cookies, historial, almacenamiento, descargas privilegiadas ni scripts de fondo.
@@ -61,7 +63,7 @@ Solo admite líneas con estas etiquetas explícitas al principio, sin distinguir
 | `agreedTotal` | `Total acordado:`, `Agreed total:` | `USD 1000.00` o `1000 USD`; `$` opcional si USD aparece en la misma línea. |
 | `depositAmount` | `Depósito:`, `Deposito:`, `Anticipo:`, `Deposit amount:`, `Deposit:` | Mismo formato de importe explícito en USD. No deduce porcentajes. |
 
-Los importes aceptan enteros o punto con uno o dos decimales, sin separadores de miles, y se normalizan a dos decimales sin redondear. Porcentajes, alternativas, cálculos, monedas distintas, símbolos `$` solos, fechas ambiguas y marcadores como `por confirmar` o `TBD` no producen valores candidatos. Sin embargo, **toda etiqueta conocida se conserva como observación**, aunque esté vacía o no pueda interpretarse; su `value` es `null`. Texto sin etiquetas compatibles puede contener acuerdos o correcciones: necesita revisión manual aunque las sugerencias no los detecten.
+Los importes aceptan valores positivos hasta `999999999.99`, enteros o punto con uno o dos decimales, sin separadores de miles, y se normalizan a dos decimales sin redondear. Nombre y descripción admiten hasta 2000 caracteres. Valores fuera de esos límites, porcentajes, alternativas, cálculos, monedas distintas, símbolos `$` solos, fechas ambiguas y marcadores como `por confirmar` o `TBD` no producen valores candidatos. Sin embargo, **toda etiqueta conocida se conserva como observación**, aunque esté vacía o no pueda interpretarse; su `value` es `null`. Texto sin etiquetas compatibles puede contener acuerdos o correcciones: necesita revisión manual aunque las sugerencias no los detecten.
 
 El retorno contiene `schemaVersion: 1`, `historyComplete: false` y los seis campos indicados. Cada campo tiene esta forma (ejemplo de `agreedTotal`):
 

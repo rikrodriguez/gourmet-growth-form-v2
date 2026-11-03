@@ -1,5 +1,6 @@
 import { captureVisibleVoice } from './capture.js';
 import { extractEvidenceCandidates } from './evidence.js';
+import { waitForCaptureStep } from './capture-request.js';
 
 const element = (id) => document.getElementById(id);
 const authorize = element('authorize');
@@ -10,6 +11,7 @@ const exportButton = element('export');
 let snapshot = null;
 let requestNumber = 0;
 let busy = false;
+let activeCapture = null;
 
 function updateEvidence() {
   const labels = {
@@ -66,6 +68,9 @@ function update() {
 }
 function clear(message = 'Captura descartada. No se ha leído otra conversación.') {
   requestNumber += 1;
+  activeCapture?.abort();
+  activeCapture = null;
+  busy = false;
   snapshot = null;
   context.value = '';
   reviewed.checked = false;
@@ -90,19 +95,21 @@ capture.addEventListener('click', async () => {
   clear('Leyendo únicamente la vista autorizada…');
   const currentRequest = requestNumber;
   const confirmedAt = new Date().toISOString();
+  const controller = new AbortController();
+  activeCapture = controller;
   busy = true;
   update();
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await waitForCaptureStep(() => chrome.tabs.query({ active: true, currentWindow: true }), { signal: controller.signal });
     if (!tab?.id || !tab.url || new URL(tab.url).origin !== 'https://voice.google.com') {
       throw new Error('Abre una conversación en https://voice.google.com con tu sesión iniciada.');
     }
     if (currentRequest !== requestNumber || !authorize.checked) return;
-    const results = await chrome.scripting.executeScript({
+    const results = await waitForCaptureStep(() => chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: captureVisibleVoice,
       args: [{ authorized: true, captureMode: element('mode').value, confirmedAt }]
-    });
+    }), { signal: controller.signal });
     if (currentRequest !== requestNumber || !authorize.checked) return;
     if (results.length !== 1 || !results[0].result?.ok) {
       throw new Error(results[0]?.result?.error || 'No se pudo identificar una única vista compatible.');
@@ -121,8 +128,12 @@ capture.addEventListener('click', async () => {
   } catch (error) {
     if (currentRequest === requestNumber) clear(error.message || 'No se pudo capturar. Copia el texto manualmente.');
   } finally {
-    busy = false;
-    update();
+    // An abandoned request must never release a newer capture's busy state.
+    if (currentRequest === requestNumber) {
+      activeCapture = null;
+      busy = false;
+      update();
+    }
   }
 });
 
